@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="row">
+    <div class="col-12">
+        <h3 class="mb-3">Object Tree Selector</h3>
+    </div>
+</div>
+
+<div class="row g-3">
+
+    <div class="col-lg-3">
+        <div class="card shadow-sm border-0">
+            <div class="card-header bg-white fw-bold">
+                Connection
+            </div>
+
+            <div class="card-body">
+
+                <label class="form-label">Greenplum connection</label>
+                <select id="connectionSelect" class="form-select mb-3">
+                    <option value="">-- select connection --</option>
+                    {% for c in connections %}
+                    <option value="{{ c.id }}">
+                        {{ c.name }} / {{ c.database_name }} / {{ c.host }}
+                    </option>
+                    {% endfor %}
+                </select>
+
+                <button class="btn btn-primary w-100 mb-2" onclick="loadObjectTree()">
+                    Load objects
+                </button>
+
+                <button class="btn btn-outline-secondary w-100 mb-2" onclick="expandAllTree()">
+                    Expand all
+                </button>
+
+                <button class="btn btn-outline-secondary w-100 mb-2" onclick="collapseAllTree()">
+                    Collapse all
+                </button>
+
+                <button class="btn btn-outline-success w-100 mb-2" onclick="selectAllTree()">
+                    Select all
+                </button>
+
+                <button class="btn btn-outline-danger w-100 mb-2" onclick="unselectAllTree()">
+                    Unselect all
+                </button>
+
+                <hr>
+
+                <div class="small text-muted">Selected tables:</div>
+                <div id="selectedCount" class="fs-4 fw-bold">0</div>
+
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card shadow-sm border-0">
+            <div class="card-header bg-white fw-bold">
+                Database / Schema / Tables
+            </div>
+
+            <div class="card-body">
+
+                <input
+                    type="text"
+                    id="objectSearch"
+                    class="form-control mb-3"
+                    placeholder="Search schema or table..."
+                    oninput="filterObjectTree()"
+                >
+
+                <div id="objectTreeStatus" class="text-muted mb-2">
+                    Select connection and click Load objects.
+                </div>
+
+                <div id="objectTree" class="object-tree"></div>
+
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card shadow-sm border-0">
+            <div class="card-header bg-white fw-bold">
+                Selected tables
+            </div>
+
+            <div class="card-body">
+                <button class="btn btn-sm btn-dark mb-2" onclick="showSelectedTables()">
+                    Refresh selected list
+                </button>
+
+                <pre id="selectedTablesOutput" class="result-box"></pre>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/object_tree.js') }}"></script>
+{% endblock %}

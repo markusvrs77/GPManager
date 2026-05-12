@@ -1,0 +1,123 @@
+function getSelectedTablesForApi() {
+    return [...document.querySelectorAll(".table-checkbox:checked")]
+        .map(cb => {
+            return {
+                schema: cb.dataset.schema,
+                table: cb.dataset.table,
+                full_name: cb.value
+            };
+        });
+}
+
+async function runSkewAnalysis() {
+    const connectionId = document.getElementById("connectionSelect").value;
+    const selectedTables = getSelectedTablesForApi();
+
+    const statusBox = document.getElementById("skewRunStatus");
+    const resultBody = document.getElementById("skewResultBody");
+    const rawOutput = document.getElementById("skewRawOutput");
+
+    resultBody.innerHTML = "";
+    rawOutput.textContent = "";
+
+    if (!connectionId) {
+        statusBox.className = "alert alert-danger";
+        statusBox.textContent = "Сначала выбери connection.";
+        return;
+    }
+
+    if (selectedTables.length === 0) {
+        statusBox.className = "alert alert-danger";
+        statusBox.textContent = "Сначала выбери таблицы.";
+        return;
+    }
+
+    statusBox.className = "alert alert-info";
+    statusBox.textContent = `Running skew analysis for ${selectedTables.length} tables...`;
+
+    try {
+        const response = await fetch("/api/skew/analyze", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                connection_id: connectionId,
+                tables: selectedTables
+            })
+        });
+
+        const data = await response.json();
+
+        if (!data.ok) {
+            statusBox.className = "alert alert-danger";
+            statusBox.textContent = data.message || "Skew analysis failed.";
+            rawOutput.textContent = JSON.stringify(data, null, 2);
+            return;
+        }
+
+        renderSkewResults(data.results);
+
+        statusBox.className = "alert alert-success";
+        statusBox.textContent = `Done. Analyzed ${data.results.length} tables.`;
+
+        rawOutput.textContent = JSON.stringify(data.results, null, 2);
+
+    } catch (e) {
+        statusBox.className = "alert alert-danger";
+        statusBox.textContent = "Error: " + e;
+    }
+}
+
+function renderSkewResults(results) {
+    const resultBody = document.getElementById("skewResultBody");
+    resultBody.innerHTML = "";
+
+    results.forEach(r => {
+        const tr = document.createElement("tr");
+
+        const statusHtml = makeStatusBadge(r.status);
+
+        tr.innerHTML = `
+            <td>${escapeHtml(r.schema_name || "")}</td>
+            <td>${escapeHtml(r.table_name || "")}</td>
+            <td>${formatNumber(r.total_rows)}</td>
+            <td>${r.skew_ratio ?? ""}</td>
+            <td>${statusHtml}</td>
+        `;
+
+        resultBody.appendChild(tr);
+    });
+}
+
+function makeStatusBadge(status) {
+    if (status === "OK") {
+        return `<span class="badge bg-success">OK</span>`;
+    }
+
+    if (status === "WARNING") {
+        return `<span class="badge bg-warning text-dark">WARNING</span>`;
+    }
+
+    if (status === "CRITICAL") {
+        return `<span class="badge bg-danger">CRITICAL</span>`;
+    }
+
+    if (status === "EMPTY") {
+        return `<span class="badge bg-secondary">EMPTY</span>`;
+    }
+
+    if (status === "FAILED") {
+        return `<span class="badge bg-dark">FAILED</span>`;
+    }
+
+    return `<span class="badge bg-secondary">${escapeHtml(status || "")}</span>`;
+}
+
+function formatNumber(value) {
+    if (value === null || value === undefined || value === "") {
+        return "";
+    }
+
+    return Number(value).toLocaleString("ru-RU");
+}

@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="row">
+    <div class="col-12">
+        <h3 class="mb-3">Connections</h3>
+    </div>
+</div>
+
+{% if error %}
+<div class="alert alert-danger">
+    {{ error }}
+</div>
+{% endif %}
+
+<div class="row g-3">
+
+    <div class="col-lg-4">
+        <div class="card shadow-sm border-0">
+            <div class="card-header bg-white fw-bold">
+                Add Greenplum Connection
+            </div>
+
+            <div class="card-body">
+                <form method="post" action="/connections/add">
+
+                    <div class="mb-3">
+                        <label class="form-label">Connection name</label>
+                        <input
+                            type="text"
+                            name="name"
+                            class="form-control"
+                            placeholder="Greenplum PROD"
+                            required
+                        >
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Host</label>
+                        <input
+                            type="text"
+                            name="host"
+                            class="form-control"
+                            placeholder="172.17.138.23"
+                            required
+                        >
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Port</label>
+                        <input
+                            type="number"
+                            name="port"
+                            class="form-control"
+                            value="5432"
+                            required
+                        >
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Database</label>
+                        <input
+                            type="text"
+                            name="database_name"
+                            class="form-control"
+                            placeholder="adb"
+                            required
+                        >
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Username</label>
+                        <input
+                            type="text"
+                            name="username"
+                            class="form-control"
+                            placeholder="gpadmin"
+                            required
+                        >
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Password</label>
+                        <input
+                            type="password"
+                            name="password"
+                            class="form-control"
+                            placeholder="password"
+                        >
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">
+                        Save connection
+                    </button>
+
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-8">
+        <div class="card shadow-sm border-0">
+            <div class="card-header bg-white fw-bold">
+                Saved connections
+            </div>
+
+            <div class="card-body">
+
+                {% if connections %}
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Name</th>
+                                <th>Host</th>
+                                <th>Port</th>
+                                <th>Database</th>
+                                <th>User</th>
+                                <th>Password</th>
+                                <th style="width: 220px;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for c in connections %}
+                            <tr>
+                                <td>{{ c.id }}</td>
+                                <td>{{ c.name }}</td>
+                                <td>{{ c.host }}</td>
+                                <td>{{ c.port }}</td>
+                                <td>{{ c.database_name }}</td>
+                                <td>{{ c.username }}</td>
+                                <td>{{ c.password_masked }}</td>
+                                <td>
+                                    <button
+                                        class="btn btn-sm btn-success"
+                                        onclick="testConnection({{ c.id }})"
+                                    >
+                                        Test
+                                    </button>
+
+                                    <form
+                                        method="post"
+                                        action="/connections/delete/{{ c.id }}"
+                                        style="display:inline"
+                                        onsubmit="return confirm('Удалить подключение?')"
+                                    >
+                                        <button class="btn btn-sm btn-danger">
+                                            Delete
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                {% else %}
+                <div class="alert alert-info">
+                    Пока нет сохранённых подключений.
+                </div>
+                {% endif %}
+
+                <pre id="testResult" class="mt-3 result-box"></pre>
+
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+async function testConnection(connectionId) {
+    const resultBox = document.getElementById("testResult");
+    resultBox.textContent = "Testing connection...";
+
+    try {
+        const response = await fetch(`/api/connections/${connectionId}/test`, {
+            method: "POST"
+        });
+
+        const data = await response.json();
+
+        resultBox.textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+        resultBox.textContent = "Error: " + e;
+    }
+}
+</script>
+
+{% endblock %}

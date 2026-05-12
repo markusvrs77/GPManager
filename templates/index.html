@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="row">
+    <div class="col-12">
+        <h3 class="mb-3">Dashboard</h3>
+    </div>
+</div>
+
+<div class="row g-3">
+
+    <div class="col-md-3">
+        <div class="card shadow-sm border-0 dashboard-card">
+            <div class="card-body">
+                <div class="text-muted small">Connections</div>
+                <div class="display-6">{{ connections|length }}</div>
+                <a href="/connections" class="btn btn-sm btn-primary mt-2">
+                    Manage
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card shadow-sm border-0 dashboard-card">
+            <div class="card-body">
+                <div class="text-muted small">Object Tree</div>
+                <div class="display-6">DB</div>
+                <a href="/objects" class="btn btn-sm btn-primary mt-2">
+                    Open
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card shadow-sm border-0 dashboard-card">
+            <div class="card-body">
+                <div class="text-muted small">Skew Analyzer</div>
+                <div class="display-6">Ready</div>
+                <a href="/skew" class="btn btn-sm btn-warning mt-2">
+                    Open
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card shadow-sm border-0 dashboard-card">
+            <div class="card-body">
+                <div class="text-muted small">Vacuum / Reorganize</div>
+                <div class="display-6">Soon</div>
+                <button class="btn btn-sm btn-secondary mt-2" disabled>
+                    Next step
+                </button>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card shadow-sm border-0">
+            <div class="card-header bg-white fw-bold">
+                Что уже есть в версии v0.2
+            </div>
+            <div class="card-body">
+                <ul>
+                    <li>Flask web-интерфейс</li>
+                    <li>SQLite metadata DB</li>
+                    <li>Connection Manager</li>
+                    <li>Test connection к Greenplum</li>
+                    <li>Object Tree: БД → схема → родительские таблицы</li>
+                    <li>Checkbox-выбор таблиц</li>
+                    <li>Skew Analyzer по выбранным таблицам</li>
+                    <li>Сохранение истории skew-результатов</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

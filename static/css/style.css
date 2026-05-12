@@ -1,0 +1,254 @@
+body {
+    background: #f5f7fb;
+}
+
+.dashboard-card {
+    min-height: 150px;
+}
+
+.card {
+    border-radius: 14px;
+}
+
+.card-header {
+    border-top-left-radius: 14px !important;
+    border-top-right-radius: 14px !important;
+}
+
+.result-box {
+    background: #111827;
+    color: #d1d5db;
+    padding: 12px;
+    border-radius: 10px;
+    font-size: 13px;
+    min-height: 80px;
+    max-height: 450px;
+    overflow: auto;
+}
+
+.object-tree {
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 12px;
+    max-height: 650px;
+    overflow-y: auto;
+}
+
+.tree-node {
+    margin: 4px 0;
+}
+
+.tree-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.tree-line:hover {
+    background: #f2f5f9;
+}
+
+.tree-children {
+    margin-left: 24px;
+    padding-left: 10px;
+    border-left: 1px dashed #cbd5e1;
+}
+
+.toggle {
+    cursor: pointer;
+    width: 18px;
+    display: inline-block;
+    user-select: none;
+    color: #334155;
+}
+
+.collapsed > .tree-children {
+    display: none;
+}
+
+.table-item {
+    font-size: 13px;
+}
+
+.db-node > .tree-line {
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.schema-node > .tree-line {
+    font-weight: 600;
+}
+
+.hidden-by-search {
+    display: none !important;
+}
+
+.relkind-badge {
+    font-size: 11px;
+    color: #64748b;
+    margin-left: 4px;
+}
+.scroll-table-box {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    overflow: auto;
+    background: #ffffff;
+}
+
+.job-items-scroll {
+    max-height: 360px;
+}
+
+.skew-history-scroll {
+    max-height: 420px;
+}
+
+.sticky-table-head th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #f8fafc;
+    box-shadow: 0 1px 0 #e5e7eb;
+}
+
+#skewActionButton {
+    font-weight: 600;
+}
+
+#skewActionButton.is-running {
+    background-color: #dc3545;
+    border-color: #dc3545;
+    color: #ffffff;
+}
+
+#skewActionButton.is-stopping {
+    background-color: #6c757d;
+    border-color: #6c757d;
+    color: #ffffff;
+}
+
+.chart-box {
+    position: relative;
+    height: 320px;
+    width: 100%;
+}
+
+.doughnut-chart-box {
+    height: 320px;
+}
+
+.summary-number {
+    font-size: 28px;
+    font-weight: 700;
+}
+
+.navbar .nav-link.active {
+    color: #ffffff !important;
+    font-weight: 700;
+    border-bottom: 3px solid #ffc107;
+}
+
+.navbar .nav-link {
+    border-bottom: 3px solid transparent;
+}
+
+.segment-chart-box {
+    height: 380px;
+}
+
+#segmentDetailCard {
+    border-radius: 14px;
+}
+
+#segmentDetailTitle {
+    word-break: break-all;
+}
+
+.skew-problem-box {
+    max-height: 320px;
+    overflow-y: auto;
+    background: #ffffff;
+}
+
+.skew-problem-row {
+    padding: 6px 4px;
+    border-bottom: 1px solid #f1f1f1;
+}
+
+.skew-problem-row:last-child {
+    border-bottom: none;
+}
+
+.skew-problem-row:hover {
+    background: #f8f9fa;
+}
+
+.reorg-running-box {
+    border: 1px solid #b6effb;
+    background: #e8f8fc;
+    border-radius: 10px;
+    padding: 14px;
+    margin-top: 12px;
+}
+
+.reorg-spinner {
+    width: 22px;
+    height: 22px;
+    border: 3px solid #b6effb;
+    border-top: 3px solid #0d6efd;
+    border-radius: 50%;
+    display: inline-block;
+    animation: reorgSpin 0.8s linear infinite;
+    margin-right: 10px;
+    vertical-align: middle;
+}
+
+@keyframes reorgSpin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.reorg-pulse-bar {
+    width: 100%;
+    height: 9px;
+    border-radius: 999px;
+    background: linear-gradient(
+        90deg,
+        #d9edf7 0%,
+        #0d6efd 50%,
+        #d9edf7 100%
+    );
+    background-size: 200% 100%;
+    animation: reorgPulse 1.2s ease-in-out infinite;
+    margin-top: 12px;
+}
+
+@keyframes reorgPulse {
+    0% {
+        background-position: 200% 0;
+    }
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+.reorg-running-title {
+    font-weight: 600;
+    color: #055160;
+}
+
+.reorg-running-meta {
+    font-size: 13px;
+    color: #495057;
+    margin-top: 6px;
+}
