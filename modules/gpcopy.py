@@ -693,10 +693,42 @@ def run_gpcopy_job(job_id):
         else:
             include_file = make_include_table_file(items)
 
+        source_host = (
+                source_connection.get("host")
+                or source_connection.get("hostname")
+                or source_connection.get("server")
+        )
+
+        dest_host = (
+                dest_connection.get("host")
+                or dest_connection.get("hostname")
+                or dest_connection.get("server")
+        )
+
         source_port = (
                 source_connection.get("port")
                 or source_connection.get("db_port")
                 or 5432
+        )
+
+        dest_port = (
+                dest_connection.get("port")
+                or dest_connection.get("db_port")
+                or 5432
+        )
+
+        source_user = (
+                source_connection.get("username")
+                or source_connection.get("user")
+                or source_connection.get("login")
+                or "gpadmin"
+        )
+
+        dest_user = (
+                dest_connection.get("username")
+                or dest_connection.get("user")
+                or dest_connection.get("login")
+                or "gpadmin"
         )
 
         cmd = build_gpcopy_command(
