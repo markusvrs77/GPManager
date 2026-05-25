@@ -700,9 +700,7 @@ async function loadGpcopyDateColumns(rowIndex, schemaName, tableName) {
     }
 
     const endpoints = [
-        `/api/gpcopy/date-columns?connection_id=${encodeURIComponent(ids.sourceConnectionId)}&schema=${encodeURIComponent(schemaName)}&table=${encodeURIComponent(tableName)}`,
-        `/api/table/date-columns?connection_id=${encodeURIComponent(ids.sourceConnectionId)}&schema=${encodeURIComponent(schemaName)}&table=${encodeURIComponent(tableName)}`,
-        `/api/objects/columns?connection_id=${encodeURIComponent(ids.sourceConnectionId)}&schema=${encodeURIComponent(schemaName)}&table=${encodeURIComponent(tableName)}`
+    `/api/gpcopy/date-columns?connection_id=${encodeURIComponent(ids.sourceConnectionId)}&schema=${encodeURIComponent(schemaName)}&table=${encodeURIComponent(tableName)}`
     ];
 
     let lastError = null;

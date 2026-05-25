@@ -803,3 +803,132 @@ def run_gpcopy_job(job_id):
                 os.remove(include_json_file)
             except Exception:
                 pass
+
+def get_gpcopy_date_columns(connection_id, schema_name, table_name):
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    from db import get_connection_by_id
+
+    cfg = get_connection_by_id(int(connection_id))
+
+    if not cfg:
+        raise Exception("Connection not found")
+
+    # SQLite Row / dict / object -> normal dict
+    try:
+        cfg = dict(cfg)
+    except Exception:
+        pass
+
+    def cfg_get(*names):
+        for name in names:
+            try:
+                if isinstance(cfg, dict) and cfg.get(name) not in (None, ""):
+                    return cfg.get(name)
+            except Exception:
+                pass
+
+            try:
+                value = getattr(cfg, name)
+                if value not in (None, ""):
+                    return value
+            except Exception:
+                pass
+
+        return None
+
+    host = cfg_get(
+        "host",
+        "hostname",
+        "server",
+        "ip",
+    )
+
+    port = cfg_get(
+        "port",
+        "db_port",
+    ) or 5432
+
+    dbname = cfg_get(
+        "database_name",
+        "database",
+        "dbname",
+        "db_name",
+        "name",
+    )
+
+    user = cfg_get(
+        "username",
+        "user",
+        "login",
+        "db_user",
+    )
+
+    password = cfg_get(
+        "password",
+        "passwd",
+        "db_password",
+    ) or ""
+
+    if not host:
+        raise Exception("Connection host is empty. cfg keys: {}".format(list(cfg.keys()) if isinstance(cfg, dict) else type(cfg)))
+
+    if not dbname:
+        raise Exception("Connection database/dbname is empty. cfg keys: {}".format(list(cfg.keys()) if isinstance(cfg, dict) else type(cfg)))
+
+    if not user:
+        raise Exception("Connection username/user is empty. cfg keys: {}".format(list(cfg.keys()) if isinstance(cfg, dict) else type(cfg)))
+
+    conn = psycopg2.connect(
+        host=host,
+        port=int(port),
+        dbname=dbname,
+        user=user,
+        password=password,
+    )
+
+    sql = """
+        SELECT
+            column_name,
+            data_type,
+            udt_name,
+            ordinal_position
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = %s
+          AND (
+                data_type IN (
+                    'date',
+                    'timestamp without time zone',
+                    'timestamp with time zone'
+                )
+                OR udt_name IN ('date', 'timestamp', 'timestamptz')
+                OR lower(column_name) LIKE '%%date%%'
+                OR lower(column_name) LIKE '%%time%%'
+                OR lower(column_name) LIKE '%%created%%'
+                OR lower(column_name) LIKE '%%insert%%'
+                OR lower(column_name) LIKE '%%change%%'
+          )
+        ORDER BY ordinal_position
+    """
+
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, (schema_name, table_name))
+            rows = cur.fetchall()
+
+        columns = []
+
+        for row in rows:
+            columns.append({
+                "column_name": row["column_name"],
+                "data_type": row["data_type"],
+                "udt_name": row["udt_name"],
+                "ordinal_position": row["ordinal_position"],
+            })
+
+        return columns
+
+    finally:
+        conn.close()

@@ -42,6 +42,7 @@ from modules.gpcopy import (
     run_gpcopy_job,
     build_gpcopy_date_include_json_preview,
     get_date_columns_for_table,
+    get_gpcopy_date_columns,
 )
 
 from modules.dashboard import get_session_limits_stats
@@ -1116,46 +1117,11 @@ def api_gpcopy_date_columns():
         }), 400
 
     try:
-        conn = open_gp_connection(connection_id)
-
-        sql = """
-            SELECT
-                column_name,
-                data_type,
-                udt_name
-            FROM information_schema.columns
-            WHERE table_schema = %s
-              AND table_name = %s
-              AND (
-                    data_type IN (
-                        'date',
-                        'timestamp without time zone',
-                        'timestamp with time zone'
-                    )
-                    OR udt_name IN ('date', 'timestamp', 'timestamptz')
-                    OR lower(column_name) LIKE '%%date%%'
-                    OR lower(column_name) LIKE '%%time%%'
-                    OR lower(column_name) LIKE '%%created%%'
-                    OR lower(column_name) LIKE '%%insert%%'
-                    OR lower(column_name) LIKE '%%change%%'
-              )
-            ORDER BY ordinal_position
-        """
-
-        with conn.cursor() as cur:
-            cur.execute(sql, (schema_name, table_name))
-            rows = cur.fetchall()
-
-        conn.close()
-
-        columns = []
-
-        for row in rows:
-            columns.append({
-                "column_name": row[0],
-                "data_type": row[1],
-                "udt_name": row[2],
-            })
+        columns = get_gpcopy_date_columns(
+            connection_id=connection_id,
+            schema_name=schema_name,
+            table_name=table_name,
+        )
 
         return jsonify({
             "ok": True,
@@ -1163,9 +1129,12 @@ def api_gpcopy_date_columns():
         })
 
     except Exception as e:
+        import traceback
+
         return jsonify({
             "ok": False,
             "message": str(e),
+            "traceback": traceback.format_exc(),
         }), 500
 
 @app.route("/api/gpcopy/preview-date-json", methods=["POST"])

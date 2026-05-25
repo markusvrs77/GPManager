@@ -164,3 +164,50 @@ def init_db():
         "job_id",
         "ALTER TABLE skew_results ADD COLUMN job_id INTEGER"
     )
+
+
+def get_connection_by_id(connection_id):
+    """
+    Возвращает подключение по id из SQLite.
+    Не зависит от list_connections().
+    """
+
+    import sqlite3
+    import os
+
+    connection_id = int(connection_id)
+
+    db_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "instance",
+        "gp_reorganize_center.sqlite3"
+    )
+
+    if not os.path.exists(db_path):
+        # Если app.py запускается из корня проекта, пробуем второй вариант
+        db_path = os.path.join("instance", "gp_reorganize_center.sqlite3")
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    try:
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT *
+            FROM connections
+            WHERE id = ?
+            """,
+            (connection_id,)
+        )
+
+        row = cur.fetchone()
+
+        if not row:
+            return None
+
+        return dict(row)
+
+    finally:
+        conn.close()
