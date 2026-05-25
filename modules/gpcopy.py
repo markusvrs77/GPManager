@@ -548,7 +548,76 @@ def run_gpcopy_job(job_id):
         clear_stop_flag(job_id)
         mark_job_running(job_id)
 
+        # ------------------------------------------------------------
+        # Build gpcopy runtime options
+        # ------------------------------------------------------------
+
         mode = config.get("mode") or ""
+
+        gpcopy_path = (
+                config.get("gpcopy_path")
+                or os.environ.get("GPCOPY_PATH")
+                or DEFAULT_GPCOPY_PATH
+        )
+
+        source_host = get_conn_host(source_connection)
+        dest_host = get_conn_host(dest_connection)
+
+        source_db = (
+                config.get("source_db")
+                or config.get("source_dbname")
+                or get_conn_dbname(source_connection)
+        )
+
+        dest_db = (
+                config.get("dest_db")
+                or config.get("dest_dbname")
+                or get_conn_dbname(dest_connection)
+        )
+
+        dest_user = (
+                config.get("dest_user")
+                or get_conn_user(dest_connection)
+        )
+
+        jobs = int(config.get("jobs") or 4)
+
+        on_segment_threshold = int(
+            config.get("on_segment_threshold")
+            if config.get("on_segment_threshold") is not None
+            else -1
+        )
+
+        append = bool(config.get("append"))
+        truncate = bool(config.get("truncate"))
+        drop = bool(config.get("drop"))
+        skip_existing = bool(config.get("skip_existing"))
+        analyze = bool(config.get("analyze"))
+        dry_run = bool(config.get("dry_run"))
+        validate_count = bool(config.get("validate_count"))
+
+        no_ownership = config.get("no_ownership")
+        if no_ownership is None:
+            no_ownership = True
+        else:
+            no_ownership = bool(no_ownership)
+
+        extra_args = config.get("extra_args") or []
+
+        if not gpcopy_path:
+            raise Exception("gpcopy_path is empty")
+
+        if not source_host:
+            raise Exception("Source host is empty")
+
+        if not dest_host:
+            raise Exception("Destination host is empty")
+
+        if not source_db:
+            raise Exception("Source database/dbname is empty")
+
+        if not dest_db:
+            raise Exception("Destination database/dbname is empty")
 
         if mode == "date_filter":
             include_json_file = build_gpcopy_date_include_json_file(config)
@@ -563,6 +632,7 @@ def run_gpcopy_job(job_id):
             dest_db=dest_db,
             dest_user=dest_user,
             include_json_path=include_json_file,
+            include_table_file=include_file,
             jobs=jobs,
             on_segment_threshold=on_segment_threshold,
             append=append,
@@ -572,7 +642,7 @@ def run_gpcopy_job(job_id):
             analyze=analyze,
             dry_run=dry_run,
             validate_count=validate_count,
-            no_ownership=True,
+            no_ownership=no_ownership,
             extra_args=extra_args,
         )
 
