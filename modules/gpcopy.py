@@ -536,6 +536,25 @@ def sql_literal(value: str) -> str:
 def quote_ident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
+def to_bool(value, default=False):
+    if value is None:
+        return default
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, int):
+        return value != 0
+
+    value = str(value).strip().lower()
+
+    if value in ("1", "true", "yes", "y", "on"):
+        return True
+
+    if value in ("0", "false", "no", "n", "off", ""):
+        return False
+
+    return default
 
 def build_include_json_for_date(source_db, dest_db, table_configs):
     result = []
@@ -657,13 +676,13 @@ def run_gpcopy_job(job_id):
             else -1
         )
 
-        append = bool(config.get("append"))
-        truncate = bool(config.get("truncate"))
-        drop = bool(config.get("drop"))
-        skip_existing = bool(config.get("skip_existing"))
-        analyze = bool(config.get("analyze"))
-        dry_run = bool(config.get("dry_run"))
-        validate_count = bool(config.get("validate_count"))
+        append = to_bool(config.get("append"), False)
+        truncate = to_bool(config.get("truncate"), False)
+        drop = to_bool(config.get("drop"), False)
+        skip_existing = to_bool(config.get("skip_existing"), False)
+        analyze = to_bool(config.get("analyze"), False)
+        dry_run = to_bool(config.get("dry_run"), False)
+        validate_count = to_bool(config.get("validate_count"), False)
 
         no_ownership = config.get("no_ownership")
         if no_ownership is None:
@@ -730,6 +749,14 @@ def run_gpcopy_job(job_id):
                 or dest_connection.get("login")
                 or "gpadmin"
         )
+
+        include_tables = config.get("include_tables")
+        dest_tables = config.get("dest_tables")
+
+        if mode == "date_filter":
+            include_tables_file = None
+        else:
+            include_tables_file = include_file
 
         cmd = build_gpcopy_command(
             gpcopy_path=gpcopy_path,
@@ -862,7 +889,10 @@ def get_gpcopy_date_columns(connection_id, schema_name, table_name):
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
-    from db import get_connection_by_id
+    try:
+        from connections import get_connection_by_id
+    except ImportError:
+        from modules.connections import get_connection_by_id
 
     cfg = get_connection_by_id(int(connection_id))
 
