@@ -14,7 +14,11 @@ def now_str():
 
 
 def create_job(job_type, connection_id, config):
-    total_items = len(config.get("tables", []))
+    if config is None:
+        config = {}
+
+    tables = config.get("tables") or []
+    total_items = len(tables)
 
     with sqlite_cursor(commit=True) as cur:
         cur.execute(
@@ -45,7 +49,24 @@ def create_job(job_type, connection_id, config):
 
         job_id = cur.lastrowid
 
-        for item in config.get("tables", []):
+        item_action = (
+            config.get("action")
+            or config.get("item_action")
+            or job_type
+        )
+
+        item_action = str(item_action).upper().strip()
+
+        for item in tables:
+            if isinstance(item, dict):
+                schema_name = item.get("schema") or item.get("schema_name")
+                table_name = item.get("table") or item.get("table_name")
+            else:
+                continue
+
+            if not schema_name or not table_name:
+                continue
+
             cur.execute(
                 """
                 INSERT INTO job_items (
@@ -59,9 +80,9 @@ def create_job(job_type, connection_id, config):
                 """,
                 (
                     job_id,
-                    item.get("schema"),
-                    item.get("table"),
-                    job_type,
+                    schema_name,
+                    table_name,
+                    item_action,
                     "queued",
                 ),
             )
@@ -593,3 +614,128 @@ def create_job_items(job_id, items):
             ),
         )
 
+# ============================================================
+# Compatibility helpers
+# Нужны для старых/новых модулей: vacuum_analyze.py, gpcopy.py
+# ============================================================
+
+def update_job_status(job_id, status, error_message=None, log_file=None):
+    """
+    Универсальное обновление статуса job.
+    Поддерживает старый стиль вызова из модулей:
+        update_job_status(job_id, "running")
+        update_job_status(job_id, "failed", "error text")
+        update_job_status(job_id, "done")
+    """
+
+    status = str(status).lower()
+
+    if status == "running":
+        return mark_job_running(job_id)
+
+    if status == "done":
+        return mark_job_done(job_id)
+
+    if status == "failed":
+        return mark_job_failed(job_id, error_message or "")
+
+    if status == "cancelled":
+        return mark_job_cancelled(job_id)
+
+    if status == "stopping":
+        return set_stop_flag(job_id)
+
+    # fallback для interrupted / queued / любых других статусов
+    with sqlite_cursor(commit=True) as cur:
+        if status in ("done", "failed", "cancelled", "interrupted"):
+            cur.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    finished_at = ?,
+                    error_message = COALESCE(?, error_message),
+                    log_file = COALESCE(?, log_file)
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    now_str(),
+                    str(error_message) if error_message else None,
+                    log_file,
+                    job_id,
+                ),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    error_message = COALESCE(?, error_message),
+                    log_file = COALESCE(?, log_file)
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    str(error_message) if error_message else None,
+                    log_file,
+                    job_id,
+                ),
+            )
+
+    refresh_job_progress(job_id)
+
+
+def request_stop_job(job_id):
+    """
+    Старое имя функции для остановки job.
+    Используется в app.py / модулях.
+    """
+    return set_stop_flag(job_id)
+
+
+def update_job_item_status(item_id, status, error_message=None, worker_id=None):
+    """
+    Универсальное обновление статуса job_items.
+    Нужно, если модуль gpcopy.py вызывает update_job_item_status().
+    """
+
+    status = str(status).lower()
+
+    if status == "running":
+        return mark_item_running(item_id, worker_id=worker_id)
+
+    if status == "done":
+        return mark_item_done(item_id)
+
+    if status == "failed":
+        return mark_item_failed(item_id, error_message or "")
+
+    if status == "skipped":
+        return mark_item_skipped(item_id, error_message or "Skipped")
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            UPDATE job_items
+            SET status = ?,
+                finished_at = ?,
+                error_message = COALESCE(?, error_message)
+            WHERE id = ?
+            """,
+            (
+                status,
+                now_str(),
+                str(error_message) if error_message else None,
+                item_id,
+            ),
+        )
+
+
+def get_job_status(job_id):
+    """
+    Возвращает только статус job.
+    """
+    job = get_job(job_id)
+    if not job:
+        return None
+    return job.get("status")

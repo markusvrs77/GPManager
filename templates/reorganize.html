@@ -65,13 +65,17 @@
 		    <div class="fw-bold">
 		        Skew detected tables
 		    </div>
-		    <button
-		        type="button"
-		        class="btn btn-sm btn-outline-secondary"
-		        onclick="selectAllSkewTables()"
-		    >
-		        Select all
-		    </button>
+		    <div class="form-check">
+                <input
+                    class="form-check-input"
+                    type="checkbox"
+                    id="problemSkewSelectAll"
+                    onchange="toggleAllProblemSkewTables(this.checked)"
+                >
+                <label class="form-check-label small" for="problemSkewSelectAll">
+                    Select all
+                </label>
+            </div>
 		</div>
 
 		<div class="small text-muted mb-2">
@@ -83,13 +87,12 @@
 		        {% for r in problem_skew_results %}
 		        <div class="form-check small skew-problem-row">
 		            <input
-		                class="form-check-input table-checkbox skew-problem-checkbox"
-		                type="checkbox"
-		                value="{{ r.schema_name }}.{{ r.table_name }}"
-		                data-schema="{{ r.schema_name }}"
-		                data-table="{{ r.table_name }}"
-		                id="skew_problem_{{ r.id }}"
-		            >
+                        type="checkbox"
+                        class="form-check-input problem-skew-checkbox"
+                        data-schema="{{ r.schema_name }}"
+                        data-table="{{ r.table_name }}"
+                        onchange="syncProblemSkewSelectAll()"
+                    >
 
 		            <label class="form-check-label w-100" for="skew_problem_{{ r.id }}">
 		                <div class="d-flex justify-content-between gap-2">

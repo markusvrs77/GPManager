@@ -252,3 +252,157 @@ body {
     color: #495057;
     margin-top: 6px;
 }
+.problem-skew-box {
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.object-tree-box {
+    max-height: 430px;
+    overflow: auto;
+    background: #fff;
+}
+
+.gpcopy-schema-block {
+    margin-bottom: 4px;
+}
+
+.gpcopy-schema-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 2px;
+    font-weight: 600;
+}
+
+.gpcopy-schema-toggle {
+    border: 0;
+    background: transparent;
+    padding: 0 2px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.gpcopy-schema-title {
+    cursor: pointer;
+}
+
+.gpcopy-schema-tables {
+    margin-left: 26px;
+    padding-left: 10px;
+    border-left: 1px dashed #cbd5e1;
+}
+
+.gpcopy-table-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 2px;
+    white-space: nowrap;
+}
+
+.gpcopy-table-name {
+    font-size: 14px;
+}
+
+.job-items-scroll {
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.job-items-scroll {
+    max-height: 360px;
+    overflow-y: auto;
+}
+
+.gpcopy-layout {
+    display: grid;
+    grid-template-columns: 420px minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+}
+
+.gpcopy-left,
+.gpcopy-right {
+    min-width: 0;
+}
+
+.gpcopy-run-grid {
+    display: grid;
+    grid-template-columns: 1fr 120px 180px;
+    gap: 10px;
+    align-items: end;
+}
+
+.gpcopy-options-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(140px, 1fr));
+    gap: 8px 14px;
+    margin-top: 10px;
+}
+
+.gpcopy-target-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+@media (max-width: 1200px) {
+    .gpcopy-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .gpcopy-run-grid,
+    .gpcopy-target-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .gpcopy-options-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+.gpcopy-layout {
+    display: grid;
+    grid-template-columns: 420px minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+}
+
+.gpcopy-left,
+.gpcopy-right {
+    min-width: 0;
+}
+
+.gpcopy-run-grid {
+    display: grid;
+    grid-template-columns: minmax(300px, 1fr) 120px 180px;
+    gap: 12px;
+    align-items: end;
+}
+
+.gpcopy-target-grid {
+    display: grid;
+    grid-template-columns: minmax(300px, 1fr) 260px;
+    gap: 12px;
+}
+
+.gpcopy-options-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(140px, 1fr));
+    gap: 8px 16px;
+    margin-top: 12px;
+}
+
+@media (max-width: 1200px) {
+    .gpcopy-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .gpcopy-run-grid,
+    .gpcopy-target-grid,
+    .gpcopy-options-grid {
+        grid-template-columns: 1fr;
+    }
+}

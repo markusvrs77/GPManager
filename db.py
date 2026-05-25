@@ -9,7 +9,6 @@ def get_sqlite_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-
 @contextmanager
 def sqlite_cursor(commit=False):
     conn = get_sqlite_connection()

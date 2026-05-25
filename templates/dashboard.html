@@ -1,0 +1,543 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="container-fluid py-4">
+
+    <div class="mb-4">
+        <h2 class="mb-1">Dashboard</h2>
+        <div class="text-muted">
+            Greenplum Reorganize Center overview
+        </div>
+    </div>
+
+    <div class="row g-3 mb-4">
+
+        <div class="col-md-3">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <div class="text-muted small">Total skew tables</div>
+                    <h3 class="mb-0">{{ skew_summary.total }}</h3>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-3">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <div class="text-muted small">Max skew</div>
+                    <h3 class="mb-0 text-danger">{{ skew_summary.max_skew }}</h3>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-3">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <div class="text-muted small">Avg skew</div>
+                    <h3 class="mb-0 text-primary">{{ skew_summary.avg_skew }}</h3>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-3">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <div class="text-muted small">Last skew job</div>
+
+                    {% if latest_skew_job %}
+                        <h5 class="mb-0">
+                            #{{ latest_skew_job.id }} {{ latest_skew_job.status }}
+                        </h5>
+                    {% else %}
+                        <h5 class="mb-0 text-muted">No job</h5>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="card shadow-sm mb-4">
+        <div class="card-header fw-bold">
+            Current skew result
+        </div>
+
+        <div class="card-body">
+
+            {% if last_results %}
+
+            <div class="row g-3">
+
+                <div class="col-lg-3">
+                    <div class="card h-100 border-0 bg-light">
+                        <div class="card-body">
+                            <h6 class="fw-bold mb-3">Skew summary</h6>
+
+                            <div class="text-muted small">Total tables</div>
+                            <h3>{{ skew_summary.total }}</h3>
+
+                            <hr>
+
+                            <div class="mb-2">
+                                OK:
+                                <strong class="text-success">{{ skew_summary.ok }}</strong>
+                            </div>
+
+                            <div class="mb-2">
+                                WARNING:
+                                <strong class="text-warning">{{ skew_summary.warning }}</strong>
+                            </div>
+
+                            <div class="mb-2">
+                                CRITICAL:
+                                <strong class="text-danger">{{ skew_summary.critical }}</strong>
+                            </div>
+
+                            <div class="mb-2">
+                                EMPTY:
+                                <strong class="text-secondary">{{ skew_summary.empty }}</strong>
+                            </div>
+
+                            <div class="mb-2">
+                                FAILED:
+                                <strong class="text-dark">{{ skew_summary.failed }}</strong>
+                            </div>
+
+                            <div>
+                                INTERRUPTED:
+                                <strong class="text-muted">{{ skew_summary.interrupted }}</strong>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-lg-5">
+                    <div class="card h-100 border-0 bg-light">
+                        <div class="card-body">
+                            <h6 class="fw-bold mb-3">Skew ratio by table</h6>
+                            <div class="dashboard-chart-box">
+                                <canvas id="dashboardSkewBarChart"></canvas>
+                            </div>
+                            <div class="small text-muted mt-2">
+                                Показываются top 20 таблиц по skew_ratio.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-lg-4">
+                    <div class="card h-100 border-0 bg-light">
+                        <div class="card-body">
+                            <h6 class="fw-bold mb-3">Status distribution</h6>
+                            <div class="dashboard-donut-box">
+                                <canvas id="dashboardSkewStatusChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            {% else %}
+
+            <div class="alert alert-info mb-0">
+                Пока нет результатов Skew Analysis.
+            </div>
+
+            {% endif %}
+
+        </div>
+    </div>
+
+    <div class="card mt-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <b>Session limits / Connections usage</b>
+
+            <div class="d-flex gap-2 align-items-center">
+                <select id="dashboardConnectionId" class="form-select form-select-sm" style="min-width: 280px;">
+                    <option value="">Выбери connection</option>
+                    {% for c in connections %}
+                        <option value="{{ c.id }}">
+                            {{ c.name }} / {{ c.host }} / {{ c.database_name or c.database or c.dbname or '' }}
+                        </option>
+                    {% endfor %}
+                </select>
+
+                <button type="button" class="btn btn-sm btn-outline-primary" onclick="loadSessionLimitsStats()">
+                    Refresh
+                </button>
+            </div>
+        </div>
+
+        <div class="card-body">
+            <div id="sessionLimitsMessage" class="alert alert-warning">
+                Выбери connection на Dashboard.
+            </div>
+
+            <div class="row text-center mb-3">
+                <div class="col">
+                    <div class="small text-muted">Nodes</div>
+                    <b id="sessionNodes">0</b>
+                </div>
+                <div class="col">
+                    <div class="small text-muted">Total</div>
+                    <b id="sessionTotal">0</b>
+                </div>
+                <div class="col">
+                    <div class="small text-muted">Active</div>
+                    <b id="sessionActive" class="text-primary">0</b>
+                </div>
+                <div class="col">
+                    <div class="small text-muted">Idle</div>
+                    <b id="sessionIdle" class="text-secondary">0</b>
+                </div>
+                <div class="col">
+                    <div class="small text-muted">Idle in transaction</div>
+                    <b id="sessionIdleTxn" class="text-danger">0</b>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table table-sm table-bordered align-middle">
+                    <thead>
+                        <tr>
+                            <th>Node</th>
+                            <th>Segment</th>
+                            <th>Hostname</th>
+                            <th>Address</th>
+                            <th>Port</th>
+                            <th>Total</th>
+                            <th>Active</th>
+                            <th>Idle</th>
+                            <th>Idle txn</th>
+                            <th>Max conn</th>
+                            <th>Reserved</th>
+                            <th>Free</th>
+                            <th>Used %</th>
+                        </tr>
+                    </thead>
+                    <tbody id="sessionLimitsBody">
+                        <tr>
+                            <td colspan="13" class="text-muted">Пока нет данных.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+const dashboardSkewResults = {{ last_results|tojson }};
+
+let dashboardSkewBarChart = null;
+let dashboardSkewStatusChart = null;
+
+function renderDashboardSkewCharts() {
+    if (!dashboardSkewResults || dashboardSkewResults.length === 0) {
+        return;
+    }
+
+    if (typeof Chart === "undefined") {
+        console.error("Chart.js is not loaded");
+        return;
+    }
+
+    const sorted = [...dashboardSkewResults]
+        .sort((a, b) => Number(b.skew_ratio || 0) - Number(a.skew_ratio || 0))
+        .slice(0, 20);
+
+    const barCanvas = document.getElementById("dashboardSkewBarChart");
+    const statusCanvas = document.getElementById("dashboardSkewStatusChart");
+
+    if (barCanvas) {
+        if (dashboardSkewBarChart) {
+            dashboardSkewBarChart.destroy();
+        }
+
+        dashboardSkewBarChart = new Chart(barCanvas, {
+            type: "bar",
+            data: {
+                labels: sorted.map(r => `${r.schema_name}.${r.table_name}`),
+                datasets: [{
+                    label: "skew_ratio",
+                    data: sorted.map(r => Number(r.skew_ratio || 0))
+                }]
+            },
+            options: {
+                indexAxis: "y",
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: false
+                    }
+                },
+                scales: {
+                    x: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+    }
+
+    const statusCounts = {
+        OK: 0,
+        WARNING: 0,
+        CRITICAL: 0,
+        EMPTY: 0,
+        FAILED: 0,
+        INTERRUPTED: 0
+    };
+
+    dashboardSkewResults.forEach(r => {
+        const status = String(r.status || "").toUpperCase();
+
+        if (statusCounts[status] !== undefined) {
+            statusCounts[status] += 1;
+        }
+    });
+
+    if (statusCanvas) {
+        if (dashboardSkewStatusChart) {
+            dashboardSkewStatusChart.destroy();
+        }
+
+        dashboardSkewStatusChart = new Chart(statusCanvas, {
+            type: "doughnut",
+            data: {
+                labels: Object.keys(statusCounts),
+                datasets: [{
+                    data: Object.values(statusCounts)
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false
+            }
+        });
+    }
+}
+
+document.addEventListener("DOMContentLoaded", renderDashboardSkewCharts);
+
+function getDashboardConnectionId() {
+    const el =
+        document.getElementById("connectionId") ||
+        document.getElementById("dashboardConnectionId") ||
+        document.getElementById("connection_id");
+
+    if (!el) {
+        return null;
+    }
+
+    return el.value;
+}
+
+function sessionLimitBadge(value) {
+    const percent = Number(value || 0);
+
+    if (percent >= 90) {
+        return `<span class="badge bg-danger">${percent}%</span>`;
+    }
+
+    if (percent >= 75) {
+        return `<span class="badge bg-warning text-dark">${percent}%</span>`;
+    }
+
+    return `<span class="badge bg-success">${percent}%</span>`;
+}
+
+async function loadSessionLimitsStats() {
+    const connectionId = getDashboardConnectionId();
+
+    const messageBox = document.getElementById("sessionLimitsMessage");
+    const tbody = document.getElementById("sessionLimitsTableBody");
+
+    if (!connectionId) {
+        messageBox.className = "alert alert-warning mb-3";
+        messageBox.textContent = "Выбери connection на Dashboard.";
+        return;
+    }
+
+    messageBox.className = "alert alert-info mb-3";
+    messageBox.textContent = "Загружаю статистику сессий...";
+
+    tbody.innerHTML = `
+        <tr>
+            <td colspan="13" class="text-muted">Loading...</td>
+        </tr>
+    `;
+
+    try {
+        const response = await fetch(`/api/dashboard/session-limits?connection_id=${encodeURIComponent(connectionId)}`);
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+            throw new Error(data.message || "Failed to load session limits");
+        }
+
+        document.getElementById("slNodes").textContent = data.summary.nodes;
+        document.getElementById("slTotal").textContent = data.summary.total_sessions;
+        document.getElementById("slActive").textContent = data.summary.active_sessions;
+        document.getElementById("slIdle").textContent = data.summary.idle_sessions;
+        document.getElementById("slIdleTxn").textContent = data.summary.idle_in_transaction_sessions;
+
+        if (!data.rows || data.rows.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="13" class="text-muted">Нет данных.</td>
+                </tr>
+            `;
+        } else {
+            tbody.innerHTML = data.rows.map(row => {
+                const nodeClass =
+                    row.node_type === "MASTER/COORDINATOR"
+                        ? "table-primary"
+                        : "";
+
+                return `
+                    <tr class="${nodeClass}">
+                        <td>${row.node_type || ""}</td>
+                        <td>${row.segment_id}</td>
+                        <td>${row.hostname || ""}</td>
+                        <td>${row.address || ""}</td>
+                        <td>${row.port || ""}</td>
+                        <td><strong>${row.total_sessions}</strong></td>
+                        <td class="text-primary fw-bold">${row.active_sessions}</td>
+                        <td>${row.idle_sessions}</td>
+                        <td class="text-danger fw-bold">${row.idle_in_transaction_sessions}</td>
+                        <td>${row.max_connections}</td>
+                        <td>${row.superuser_reserved_connections}</td>
+                        <td>${row.free_connections}</td>
+                        <td>${sessionLimitBadge(row.used_percent)}</td>
+                    </tr>
+                `;
+            }).join("");
+        }
+
+        messageBox.className = "alert alert-success mb-3";
+        messageBox.textContent = "Session limits loaded.";
+
+    } catch (err) {
+        messageBox.className = "alert alert-danger mb-3";
+        messageBox.textContent = err.message;
+
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="13" class="text-danger">${err.message}</td>
+            </tr>
+        `;
+    }
+}
+
+
+function setSessionMessage(message, type = "warning") {
+    const box = document.getElementById("sessionLimitsMessage");
+    if (!box) return;
+
+    box.className = `alert alert-${type}`;
+    box.textContent = message;
+}
+
+function renderSessionLimits(data) {
+    const summary = data.summary || {};
+    const rows = data.rows || [];
+
+    document.getElementById("sessionNodes").textContent = summary.nodes || 0;
+    document.getElementById("sessionTotal").textContent = summary.total_sessions || 0;
+    document.getElementById("sessionActive").textContent = summary.active_sessions || 0;
+    document.getElementById("sessionIdle").textContent = summary.idle_sessions || 0;
+    document.getElementById("sessionIdleTxn").textContent = summary.idle_in_transaction_sessions || 0;
+
+    const body = document.getElementById("sessionLimitsBody");
+
+    if (!rows.length) {
+        body.innerHTML = `
+            <tr>
+                <td colspan="13" class="text-muted">Нет данных.</td>
+            </tr>
+        `;
+        return;
+    }
+
+    body.innerHTML = rows.map(row => {
+        const used = Number(row.used_percent || 0);
+        let usedClass = "text-success";
+
+        if (used >= 80) {
+            usedClass = "text-danger fw-bold";
+        } else if (used >= 60) {
+            usedClass = "text-warning fw-bold";
+        }
+
+        return `
+            <tr>
+                <td>${row.node_type || ""}</td>
+                <td>${row.segment_id ?? ""}</td>
+                <td>${row.hostname || ""}</td>
+                <td>${row.address || ""}</td>
+                <td>${row.port || ""}</td>
+                <td><b>${row.total_sessions || 0}</b></td>
+                <td class="text-primary"><b>${row.active_sessions || 0}</b></td>
+                <td>${row.idle_sessions || 0}</td>
+                <td class="text-danger"><b>${row.idle_in_transaction_sessions || 0}</b></td>
+                <td>${row.max_connections || 0}</td>
+                <td>${row.superuser_reserved_connections || 0}</td>
+                <td>${row.free_connections || 0}</td>
+                <td class="${usedClass}">${used.toFixed(2)}%</td>
+            </tr>
+        `;
+    }).join("");
+}
+
+async function loadSessionLimitsStats() {
+    const select = document.getElementById("dashboardConnectionId");
+
+    if (!select || !select.value) {
+        setSessionMessage("Выбери connection на Dashboard.", "warning");
+        return;
+    }
+
+    const connectionId = select.value;
+
+    setSessionMessage("Загружаю статистику сессий...", "info");
+
+    try {
+        const response = await fetch(`/api/dashboard/session-limits?connection_id=${encodeURIComponent(connectionId)}`);
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+            setSessionMessage(data.message || "Ошибка загрузки статистики сессий.", "danger");
+            return;
+        }
+
+        renderSessionLimits(data);
+        setSessionMessage("Статистика сессий загружена.", "success");
+
+    } catch (e) {
+        setSessionMessage(e.message || String(e), "danger");
+    }
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+    const select = document.getElementById("dashboardConnectionId");
+
+    if (select) {
+        select.addEventListener("change", function () {
+            if (this.value) {
+                loadSessionLimitsStats();
+            }
+        });
+
+        if (select.value) {
+            loadSessionLimitsStats();
+        }
+    }
+});
+</script>
+
+{% endblock %}

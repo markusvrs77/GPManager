@@ -8,15 +8,15 @@ from modules.connections import (
     delete_connection,
     test_gp_connection,
 )
+from modules.vacuum_analyze import run_vacuum_analyze_job
 from job_manager import (
     create_job,
     create_job_items,
     get_job,
     get_job_items,
     get_latest_job,
-    set_stop_flag,
-    #run_background_job,
     mark_interrupted_jobs_on_startup,
+    set_stop_flag,
 )
 from modules.skew_analyzer import (
     analyze_tables_skew,
@@ -36,15 +36,34 @@ from modules.reorganize import (
     apply_distribution_and_reorganize,
 )
 
+
+from modules.gpcopy import (
+    run_gpcopy_job,
+    build_gpcopy_date_include_json_preview,
+    get_date_columns_for_table,
+)
+
+from modules.dashboard import get_session_limits_stats
+
+
 app = Flask(__name__)
 
 
 @app.route("/")
-def index():
+@app.route("/dashboard")
+def dashboard_page():
     connections = list_connections()
+    last_results = get_last_skew_results(limit=1000)
+    latest_skew_job = get_latest_job("skew")
+
+    skew_summary = build_skew_dashboard_summary(last_results)
+
     return render_template(
-        "index.html",
+        "dashboard.html",
         connections=connections,
+        last_results=last_results,
+        latest_skew_job=latest_skew_job,
+        skew_summary=skew_summary,
     )
 
 
@@ -133,14 +152,7 @@ def api_objects_tree():
 
 @app.route("/skew")
 def skew_page():
-    connections = list_connections()
-    last_results  = get_last_skew_results(limit=1000)
-
-    return render_template(
-        "skew.html",
-        connections=connections,
-        last_results =last_results ,
-    )
+    return redirect(url_for("maintenance_page"))
 
 
 @app.route("/api/skew/analyze", methods=["POST"])
@@ -224,7 +236,25 @@ def api_skew_start_job():
 
     try:
         config = {
+            "source_connection_id": source_connection_id,
+            "dest_connection_id": dest_connection_id,
             "tables": tables,
+
+            "gpcopy_path": gpcopy_path,
+            "jobs": jobs,
+            "on_segment_threshold": on_segment_threshold,
+
+            "target_schema": target_schema,
+            "target_mode": target_mode,
+
+            "truncate": truncate,
+            "drop": drop,
+            "append": append,
+            "skip_existing": skip_existing,
+            "analyze": analyze,
+            "dry_run": dry_run,
+            "validate_count": validate_count,
+            "extra_args": extra_args,
         }
 
         job_id = create_job(
@@ -275,6 +305,49 @@ def api_get_job(job_id):
         }
     )
 
+@app.route("/api/jobs/<int:job_id>/status")
+def api_job_status(job_id):
+    job = get_job(job_id)
+
+    if not job:
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Job not found",
+            }
+        ), 404
+
+    items = get_job_items(job_id)
+
+    total = len(items)
+    done = len([i for i in items if i.get("status") == "done"])
+    failed = len([i for i in items if i.get("status") == "failed"])
+    skipped = len([i for i in items if i.get("status") == "skipped"])
+    running = len([i for i in items if i.get("status") == "running"])
+
+    finished = done + failed + skipped
+
+    percent = 0
+
+    if total > 0:
+        percent = round((finished * 100.0) / total, 2)
+
+    return jsonify(
+        {
+            "ok": True,
+            "job": job,
+            "items": items,
+            "summary": {
+                "total": total,
+                "done": done,
+                "failed": failed,
+                "skipped": skipped,
+                "running": running,
+                "finished": finished,
+                "percent": percent,
+            },
+        }
+    )
 
 @app.route("/api/jobs/<int:job_id>/items")
 def api_get_job_items(job_id):
@@ -288,12 +361,27 @@ def api_get_job_items(job_id):
 
 @app.route("/api/jobs/<int:job_id>/stop", methods=["POST"])
 def api_stop_job(job_id):
-    set_stop_flag(job_id)
+    job = get_job(job_id)
+
+    if not job:
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Job not found",
+            }
+        ), 404
+
+    update_job_status(
+        job_id=job_id,
+        status="stopping",
+        error_message="Stop requested by user",
+    )
 
     return jsonify(
         {
             "ok": True,
             "message": "Stop requested",
+            "job_id": job_id,
         }
     )
 
@@ -384,14 +472,7 @@ def api_get_skew_result_segments(result_id):
 
 @app.route("/reorganize")
 def reorganize_page():
-    connections = list_connections()
-    problem_skew_results = get_latest_problem_skew_results(limit=500)
-
-    return render_template(
-        "reorganize.html",
-        connections=connections,
-        problem_skew_results=problem_skew_results,
-    )
+    return redirect(url_for("maintenance_page"))
 
 
 @app.route("/api/reorganize/start", methods=["POST"])
@@ -587,6 +668,619 @@ def api_reorganize_apply_distribution():
                 "message": str(e),
             }
         ), 500
+
+@app.route("/maintenance")
+def maintenance_page():
+    connections = list_connections()
+
+    last_results = get_last_skew_results(limit=1000)
+    problem_skew_results = get_latest_problem_skew_results(limit=500)
+
+    latest_skew_job = get_latest_job("skew")
+    latest_reorganize_job = get_latest_job("reorganize")
+
+    return render_template(
+        "maintenance.html",
+        connections=connections,
+        last_results=last_results,
+        problem_skew_results=problem_skew_results,
+        latest_skew_job=latest_skew_job,
+        latest_reorganize_job=latest_reorganize_job,
+    )
+
+def build_skew_dashboard_summary(results):
+    summary = {
+        "total": 0,
+        "ok": 0,
+        "warning": 0,
+        "critical": 0,
+        "empty": 0,
+        "failed": 0,
+        "interrupted": 0,
+        "max_skew": 0,
+        "avg_skew": 0,
+    }
+
+    if not results:
+        return summary
+
+    total_skew = 0
+
+    for r in results:
+        summary["total"] += 1
+
+        status = str(r.get("status") or "").upper()
+
+        if status == "OK":
+            summary["ok"] += 1
+        elif status == "WARNING":
+            summary["warning"] += 1
+        elif status == "CRITICAL":
+            summary["critical"] += 1
+        elif status == "EMPTY":
+            summary["empty"] += 1
+        elif status == "FAILED":
+            summary["failed"] += 1
+        elif status == "INTERRUPTED":
+            summary["interrupted"] += 1
+
+        skew = float(r.get("skew_ratio") or 0)
+        total_skew += skew
+
+        if skew > summary["max_skew"]:
+            summary["max_skew"] = skew
+
+    summary["avg_skew"] = round(total_skew / summary["total"], 4)
+
+    return summary
+
+@app.route("/vacuum")
+def vacuum_page():
+    connections = list_connections()
+
+    latest_vacuum_job = get_latest_job("vacuum_analyze")
+
+    return render_template(
+        "vacuum.html",
+        connections=connections,
+        latest_vacuum_job=latest_vacuum_job,
+    )
+
+@app.route("/api/vacuum/start", methods=["POST"])
+def api_vacuum_start():
+    data = request.get_json(silent=True) or {}
+
+    connection_id = data.get("connection_id")
+    selected_tables = data.get("tables") or []
+    action = data.get("action") or "VACUUM_ANALYZE"
+
+    if not connection_id:
+        return jsonify(
+            {
+                "ok": False,
+                "message": "connection_id is required",
+            }
+        ), 400
+
+    if not selected_tables:
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Не выбраны таблицы",
+            }
+        ), 400
+
+    allowed_actions = [
+        "VACUUM",
+        "VACUUM_FULL",
+        "ANALYZE",
+        "VACUUM_ANALYZE",
+        "VACUUM_FREEZE",
+    ]
+
+    action = str(action).upper().strip()
+
+    if action not in allowed_actions:
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Unknown action: {}".format(action),
+            }
+        ), 400
+
+    try:
+        unique_tables = []
+        seen = set()
+
+        for item in selected_tables:
+            schema_name = None
+            table_name = None
+
+            if isinstance(item, dict):
+                schema_name = item.get("schema") or item.get("schema_name")
+                table_name = item.get("table") or item.get("table_name")
+
+            elif isinstance(item, str):
+                value = item.strip()
+
+                if "." in value:
+                    parts = value.split(".", 1)
+                    schema_name = parts[0].strip().strip('"')
+                    table_name = parts[1].strip().strip('"')
+
+            if not schema_name or not table_name:
+                continue
+
+            key = "{}.{}".format(schema_name, table_name)
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            unique_tables.append(
+                {
+                    "schema": schema_name,
+                    "table": table_name,
+                }
+            )
+
+        if not unique_tables:
+            return jsonify(
+                {
+                    "ok": False,
+                    "message": "Нет корректных таблиц для запуска",
+                }
+            ), 400
+
+        job_id = create_job(
+            job_type="vacuum_analyze",
+            connection_id=int(connection_id),
+            config={
+                "source": "web",
+                "action": action,
+                "tables": unique_tables,
+            },
+        )
+
+        threading.Thread(
+            target=run_vacuum_analyze_job,
+            args=(job_id,),
+            daemon=True,
+        ).start()
+
+        return jsonify(
+            {
+                "ok": True,
+                "job_id": job_id,
+                "total_items": len(unique_tables),
+                "action": action,
+            }
+        )
+
+    except Exception as e:
+        return jsonify(
+            {
+                "ok": False,
+                "message": str(e),
+            }
+        ), 500
+
+
+def update_job_status(job_id, status, error_message=None):
+    with sqlite_cursor(commit=True) as cur:
+        if error_message is not None:
+            cur.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    error_message = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    str(error_message),
+                    job_id,
+                ),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE jobs
+                SET status = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    job_id,
+                ),
+            )
+
+
+@app.route("/gpcopy")
+def gpcopy_page():
+    connections = list_connections()
+
+    return render_template(
+        "gpcopy.html",
+        connections=connections,
+    )
+
+
+@app.route("/api/gpcopy/start", methods=["POST"])
+def api_gpcopy_start():
+    data = request.get_json(silent=True) or {}
+
+    source_connection_id = data.get("source_connection_id")
+    dest_connection_id = data.get("dest_connection_id")
+    selected_tables = data.get("tables") or []
+
+    gpcopy_path = data.get("gpcopy_path") or "/usr/local/gpdb/greenplum-db/bin/gpcopy"
+    jobs = data.get("jobs") or 4
+    on_segment_threshold = data.get("on_segment_threshold")
+    extra_args = data.get("extra_args") or ""
+
+    target_schema = data.get("target_schema") or ""
+    target_table_mode = data.get("target_table_mode") or "same"
+
+    truncate = bool(data.get("truncate"))
+    drop = bool(data.get("drop"))
+    append = bool(data.get("append"))
+    skip_existing = bool(data.get("skip_existing"))
+    analyze = bool(data.get("analyze"))
+    dry_run = bool(data.get("dry_run"))
+    validate_count = bool(data.get("validate_count"))
+
+    if not source_connection_id:
+        return jsonify({
+            "ok": False,
+            "message": "source_connection_id is required",
+        }), 400
+
+    if not dest_connection_id:
+        return jsonify({
+            "ok": False,
+            "message": "dest_connection_id is required",
+        }), 400
+
+    if not selected_tables:
+        return jsonify({
+            "ok": False,
+            "message": "Не выбраны таблицы",
+        }), 400
+
+    try:
+        source_connection_id = int(source_connection_id)
+        dest_connection_id = int(dest_connection_id)
+    except Exception:
+        return jsonify({
+            "ok": False,
+            "message": "connection_id должен быть числом",
+        }), 400
+
+    # ---------------------------------------------------------
+    # ВАЖНО:
+    # Убираем дубли выбранных таблиц.
+    # Иногда frontend отправляет одну и ту же таблицу 2 раза:
+    # например при выборе schema checkbox + table checkbox.
+    # ---------------------------------------------------------
+    unique_tables = []
+    seen = set()
+
+    for item in selected_tables:
+        # На случай если frontend отправил строку "schema.table"
+        if isinstance(item, str):
+            parts = item.split(".", 1)
+            if len(parts) != 2:
+                continue
+
+            schema_name = parts[0].strip()
+            table_name = parts[1].strip()
+        else:
+            schema_name = item.get("schema") or item.get("schema_name")
+            table_name = item.get("table") or item.get("table_name")
+
+        if not schema_name or not table_name:
+            continue
+
+        key = (schema_name, table_name)
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        unique_tables.append({
+            "schema": schema_name,
+            "table": table_name,
+        })
+
+    if not unique_tables:
+        return jsonify({
+            "ok": False,
+            "message": "После очистки дублей не осталось таблиц для gpcopy",
+        }), 400
+
+    try:
+        config = {
+            "source_connection_id": source_connection_id,
+            "dest_connection_id": dest_connection_id,
+            "selected_tables": selected_tables,
+            "expanded_tables": unique_tables,
+
+            "gpcopy_path": gpcopy_path,
+            "jobs": int(jobs),
+            "on_segment_threshold": on_segment_threshold,
+            "extra_args": extra_args,
+
+            "target_schema": target_schema,
+            "target_table_mode": target_table_mode,
+
+            "truncate": truncate,
+            "drop": drop,
+            "append": append,
+            "skip_existing": skip_existing,
+            "analyze": analyze,
+            "dry_run": dry_run,
+            "validate_count": validate_count,
+        }
+
+        job_id = create_job(
+            job_type="gpcopy",
+            connection_id=source_connection_id,
+            config=config,
+        )
+
+        create_job_items(
+            job_id=job_id,
+            items=[
+                {
+                    "schema_name": item["schema"],
+                    "table_name": item["table"],
+                    "action": "GPCOPY",
+                }
+                for item in unique_tables
+            ],
+        )
+
+        threading.Thread(
+            target=run_gpcopy_job,
+            args=(job_id,),
+            daemon=True,
+        ).start()
+
+        return jsonify({
+            "ok": True,
+            "job_id": job_id,
+            "total_items": len(unique_tables),
+            "message": "gpcopy job started",
+        })
+
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+        }), 500
+
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@app.route("/api/dashboard/session-limits")
+def api_dashboard_session_limits():
+    connection_id = request.args.get("connection_id", type=int)
+
+    if not connection_id:
+        return jsonify({
+            "ok": False,
+            "message": "connection_id is required",
+        }), 400
+
+    try:
+        data = get_session_limits_stats(connection_id)
+
+        return jsonify({
+            "ok": True,
+            "summary": data["summary"],
+            "rows": data["rows"],
+        })
+
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+        }), 500
+
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+        }), 500
+
+@app.route("/api/gpcopy/date-columns")
+def api_gpcopy_date_columns():
+    connection_id = request.args.get("connection_id", type=int)
+    schema_name = request.args.get("schema")
+    table_name = request.args.get("table")
+
+    if not connection_id:
+        return jsonify({
+            "ok": False,
+            "message": "connection_id обязателен",
+        }), 400
+
+    if not schema_name or not table_name:
+        return jsonify({
+            "ok": False,
+            "message": "schema и table обязательны",
+        }), 400
+
+    try:
+        columns = get_date_columns_for_table(
+            connection_id=connection_id,
+            schema_name=schema_name,
+            table_name=table_name,
+        )
+
+        return jsonify({
+            "ok": True,
+            "columns": columns,
+        })
+
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+        }), 500
+
+@app.route("/api/gpcopy/preview-date-json", methods=["POST"])
+def api_gpcopy_preview_date_json():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        include_json = build_gpcopy_date_include_json_preview(data)
+
+        return jsonify({
+            "ok": True,
+            "include_json": include_json,
+        })
+
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+        }), 400
+
+@app.route("/api/gpcopy/start-date", methods=["POST"])
+def api_gpcopy_start_date():
+    data = request.get_json(silent=True) or {}
+
+    source_connection_id = data.get("source_connection_id")
+    destination_connection_id = data.get("destination_connection_id")
+    selected_tables = data.get("selected_tables") or []
+
+    date_filter_column = (data.get("date_filter_column") or "").strip()
+    date_from = (data.get("date_from") or "").strip()
+    date_to = (data.get("date_to") or "").strip()
+    target_schema = (data.get("target_schema") or "").strip()
+
+    if not source_connection_id:
+        return jsonify({
+            "ok": False,
+            "message": "source_connection_id обязателен",
+        }), 400
+
+    if not destination_connection_id:
+        return jsonify({
+            "ok": False,
+            "message": "destination_connection_id обязателен",
+        }), 400
+
+    if not selected_tables:
+        return jsonify({
+            "ok": False,
+            "message": "Не выбраны таблицы",
+        }), 400
+
+    if not date_filter_column:
+        return jsonify({
+            "ok": False,
+            "message": "date_filter_column обязателен",
+        }), 400
+
+    if not date_from or not date_to:
+        return jsonify({
+            "ok": False,
+            "message": "date_from и date_to обязательны",
+        }), 400
+
+    unique_tables = []
+    seen = set()
+
+    for item in selected_tables:
+        schema_name = item.get("schema") or item.get("schema_name")
+        table_name = item.get("table") or item.get("table_name")
+
+        if not schema_name or not table_name:
+            continue
+
+        key = (schema_name, table_name)
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        unique_tables.append({
+            "schema": schema_name,
+            "table": table_name,
+        })
+
+    if not unique_tables:
+        return jsonify({
+            "ok": False,
+            "message": "После очистки списка нет таблиц для gpcopy",
+        }), 400
+
+    try:
+        config = {
+            "mode": "date_filter",
+            "source_connection_id": int(source_connection_id),
+            "dest_connection_id": int(destination_connection_id),
+            "destination_connection_id": int(destination_connection_id),
+
+            "selected_tables": unique_tables,
+            "target_schema": target_schema,
+
+            "date_filter_column": date_filter_column,
+            "date_from": date_from,
+            "date_to": date_to,
+
+            "append": True,
+            "no_ownership": True,
+            "jobs": 4,
+        }
+
+        job_id = create_job(
+            job_type="gpcopy",
+            connection_id=int(source_connection_id),
+            config=config,
+        )
+
+        action_name = "GPCOPY DATE {} [{} - {})".format(
+            date_filter_column,
+            date_from,
+            date_to,
+        )
+
+        create_job_items(
+            job_id=job_id,
+            items=[
+                {
+                    "schema_name": item["schema"],
+                    "table_name": item["table"],
+                    "action": action_name,
+                }
+                for item in unique_tables
+            ],
+        )
+
+        threading.Thread(
+            target=run_gpcopy_job,
+            args=(job_id,),
+            daemon=True,
+        ).start()
+
+        return jsonify({
+            "ok": True,
+            "job_id": job_id,
+            "total_items": len(unique_tables),
+        })
+
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+        }), 500
 
 
 if __name__ == "__main__":

@@ -789,3 +789,35 @@ function stopApplyDistributionAnimation(status, message) {
         `
     );
 }
+function toggleAllProblemSkewTables(checked) {
+    const checkboxes = document.querySelectorAll(".problem-skew-checkbox");
+
+    checkboxes.forEach(cb => {
+        cb.checked = checked;
+    });
+
+    if (typeof updateSelectedCount === "function") {
+        updateSelectedCount();
+    }
+}
+
+function syncProblemSkewSelectAll() {
+    const selectAll = document.getElementById("problemSkewSelectAll");
+    const checkboxes = Array.from(document.querySelectorAll(".problem-skew-checkbox"));
+
+    if (!selectAll || checkboxes.length === 0) {
+        return;
+    }
+
+    const checkedCount = checkboxes.filter(cb => cb.checked).length;
+
+    selectAll.checked = checkedCount === checkboxes.length;
+    selectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
+
+    if (typeof updateSelectedCount === "function") {
+        updateSelectedCount();
+    }
+}
+
+window.toggleAllProblemSkewTables = toggleAllProblemSkewTables;
+window.syncProblemSkewSelectAll = syncProblemSkewSelectAll;
