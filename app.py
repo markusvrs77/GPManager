@@ -8,6 +8,7 @@ from modules.connections import (
     delete_connection,
     test_gp_connection,
 )
+
 from modules.vacuum_analyze import run_vacuum_analyze_job
 from job_manager import (
     create_job,
@@ -1111,15 +1112,50 @@ def api_gpcopy_date_columns():
     if not schema_name or not table_name:
         return jsonify({
             "ok": False,
-            "message": "schema и table обязательны",
+            "message": "schema and table are required",
         }), 400
 
     try:
-        columns = get_date_columns_for_table(
-            connection_id=connection_id,
-            schema_name=schema_name,
-            table_name=table_name,
-        )
+        conn = open_gp_connection(connection_id)
+
+        sql = """
+            SELECT
+                column_name,
+                data_type,
+                udt_name
+            FROM information_schema.columns
+            WHERE table_schema = %s
+              AND table_name = %s
+              AND (
+                    data_type IN (
+                        'date',
+                        'timestamp without time zone',
+                        'timestamp with time zone'
+                    )
+                    OR udt_name IN ('date', 'timestamp', 'timestamptz')
+                    OR lower(column_name) LIKE '%%date%%'
+                    OR lower(column_name) LIKE '%%time%%'
+                    OR lower(column_name) LIKE '%%created%%'
+                    OR lower(column_name) LIKE '%%insert%%'
+                    OR lower(column_name) LIKE '%%change%%'
+              )
+            ORDER BY ordinal_position
+        """
+
+        with conn.cursor() as cur:
+            cur.execute(sql, (schema_name, table_name))
+            rows = cur.fetchall()
+
+        conn.close()
+
+        columns = []
+
+        for row in rows:
+            columns.append({
+                "column_name": row[0],
+                "data_type": row[1],
+                "udt_name": row[2],
+            })
 
         return jsonify({
             "ok": True,

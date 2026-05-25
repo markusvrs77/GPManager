@@ -827,19 +827,95 @@ function collectGpcopyDateTables() {
     return result;
 }
 
+function normalizeGpcopyDateForSql(value) {
+    if (!value) {
+        return "";
+    }
+
+    value = value.trim();
+
+    // Если уже формат YYYY-MM-DD HH:MI или YYYY-MM-DD HH:MI:SS
+    if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
+        if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/.test(value)) {
+            return value + ":00";
+        }
+        return value;
+    }
+
+    // Формат DD.MM.YYYY HH:MI
+    const m = value.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2})$/);
+
+    if (m) {
+        const dd = m[1];
+        const mm = m[2];
+        const yyyy = m[3];
+        const hh = m[4];
+        const mi = m[5];
+
+        return `${yyyy}-${mm}-${dd} ${hh}:${mi}:00`;
+    }
+
+    // Формат DD.MM.YYYY HH:MI:SS
+    const m2 = value.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/);
+
+    if (m2) {
+        const dd = m2[1];
+        const mm = m2[2];
+        const yyyy = m2[3];
+        const hh = m2[4];
+        const mi = m2[5];
+        const ss = m2[6];
+
+        return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+    }
+
+    return value;
+}
+
 function buildGpcopyDatePayload() {
     const ids = getGpcopyConnectionIds();
 
-    const dateFrom = getGpcopyDateFrom();
-    const dateTo = getGpcopyDateTo();
+    const dateFromRaw = getGpcopyDateFrom();
+    const dateToRaw = getGpcopyDateTo();
+
+    const dateFrom = normalizeGpcopyDateForSql(dateFromRaw);
+    const dateTo = normalizeGpcopyDateForSql(dateToRaw);
 
     const tables = collectGpcopyDateTables();
+
+    const tableConfigs = tables.map(function (table) {
+        const schemaName = table.schema || table.schema_name;
+        const tableName = table.table || table.table_name;
+        const sourceFullName = `${schemaName}.${tableName}`;
+
+        const target = table.target || sourceFullName;
+        const dateColumn = table.date_column;
+
+        return {
+            schema: schemaName,
+            table: tableName,
+            schema_name: schemaName,
+            table_name: tableName,
+
+            source: sourceFullName,
+            dest: target,
+            target: target,
+
+            date_column: dateColumn,
+
+            sql: `SELECT * FROM ${sourceFullName} WHERE ${dateColumn} >= '${dateFrom}' AND ${dateColumn} < '${dateTo}'`
+        };
+    });
 
     return {
         source_connection_id: ids.sourceConnectionId,
         dest_connection_id: ids.destConnectionId,
         destination_connection_id: ids.destConnectionId,
 
+        // важно: backend ждёт именно table_configs
+        table_configs: tableConfigs,
+
+        // оставляем совместимость
         selected_tables: tables,
         tables: tables,
 
@@ -872,7 +948,7 @@ function validateGpcopyDatePayload(payload) {
         return "Destination connection не выбран.";
     }
 
-    if (!payload.selected_tables || !payload.selected_tables.length) {
+    if (!payload.table_configs || !payload.table_configs.length) {
         return "Нет подготовленных таблиц. Нажми Prepare selected tables.";
     }
 
@@ -884,13 +960,17 @@ function validateGpcopyDatePayload(payload) {
         return "Укажи date to.";
     }
 
-    for (const table of payload.selected_tables) {
+    for (const table of payload.table_configs) {
         if (!table.date_column) {
             return `Для таблицы ${table.schema}.${table.table} не указана date column.`;
         }
 
-        if (!table.target) {
+        if (!table.dest && !table.target) {
             return `Для таблицы ${table.schema}.${table.table} не указан target.`;
+        }
+
+        if (!table.sql) {
+            return `Для таблицы ${table.schema}.${table.table} не сформировался SQL.`;
         }
     }
 
@@ -898,18 +978,11 @@ function validateGpcopyDatePayload(payload) {
 }
 
 function buildGpcopyJsonPreview(payload) {
-    const dateFrom = payload.date_from;
-    const dateTo = payload.date_to;
-
-    return payload.selected_tables.map(function (table) {
-        const source = `${table.schema}.${table.table}`;
-        const dest = table.target || source;
-        const dateColumn = table.date_column;
-
+    return payload.table_configs.map(function (table) {
         return {
-            source: source,
-            dest: dest,
-            sql: `SELECT * FROM ${source} WHERE ${dateColumn} >= '${dateFrom}' AND ${dateColumn} < '${dateTo}'`
+            source: table.source,
+            dest: table.dest || table.target,
+            sql: table.sql
         };
     });
 }
@@ -978,7 +1051,7 @@ async function startGpcopyByDateMulti() {
 
         gpcopySetDateStatus(`GPCOPY by date запущен. Job #${jobId}`, "success");
 
-        renderGpcopyItemsPreview(payload.selected_tables, payload.target_schema);
+        renderGpcopyItemsPreview(payload.table_configs, payload.target_schema);
         startGpcopyPolling(jobId);
 
     } catch (e) {
@@ -1029,7 +1102,7 @@ async function startGpcopyJob() {
             "success"
         );
 
-        renderGpcopyItemsPreview(payload.selected_tables, payload.target_schema);
+        renderGpcopyItemsPreview(payload.table_configs, payload.target_schema);
         startGpcopyPolling(gpcopyCurrentJobId);
 
     } catch (e) {
