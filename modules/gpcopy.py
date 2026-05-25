@@ -423,21 +423,19 @@ def build_gpcopy_command(
     dest_port=None,
     source_user=None,
     dest_user=None,
+    include_json_file=None,
+    include_tables_file=None,
+    include_tables=None,
+    dest_tables=None,
     jobs=4,
     on_segment_threshold=-1,
-    include_table_json=None,
-    include_table_file=None,
-    include_table=None,
-    dbname=None,
-    dest_dbname=None,
+    append=False,
     truncate=False,
     drop=False,
-    append=False,
     skip_existing=False,
+    no_ownership=True,
     analyze=False,
     dry_run=False,
-    validate_count=False,
-    no_ownership=True,
     extra_args=None,
 ):
     cmd = [
@@ -449,37 +447,57 @@ def build_gpcopy_command(
     ]
 
     if source_port:
-        cmd += ["--source-port", str(source_port)]
+        cmd.extend(["--source-port", str(source_port)])
 
     if dest_port:
-        cmd += ["--dest-port", str(dest_port)]
+        cmd.extend(["--dest-port", str(dest_port)])
 
-    if source_user:
-        cmd += ["--source-user", str(source_user)]
-
+    # В твоей версии gpcopy есть --dest-user, но source-user может отсутствовать.
+    # Поэтому source_user не добавляем, чтобы не получить unknown flag.
     if dest_user:
-        cmd += ["--dest-user", str(dest_user)]
+        cmd.extend(["--dest-user", str(dest_user)])
 
-    cmd += ["--jobs", str(jobs)]
-    cmd += ["--on-segment-threshold", str(on_segment_threshold)]
+    copy_mode_count = 0
 
-    # ВАЖНО:
-    # gpcopy требует только один из:
-    # --dbname / --full / --include-table / --include-table-file / --include-table-json
-    if include_table_json:
-        cmd += ["--include-table-json", include_table_json]
-    elif include_table_file:
-        cmd += ["--include-table-file", include_table_file]
-    elif include_table:
-        cmd += ["--include-table", include_table]
-    elif dbname:
-        cmd += ["--dbname", dbname]
-        if dest_dbname:
-            cmd += ["--dest-dbname", dest_dbname]
-    else:
-        raise ValueError(
-            "Нужно указать один режим копирования: dbname, include_table, include_table_file или include_table_json"
-        )
+    if include_json_file:
+        cmd.extend(["--include-table-json", str(include_json_file)])
+        copy_mode_count += 1
+
+    if include_tables_file:
+        cmd.extend(["--include-table-file", str(include_tables_file)])
+        copy_mode_count += 1
+
+    if include_tables:
+        if isinstance(include_tables, list):
+            include_tables_value = ",".join(include_tables)
+        else:
+            include_tables_value = str(include_tables)
+
+        cmd.extend(["--include-table", include_tables_value])
+        copy_mode_count += 1
+
+    if copy_mode_count == 0:
+        raise Exception("No gpcopy copy mode selected: include_json_file/include_tables_file/include_tables is empty")
+
+    if copy_mode_count > 1:
+        raise Exception("Only one gpcopy copy mode is allowed")
+
+    if dest_tables:
+        if isinstance(dest_tables, list):
+            dest_tables_value = ",".join(dest_tables)
+        else:
+            dest_tables_value = str(dest_tables)
+
+        cmd.extend(["--dest-table", dest_tables_value])
+
+    if jobs:
+        cmd.extend(["--jobs", str(jobs)])
+
+    if on_segment_threshold is not None:
+        cmd.extend(["--on-segment-threshold", str(on_segment_threshold)])
+
+    if append:
+        cmd.append("--append")
 
     if truncate:
         cmd.append("--truncate")
@@ -487,11 +505,11 @@ def build_gpcopy_command(
     if drop:
         cmd.append("--drop")
 
-    if append:
-        cmd.append("--append")
-
     if skip_existing:
         cmd.append("--skip-existing")
+
+    if no_ownership:
+        cmd.append("--no-ownership")
 
     if analyze:
         cmd.append("--analyze")
@@ -499,15 +517,11 @@ def build_gpcopy_command(
     if dry_run:
         cmd.append("--dry-run")
 
-    if validate_count:
-        cmd += ["--validate", "count"]
-
-    if no_ownership:
-        cmd.append("--no-ownership")
-
     if extra_args:
-        import shlex
-        cmd.extend(shlex.split(extra_args))
+        if isinstance(extra_args, list):
+            cmd.extend(extra_args)
+        else:
+            cmd.extend(str(extra_args).split())
 
     return cmd
 
@@ -683,21 +697,23 @@ def run_gpcopy_job(job_id):
             gpcopy_path=gpcopy_path,
             source_host=source_host,
             dest_host=dest_host,
-            source_db=source_db,
-            dest_db=dest_db,
+            source_port=source_port,
+            dest_port=dest_port,
+            source_user=source_user,
             dest_user=dest_user,
-            include_json_path=include_json_file,
-            include_table_file=include_file,
+            include_json_file=include_json_file,
+            include_tables_file=include_tables_file,
+            include_tables=include_tables,
+            dest_tables=dest_tables,
             jobs=jobs,
             on_segment_threshold=on_segment_threshold,
             append=append,
             truncate=truncate,
             drop=drop,
             skip_existing=skip_existing,
+            no_ownership=no_ownership,
             analyze=analyze,
             dry_run=dry_run,
-            validate_count=validate_count,
-            no_ownership=no_ownership,
             extra_args=extra_args,
         )
 
