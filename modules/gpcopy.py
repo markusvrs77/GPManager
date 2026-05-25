@@ -245,25 +245,35 @@ def get_date_columns_for_table(connection_id, schema_name, table_name):
 # ------------------------------------------------------------
 
 def make_include_table_file(items):
-    fd, path = tempfile.mkstemp(prefix="gpcopy_include_", suffix=".txt")
-    os.close(fd)
+    fd, include_file = tempfile.mkstemp(
+        prefix="gpcopy_include_",
+        suffix=".txt"
+    )
 
-    with open(path, "w") as f:
-        for item in items:
+    with os.fdopen(fd, "w") as f:
+        for item in selected_tables:
             schema_name = (
-                get_item_value(item, "schema_name")
-                or get_item_value(item, "schema")
+                    item.get("schema")
+                    or item.get("schema_name")
+                    or item.get("source_schema")
             )
+
             table_name = (
-                get_item_value(item, "table_name")
-                or get_item_value(item, "table")
+                    item.get("table")
+                    or item.get("table_name")
+                    or item.get("source_table")
             )
 
             if not schema_name or not table_name:
                 continue
 
-            f.write(quote_table_for_include(schema_name, table_name))
-            f.write("\n")
+            full_table_name = "{}.{}.{}".format(
+                source_db,
+                schema_name,
+                table_name
+            )
+
+            f.write(full_table_name + "\n")
 
     return path
 
