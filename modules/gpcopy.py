@@ -415,91 +415,84 @@ def build_gpcopy_date_include_json_file(config):
 # Command builder
 # ------------------------------------------------------------
 
-def build_gpcopy_command(config, source_connection, dest_connection, include_file=None, include_json_file=None):
-    gpcopy_path = config.get("gpcopy_path") or DEFAULT_GPCOPY_PATH
-
-    source_host = get_conn_host(source_connection)
-    dest_host = get_conn_host(dest_connection)
-
-    source_db = get_conn_dbname(source_connection)
-    dest_db = get_conn_dbname(dest_connection)
-
-    source_user = get_conn_user(source_connection)
-    dest_user = get_conn_user(dest_connection)
-
-    jobs = int(config.get("jobs") or 4)
-    on_segment_threshold = str(config.get("on_segment_threshold") or "-1")
-
-    if not source_host:
-        raise Exception("Source host is empty")
-
-    if not dest_host:
-        raise Exception("Destination host is empty")
-
-    if not source_db:
-        raise Exception("Source database/dbname is empty")
-
-    if not dest_db:
-        raise Exception("Destination database/dbname is empty")
-
+def build_gpcopy_command(gpcopy_path,
+    source_host,
+    dest_host,
+    include_json_path=None,
+    include_table_file=None,
+    include_table=None,
+    source_db=None,
+    dest_db=None,
+    dest_user=None,
+    jobs=4,
+    on_segment_threshold=-1,
+    append=False,
+    truncate=False,
+    drop=False,
+    skip_existing=False,
+    analyze=False,
+    dry_run=False,
+    validate_count=False,
+    no_ownership=True,
+    extra_args=None,
+):
     cmd = [
         gpcopy_path,
-        "--source-host",
-        str(source_host),
-        "--dest-host",
-        str(dest_host),
-        "--source-host",
-        "{}:{}".format(source_db, source_user),
-        "--dest-host",
-        "{}:{}".format(dest_db, dest_user),
-        "--jobs",
-        str(jobs),
-        "--on-segment-threshold",
-        str(on_segment_threshold),
+        "--source-host", str(source_host),
+        "--dest-host", str(dest_host),
     ]
 
-    if include_json_file:
-        cmd.extend([
-            "--include-table-json",
-            include_json_file,
-        ])
-    else:
-        cmd.extend([
-            "--include-table-file",
-            include_file,
-        ])
+    # В gpcopy 2.7.0 база источника задаётся через --dbname / -d
+    if source_db:
+        cmd.extend(["--dbname", str(source_db)])
 
-    # Options from UI
-    if config.get("truncate"):
-        cmd.append("--truncate")
+    # База назначения задаётся через --dest-dbname / -D
+    if dest_db:
+        cmd.extend(["--dest-dbname", str(dest_db)])
 
-    if config.get("drop"):
-        cmd.append("--drop")
+    # В твоей версии есть только --dest-user, source-user нет
+    if dest_user:
+        cmd.extend(["--dest-user", str(dest_user)])
 
-    if config.get("append"):
+    cmd.extend(["--jobs", str(jobs)])
+    cmd.extend(["--on-segment-threshold", str(on_segment_threshold)])
+
+    if include_json_path:
+        cmd.extend(["--include-table-json", str(include_json_path)])
+    elif include_table_file:
+        cmd.extend(["--include-table-file", str(include_table_file)])
+    elif include_table:
+        cmd.extend(["--include-table", str(include_table)])
+
+    if append:
         cmd.append("--append")
 
-    if config.get("skip_existing"):
+    if truncate:
+        cmd.append("--truncate")
+
+    if drop:
+        cmd.append("--drop")
+
+    if skip_existing:
         cmd.append("--skip-existing")
 
-    if config.get("analyze"):
+    if analyze:
         cmd.append("--analyze")
 
-    if config.get("dry_run"):
+    if dry_run:
         cmd.append("--dry-run")
 
-    if config.get("no_ownership", True):
-        cmd.append("--no-ownership")
-
-    if config.get("validate_count"):
+    if validate_count:
         cmd.extend(["--validate", "count"])
 
-    extra_args = config.get("extra_args") or ""
+    if no_ownership:
+        cmd.append("--no-ownership")
 
     if extra_args:
-        for part in str(extra_args).split():
-            if part.strip():
-                cmd.append(part.strip())
+        if isinstance(extra_args, list):
+            cmd.extend(extra_args)
+        elif isinstance(extra_args, str) and extra_args.strip():
+            cmd.extend(extra_args.strip().split())
 
     return cmd
 
