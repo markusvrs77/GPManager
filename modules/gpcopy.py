@@ -693,6 +693,12 @@ def run_gpcopy_job(job_id):
         else:
             include_file = make_include_table_file(items)
 
+        source_port = (
+                source_connection.get("port")
+                or source_connection.get("db_port")
+                or 5432
+        )
+
         cmd = build_gpcopy_command(
             gpcopy_path=gpcopy_path,
             source_host=source_host,
