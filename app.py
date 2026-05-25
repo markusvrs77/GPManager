@@ -1157,70 +1157,183 @@ def api_gpcopy_preview_date_json():
 
 @app.route("/api/gpcopy/start-date", methods=["POST"])
 def api_gpcopy_start_date():
-    payload = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True) or {}
 
-    source_connection_id = payload.get("source_connection_id")
-    dest_connection_id = payload.get("dest_connection_id")
-    table_configs = payload.get("table_configs") or []
+    source_connection_id = (
+        data.get("source_connection_id")
+        or data.get("connection_id")
+    )
+
+    dest_connection_id = (
+        data.get("dest_connection_id")
+        or data.get("destination_connection_id")
+        or data.get("target_connection_id")
+    )
+
+    table_configs = (
+        data.get("table_configs")
+        or data.get("tables")
+        or []
+    )
+
+    date_from = data.get("date_from")
+    date_to = data.get("date_to")
 
     if not source_connection_id:
-        return jsonify({"ok": False, "message": "source_connection_id is required"}), 400
+        return jsonify({
+            "ok": False,
+            "message": "source_connection_id is required",
+        }), 400
 
     if not dest_connection_id:
-        return jsonify({"ok": False, "message": "dest_connection_id is required"}), 400
+        return jsonify({
+            "ok": False,
+            "message": "dest_connection_id is required",
+        }), 400
 
     if not table_configs:
-        return jsonify({"ok": False, "message": "table_configs is empty"}), 400
+        return jsonify({
+            "ok": False,
+            "message": "table_configs is empty",
+        }), 400
+
+    normalized_tables = []
 
     for item in table_configs:
-        if not item.get("source_schema"):
-            return jsonify({"ok": False, "message": "source_schema is required"}), 400
+        source = item.get("source")
+        dest = item.get("dest") or item.get("target")
+        sql = item.get("sql")
 
-        if not item.get("source_table"):
-            return jsonify({"ok": False, "message": "source_table is required"}), 400
+        schema_name = (
+            item.get("schema")
+            or item.get("schema_name")
+            or item.get("source_schema")
+        )
 
-        if not item.get("date_column"):
-            return jsonify({"ok": False, "message": "date_column is required"}), 400
+        table_name = (
+            item.get("table")
+            or item.get("table_name")
+            or item.get("source_table")
+        )
 
-        if not item.get("date_from"):
-            return jsonify({"ok": False, "message": "date_from is required"}), 400
+        date_column = item.get("date_column")
 
-        if not item.get("date_to"):
-            return jsonify({"ok": False, "message": "date_to is required"}), 400
+        if not source:
+            if schema_name and table_name:
+                source = '{}.{}'.format(schema_name, table_name)
 
-    job_id = create_job("gpcopy_date", "queued")
+        if not dest:
+            dest = source
 
-    create_job_items(
-        job_id,
-        [
-            {
-                "schema_name": item["source_schema"],
-                "table_name": item["source_table"],
-                "action": "GPCOPY_DATE",
-                "status": "queued",
-            }
-            for item in table_configs
-        ],
-    )
+        if not source:
+            return jsonify({
+                "ok": False,
+                "message": "source is required for one table",
+                "item": item,
+            }), 400
 
-    thread = threading.Thread(
-        target=run_gpcopy_job,
-        kwargs={
-            "job_id": job_id,
-            "payload": payload,
-            "mode": "date",
-        },
-        daemon=True,
-    )
-    thread.start()
+        if not dest:
+            return jsonify({
+                "ok": False,
+                "message": "dest is required for {}".format(source),
+                "item": item,
+            }), 400
 
-    return jsonify(
-        {
+        if not sql:
+            if not date_column:
+                return jsonify({
+                    "ok": False,
+                    "message": "date_column is required for {}".format(source),
+                    "item": item,
+                }), 400
+
+            if not date_from or not date_to:
+                return jsonify({
+                    "ok": False,
+                    "message": "date_from/date_to are required",
+                    "item": item,
+                }), 400
+
+            sql = "SELECT * FROM {} WHERE {} >= '{}' AND {} < '{}'".format(
+                source,
+                date_column,
+                date_from,
+                date_column,
+                date_to,
+            )
+
+        normalized_tables.append({
+            "source": source,
+            "dest": dest,
+            "sql": sql,
+            "schema": schema_name,
+            "table": table_name,
+            "date_column": date_column,
+        })
+
+    try:
+        job_id = create_job(
+            job_type="gpcopy",
+            connection_id=int(source_connection_id),
+            config={
+                "mode": "date",
+                "source_connection_id": int(source_connection_id),
+                "dest_connection_id": int(dest_connection_id),
+                "destination_connection_id": int(dest_connection_id),
+
+                "table_configs": normalized_tables,
+
+                "date_from": date_from,
+                "date_to": date_to,
+
+                "jobs": data.get("jobs") or 4,
+                "on_segment_threshold": data.get("on_segment_threshold", -1),
+
+                "append": bool(data.get("append")),
+                "truncate": bool(data.get("truncate")),
+                "drop": bool(data.get("drop")),
+                "skip_existing": bool(data.get("skip_existing")),
+                "no_ownership": bool(data.get("no_ownership")),
+                "analyze": bool(data.get("analyze")),
+                "dry_run": bool(data.get("dry_run")),
+            },
+        )
+
+        create_job_items(
+            job_id=job_id,
+            items=[
+                {
+                    "schema_name": item.get("schema") or item["source"].split(".")[0],
+                    "table_name": item.get("table") or item["source"].split(".")[-1],
+                    "action": "GPCOPY DATE",
+                }
+                for item in normalized_tables
+            ],
+        )
+
+        import threading
+
+        threading.Thread(
+            target=run_gpcopy_job,
+            args=(job_id,),
+            daemon=True,
+        ).start()
+
+        return jsonify({
             "ok": True,
             "job_id": job_id,
-            "message": f"GPCOPY by date запущен. Job #{job_id}",
-        }
-    )
+            "total_items": len(normalized_tables),
+            "message": "GPCOPY by date started",
+        })
+
+    except Exception as e:
+        import traceback
+
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
 
 
 if __name__ == "__main__":
