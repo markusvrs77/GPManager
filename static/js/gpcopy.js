@@ -944,3 +944,384 @@ window.previewGpcopyDateJson = previewGpcopyDateJson;
 window.startGpcopyByDate = startGpcopyByDate;
 window.startGpcopyJob = startGpcopyJob;
 window.handleGpcopyRunButton = handleGpcopyRunButton;
+
+
+function normalizeGpcopyDateTime(value) {
+    if (!value) {
+        return "";
+    }
+
+    value = String(value).trim();
+
+    // format: 21.05.2026 23:59
+    const ruMatch = value.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/);
+
+    if (ruMatch) {
+        const dd = ruMatch[1];
+        const mm = ruMatch[2];
+        const yyyy = ruMatch[3];
+        const hh = ruMatch[4];
+        const mi = ruMatch[5];
+        const ss = ruMatch[6] || "00";
+
+        return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}.000`;
+    }
+
+    // already normal format
+    return value;
+}
+
+function getGpcopySelectedTablesSafe() {
+    if (typeof getSelectedGpcopyTables === "function") {
+        return getSelectedGpcopyTables();
+    }
+
+    const result = [];
+    const seen = new Set();
+
+    document.querySelectorAll("#gpcopyObjectTree .gpcopy-table-checkbox:checked").forEach(function (cb) {
+        const schema = cb.dataset.schema;
+        const table = cb.dataset.table;
+
+        if (!schema || !table) {
+            return;
+        }
+
+        const key = schema + "." + table;
+
+        if (seen.has(key)) {
+            return;
+        }
+
+        seen.add(key);
+
+        result.push({
+            schema: schema,
+            table: table,
+            schema_name: schema,
+            table_name: table
+        });
+    });
+
+    return result;
+}
+
+function getGpcopyBasicPayloadOptions() {
+    return {
+        gpcopy_path: gpcopyValue("gpcopyPath", "/usr/local/gpdb/greenplum-db/bin/gpcopy"),
+        jobs: Number(gpcopyValue("gpcopyJobs", "4")),
+        on_segment_threshold: Number(gpcopyValue("gpcopyOnSegmentThreshold", "-1")),
+
+        target_schema: gpcopyValue("gpcopyTargetSchema", "").trim(),
+        target_mode: gpcopyValue("gpcopyTargetMode", "same_name"),
+
+        truncate: gpcopyChecked("gpcopyTruncate"),
+        drop: gpcopyChecked("gpcopyDrop"),
+        append: gpcopyChecked("gpcopyAppend"),
+        skip_existing: gpcopyChecked("gpcopySkipExisting"),
+        analyze: gpcopyChecked("gpcopyAnalyze"),
+        dry_run: gpcopyChecked("gpcopyDryRun"),
+        validate_count: gpcopyChecked("gpcopyValidateCount"),
+
+        no_ownership: true,
+        extra_args: gpcopyValue("gpcopyExtraArgs", "").trim()
+    };
+}
+
+function buildTargetFullName(schema, table) {
+    const targetSchema = gpcopyValue("gpcopyTargetSchema", "").trim();
+    const targetMode = gpcopyValue("gpcopyTargetMode", "same_name");
+
+    if (targetMode === "same_schema") {
+        return `${schema}.${table}`;
+    }
+
+    if (targetSchema) {
+        return `${targetSchema}.${table}`;
+    }
+
+    return `${schema}.${table}`;
+}
+
+async function prepareGpcopyDateTables() {
+    const body = gpcopyEl("gpcopyDateTablesBody");
+
+    if (!body) {
+        alert("gpcopyDateTablesBody element not found");
+        return;
+    }
+
+    const selectedTables = getGpcopySelectedTablesSafe();
+
+    if (!selectedTables.length) {
+        body.innerHTML = `
+            <tr>
+                <td colspan="4" class="text-warning">
+                    Сначала выбери таблицы слева.
+                </td>
+            </tr>
+        `;
+
+        setGpcopyDateStatus("Сначала выбери хотя бы одну таблицу слева.", "warning");
+        return;
+    }
+
+    body.innerHTML = "";
+
+    selectedTables.forEach(function (item, index) {
+        const schema = item.schema || item.schema_name;
+        const table = item.table || item.table_name;
+        const targetFullName = buildTargetFullName(schema, table);
+
+        const tr = document.createElement("tr");
+
+        tr.innerHTML = `
+            <td>
+                <input type="hidden" class="gpcopy-date-schema" value="${gpcopyEscapeHtml(schema)}">
+                ${gpcopyEscapeHtml(schema)}
+            </td>
+
+            <td>
+                <input type="hidden" class="gpcopy-date-table" value="${gpcopyEscapeHtml(table)}">
+                ${gpcopyEscapeHtml(table)}
+            </td>
+
+            <td>
+                <select class="form-select form-select-sm gpcopy-date-column">
+                    <option value="">Loading columns...</option>
+                </select>
+            </td>
+
+            <td>
+                <input class="form-control form-control-sm gpcopy-date-target"
+                       value="${gpcopyEscapeHtml(targetFullName)}">
+            </td>
+        `;
+
+        body.appendChild(tr);
+
+        loadGpcopyDateColumnsForRow(tr, schema, table);
+    });
+
+    setGpcopyDateStatus(`Подготовлено таблиц: ${selectedTables.length}. Теперь выбери date column для каждой таблицы.`, "info");
+}
+
+async function loadGpcopyDateColumnsForRow(row, schema, table) {
+    const ids = getGpcopyConnectionIds();
+    const select = row.querySelector(".gpcopy-date-column");
+
+    if (!select) {
+        return;
+    }
+
+    if (!ids.sourceConnectionId) {
+        select.innerHTML = `<option value="">No source connection</option>`;
+        return;
+    }
+
+    try {
+        const url =
+            `/api/gpcopy/date-columns?connection_id=${encodeURIComponent(ids.sourceConnectionId)}` +
+            `&schema=${encodeURIComponent(schema)}` +
+            `&table=${encodeURIComponent(table)}`;
+
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+            throw new Error(data.message || "Failed to load date columns");
+        }
+
+        const columns = data.columns || [];
+
+        if (!columns.length) {
+            select.innerHTML = `<option value="">No date/timestamp columns</option>`;
+            return;
+        }
+
+        select.innerHTML = columns.map(function (col) {
+            const name = col.name || col.column_name || col;
+            const type = col.type || col.data_type || "";
+
+            return `<option value="${gpcopyEscapeHtml(name)}">${gpcopyEscapeHtml(name)} ${type ? "(" + gpcopyEscapeHtml(type) + ")" : ""}</option>`;
+        }).join("");
+
+    } catch (e) {
+        console.error(e);
+        select.innerHTML = `<option value="">${gpcopyEscapeHtml(e.message)}</option>`;
+    }
+}
+
+function collectGpcopyDateTableRows() {
+    const rows = [];
+
+    document.querySelectorAll("#gpcopyDateTablesBody tr").forEach(function (tr) {
+        const schemaEl = tr.querySelector(".gpcopy-date-schema");
+        const tableEl = tr.querySelector(".gpcopy-date-table");
+        const columnEl = tr.querySelector(".gpcopy-date-column");
+        const targetEl = tr.querySelector(".gpcopy-date-target");
+
+        if (!schemaEl || !tableEl || !columnEl || !targetEl) {
+            return;
+        }
+
+        const schema = schemaEl.value;
+        const table = tableEl.value;
+        const dateColumn = columnEl.value;
+        const target = targetEl.value.trim();
+
+        if (!schema || !table) {
+            return;
+        }
+
+        rows.push({
+            schema: schema,
+            table: table,
+            schema_name: schema,
+            table_name: table,
+            date_column: dateColumn,
+            target: target
+        });
+    });
+
+    return rows;
+}
+
+function validateGpcopyDateRows(rows, dateFrom, dateTo) {
+    if (!rows.length) {
+        return "Нажми Prepare selected tables.";
+    }
+
+    for (const row of rows) {
+        if (!row.date_column) {
+            return `Не выбрана date column для таблицы ${row.schema}.${row.table}`;
+        }
+
+        if (!row.target) {
+            return `Не указан target для таблицы ${row.schema}.${row.table}`;
+        }
+    }
+
+    if (!dateFrom || !dateTo) {
+        return "Укажи Date from и Date to.";
+    }
+
+    return "";
+}
+
+function buildGpcopyDateMultiPayload() {
+    const ids = getGpcopyConnectionIds();
+
+    const dateFrom = normalizeGpcopyDateTime(gpcopyValue("gpcopyDateFrom", ""));
+    const dateTo = normalizeGpcopyDateTime(gpcopyValue("gpcopyDateTo", ""));
+
+    const rows = collectGpcopyDateTableRows();
+
+    const validationError = validateGpcopyDateRows(rows, dateFrom, dateTo);
+
+    if (validationError) {
+        throw new Error(validationError);
+    }
+
+    if (!ids.sourceConnectionId) {
+        throw new Error("Выбери source connection.");
+    }
+
+    if (!ids.destConnectionId) {
+        throw new Error("Выбери destination connection.");
+    }
+
+    const options = getGpcopyBasicPayloadOptions();
+
+    return {
+        mode: "date_filter",
+        source_connection_id: Number(ids.sourceConnectionId),
+        dest_connection_id: Number(ids.destConnectionId),
+
+        date_from: dateFrom,
+        date_to: dateTo,
+
+        selected_tables: rows,
+        date_tables: rows,
+
+        gpcopy_path: options.gpcopy_path,
+        jobs: options.jobs,
+        on_segment_threshold: options.on_segment_threshold,
+
+        truncate: options.truncate,
+        drop: options.drop,
+        append: options.append,
+        skip_existing: options.skip_existing,
+        analyze: options.analyze,
+        dry_run: options.dry_run,
+        validate_count: options.validate_count,
+
+        no_ownership: options.no_ownership,
+        extra_args: options.extra_args
+    };
+}
+
+async function previewGpcopyDateJsonMulti() {
+    try {
+        const payload = buildGpcopyDateMultiPayload();
+
+        const response = await fetch("/api/gpcopy/preview-date-json", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+            throw new Error(data.message || "Preview JSON failed");
+        }
+
+        alert(JSON.stringify(data.json || data, null, 2));
+
+    } catch (e) {
+        console.error(e);
+        setGpcopyDateStatus(e.message, "danger");
+    }
+}
+
+async function startGpcopyByDateMulti() {
+    try {
+        const payload = buildGpcopyDateMultiPayload();
+
+        setGpcopyDateStatus("Starting GPCOPY by date...", "info");
+
+        const response = await fetch("/api/gpcopy/start-date", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+            throw new Error(data.message || "Start GPCOPY by date failed");
+        }
+
+        const jobId = data.job_id || data.jobId;
+
+        setGpcopyDateStatus(`GPCOPY by date запущен. Job #${jobId}`, "success");
+
+        if (typeof pollGpcopyJob === "function" && jobId) {
+            gpcopyCurrentJobId = jobId;
+            pollGpcopyJob(jobId);
+        }
+
+    } catch (e) {
+        console.error(e);
+        setGpcopyDateStatus(e.message, "danger");
+    }
+}
+
+window.prepareGpcopyDateTables = prepareGpcopyDateTables;
+window.previewGpcopyDateJsonMulti = previewGpcopyDateJsonMulti;
+window.startGpcopyByDateMulti = startGpcopyByDateMulti;

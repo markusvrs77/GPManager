@@ -9,14 +9,16 @@
 
     <div class="gpcopy-layout">
 
+        <!-- LEFT PANEL -->
         <div class="card gpcopy-left">
             <div class="card-header">
                 <b>Select source objects</b>
             </div>
 
             <div class="card-body">
+
                 <label class="form-label">Source connection</label>
-                <select id="sourceConnectionId" class="form-select">
+                <select id="sourceConnectionId" class="form-select mb-3">
                     {% for c in connections %}
                     <option value="{{ c.id }}">
                         {{ c.name }} / {{ c.host }} / {{ c.database or c.dbname }}
@@ -24,8 +26,8 @@
                     {% endfor %}
                 </select>
 
-                <label class="form-label mt-3">Destination connection</label>
-                <select id="destConnectionId" class="form-select">
+                <label class="form-label">Destination connection</label>
+                <select id="destConnectionId" class="form-select mb-3">
                     {% for c in connections %}
                     <option value="{{ c.id }}">
                         {{ c.name }} / {{ c.host }} / {{ c.database or c.dbname }}
@@ -34,7 +36,7 @@
                 </select>
 
                 <button type="button"
-                        class="btn btn-outline-primary w-100 mt-3 mb-3"
+                        class="btn btn-outline-primary w-100 mb-3"
                         onclick="loadGpcopyObjectTree()">
                     Load source database objects
                 </button>
@@ -42,7 +44,7 @@
                 <input id="gpcopyObjectSearch"
                        class="form-control mb-2"
                        placeholder="Search schema/table..."
-                       oninput="filterGpcopyObjectTree(this.value)">
+                       oninput="filterObjectTree('gpcopyObjectTree', this.value)">
 
                 <div class="small text-muted mb-2">
                     Selected: <span id="gpcopySelectedCount">0</span>
@@ -52,10 +54,14 @@
                     Выбери source connection и нажми Load source database objects.
                 </div>
 
-                <div id="gpcopyObjectTree" class="object-tree-box border rounded p-2"></div>
+                <div id="gpcopyObjectTree"
+                     class="object-tree-box border rounded p-2">
+                </div>
+
             </div>
         </div>
 
+        <!-- RIGHT PANEL -->
         <div class="card gpcopy-right">
             <div class="card-header">
                 <b>Run</b>
@@ -63,226 +69,260 @@
 
             <div class="card-body">
 
-                <div class="gpcopy-run-grid">
-                    <div>
-                        <label class="form-label">gpcopy path</label>
-                        <input id="gpcopyPath"
-                               class="form-control"
-                               value="/usr/local/gpdb/greenplum-db/bin/gpcopy">
-                    </div>
+                <!-- BASIC GPCOPY SETTINGS -->
+                <div class="gpcopy-section">
+                    <div class="gpcopy-section-title">1. Basic gpcopy settings</div>
 
-                    <div>
-                        <label class="form-label">Jobs</label>
-                        <input id="gpcopyJobs"
-                               class="form-control"
-                               type="number"
-                               value="4">
-                    </div>
+                    <div class="gpcopy-run-grid">
+                        <div>
+                            <label class="form-label">gpcopy path</label>
+                            <input id="gpcopyPath"
+                                   class="form-control"
+                                   value="/usr/local/gpdb/greenplum-db/bin/gpcopy">
+                        </div>
 
-                    <div>
-                        <label class="form-label">on-segment-threshold</label>
-                        <input id="gpcopyOnSegmentThreshold"
-                               class="form-control"
-                               type="number"
-                               value="-1">
-                    </div>
-                </div>
+                        <div>
+                            <label class="form-label">Jobs</label>
+                            <input id="gpcopyJobs"
+                                   class="form-control"
+                                   type="number"
+                                   value="4"
+                                   min="1">
+                        </div>
 
-                <div class="gpcopy-target-grid">
-                    <div>
-                        <label class="form-label mt-3">Target schema</label>
-                        <input id="gpcopyTargetSchema"
-                               class="form-control"
-                               placeholder="Например: dwh_target">
-                        <div class="form-text">
-                            Если заполнить, таблицы будут загружены в эту схему.
+                        <div>
+                            <label class="form-label">on-segment-threshold</label>
+                            <input id="gpcopyOnSegmentThreshold"
+                                   class="form-control"
+                                   type="number"
+                                   value="-1">
                         </div>
                     </div>
 
-                    <div>
-                        <label class="form-label mt-3">Target table mode</label>
-                        <select id="gpcopyTargetMode" class="form-select">
-                            <option value="same_name">Same table name</option>
-                            <option value="same_schema">Same schema/table as source</option>
-                        </select>
+                    <div class="gpcopy-target-grid mt-3">
+                        <div>
+                            <label class="form-label">Target schema</label>
+                            <input id="gpcopyTargetSchema"
+                                   class="form-control"
+                                   placeholder="Например: dwh_target">
+                            <div class="form-text">
+                                Если заполнить, таблицы будут загружены в эту схему.
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="form-label">Target table mode</label>
+                            <select id="gpcopyTargetMode" class="form-select">
+                                <option value="same_name">Same table name</option>
+                                <option value="same_schema">Same schema/table as source</option>
+                            </select>
+                        </div>
                     </div>
+
+                    <div class="gpcopy-options-grid mt-3">
+                        <label>
+                            <input type="checkbox" id="gpcopyTruncate">
+                            --truncate
+                        </label>
+
+                        <label>
+                            <input type="checkbox" id="gpcopyDrop">
+                            --drop
+                        </label>
+
+                        <label>
+                            <input type="checkbox" id="gpcopyAppend">
+                            --append
+                        </label>
+
+                        <label>
+                            <input type="checkbox" id="gpcopySkipExisting">
+                            --skip-existing
+                        </label>
+
+                        <label>
+                            <input type="checkbox" id="gpcopyAnalyze">
+                            --analyze
+                        </label>
+
+                        <label>
+                            <input type="checkbox" id="gpcopyDryRun">
+                            --dry-run
+                        </label>
+
+                        <label>
+                            <input type="checkbox" id="gpcopyValidateCount">
+                            --validate count
+                        </label>
+                    </div>
+
+                    <label class="form-label mt-3">Extra args</label>
+                    <input id="gpcopyExtraArgs"
+                           class="form-control"
+                           placeholder="Например: --no-ownership">
                 </div>
 
-                <div class="gpcopy-options-grid">
-                    <label>
-                        <input type="checkbox" id="gpcopyTruncate">
-                        --truncate
-                    </label>
-
-                    <label>
-                        <input type="checkbox" id="gpcopyDrop">
-                        --drop
-                    </label>
-
-                    <label>
-                        <input type="checkbox" id="gpcopyAppend">
-                        --append
-                    </label>
-
-                    <label>
-                        <input type="checkbox" id="gpcopySkipExisting">
-                        --skip-existing
-                    </label>
-
-                    <label>
-                        <input type="checkbox" id="gpcopyAnalyze">
-                        --analyze
-                    </label>
-
-                    <label>
-                        <input type="checkbox" id="gpcopyDryRun">
-                        --dry-run
-                    </label>
-
-                    <label>
-                        <input type="checkbox" id="gpcopyValidateCount">
-                        --validate count
-                    </label>
-                </div>
-
-                <label class="form-label mt-3">Extra args</label>
-                <input id="gpcopyExtraArgs"
-                       class="form-control"
-                       placeholder="Например: --no-ownership">
-
-                <!-- GPCOPY BY DATE FILTER -->
-                <div class="card mt-4 border-primary">
+                <!-- DATE FILTER SETTINGS -->
+                <div class="card mt-3 border-primary">
                     <div class="card-header bg-primary text-white">
                         <b>GPCOPY by date filter</b>
                     </div>
 
                     <div class="card-body">
                         <div class="alert alert-info">
-                            Выбери таблицы чекбоксами слева, затем нажми
-                            <b>Load date columns</b>, выбери колонку даты,
-                            укажи период и запусти отдельной кнопкой.
+                            1) Выбери таблицы слева чекбоксами. <br>
+                            2) Нажми <b>Prepare selected tables</b>. <br>
+                            3) Для каждой таблицы выбери свою колонку даты. <br>
+                            4) Укажи период и запусти <b>Run GPCOPY by date</b>.
                         </div>
 
-                        <div class="row g-2 align-items-end">
-                            <div class="col-md-3">
-                                <label class="form-label">Date column</label>
-                                <select id="gpcopyDateColumn" class="form-select">
-                                    <option value="">Сначала нажми Load date columns</option>
-                                </select>
-                            </div>
-
+                        <div class="row g-2 align-items-end mb-3">
                             <div class="col-md-3">
                                 <label class="form-label">Date from</label>
                                 <input id="gpcopyDateFrom"
-                                       type="datetime-local"
-                                       class="form-control">
+                                       type="text"
+                                       class="form-control"
+                                       placeholder="21.05.2026 23:59">
                             </div>
 
                             <div class="col-md-3">
                                 <label class="form-label">Date to</label>
                                 <input id="gpcopyDateTo"
-                                       type="datetime-local"
-                                       class="form-control">
+                                       type="text"
+                                       class="form-control"
+                                       placeholder="25.05.2026 23:59">
                             </div>
 
-                            <div class="col-md-3 d-grid">
+                            <div class="col-md-3">
                                 <button type="button"
-                                        class="btn btn-outline-primary"
-                                        onclick="loadGpcopyDateColumns()">
-                                    Load date columns
+                                        class="btn btn-outline-primary w-100"
+                                        onclick="prepareGpcopyDateTables()">
+                                    Prepare selected tables
+                                </button>
+                            </div>
+
+                            <div class="col-md-3">
+                                <button type="button"
+                                        class="btn btn-outline-secondary w-100"
+                                        onclick="previewGpcopyDateJsonMulti()">
+                                    Preview JSON
                                 </button>
                             </div>
                         </div>
 
-                        <div class="mt-3 d-flex gap-2 flex-wrap">
-                            <button type="button"
-                                    class="btn btn-success"
-                                    onclick="startGpcopyByDate()">
-                                Run GPCOPY by date
-                            </button>
-
-                            <button type="button"
-                                    class="btn btn-outline-secondary"
-                                    onclick="previewGpcopyByDateJson()">
-                                Preview JSON
-                            </button>
+                        <div class="table-responsive">
+                            <table class="table table-sm table-bordered align-middle">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 220px;">Source schema</th>
+                                        <th style="width: 260px;">Source table</th>
+                                        <th style="width: 320px;">Date column</th>
+                                        <th>Target table</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="gpcopyDateTablesBody">
+                                    <tr>
+                                        <td colspan="4" class="text-muted">
+                                            Пока нет выбранных таблиц.
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
 
-                        <div id="gpcopyDateMessage" class="mt-3"></div>
+                        <button type="button"
+                                class="btn btn-success"
+                                onclick="startGpcopyByDateMulti()">
+                            Run GPCOPY by date
+                        </button>
 
-                        <pre id="gpcopyDateJsonPreview"
-                             class="bg-dark text-light p-3 rounded mt-3"
-                             style="display:none; max-height: 350px; overflow:auto;"></pre>
+                        <div id="gpcopyDateStatusBox" class="alert alert-info mt-3">
+                            Выбери таблицы слева и нажми Prepare selected tables.
+                        </div>
                     </div>
                 </div>
 
                 <!-- NORMAL GPCOPY BUTTON -->
-                <button type="button"
-                        id="gpcopyRunButton"
-                        class="btn btn-warning w-100 mt-4"
-                        onclick="startGpcopyJob()">
-                    Run gpcopy
-                </button>
+                <div class="gpcopy-section mt-4">
+                    <div class="gpcopy-section-title">3. Normal gpcopy run</div>
 
-                <div id="gpcopyStatusBox" class="alert alert-info mt-3">
-                    Выбери таблицы и нажми Run gpcopy.
-                </div>
+                    <button type="button"
+                            id="gpcopyRunButton"
+                            class="btn btn-warning w-100 mt-2"
+                            onclick="startGpcopyJob()">
+                        Run gpcopy
+                    </button>
 
-                <div class="d-flex justify-content-between mt-3">
-                    <b>Progress</b>
-                    <span id="gpcopyProgressPercent">0%</span>
-                </div>
-
-                <div class="progress mb-3">
-                    <div id="gpcopyProgressBar"
-                         class="progress-bar"
-                         style="width: 0%;">
-                        0%
+                    <div id="gpcopyStatusBox" class="alert alert-info mt-3">
+                        Выбери таблицы и нажми Run gpcopy.
                     </div>
                 </div>
 
-                <div class="row text-center mb-3">
-                    <div class="col">
-                        <div class="text-muted">Total</div>
-                        <b id="gpcopyTotal">0</b>
+                <!-- PROGRESS -->
+                <div class="gpcopy-section mt-4">
+                    <div class="d-flex justify-content-between">
+                        <b>Progress</b>
+                        <span id="gpcopyProgressPercent">0%</span>
                     </div>
-                    <div class="col">
-                        <div class="text-muted">Done</div>
-                        <b class="text-success" id="gpcopyDone">0</b>
-                    </div>
-                    <div class="col">
-                        <div class="text-muted">Running</div>
-                        <b class="text-primary" id="gpcopyRunning">0</b>
-                    </div>
-                    <div class="col">
-                        <div class="text-muted">Failed</div>
-                        <b class="text-danger" id="gpcopyFailed">0</b>
-                    </div>
-                    <div class="col">
-                        <div class="text-muted">Skipped</div>
-                        <b class="text-warning" id="gpcopySkipped">0</b>
-                    </div>
-                </div>
 
-                <div class="table-responsive">
-                    <table class="table table-sm table-bordered">
-                        <thead>
-                        <tr>
-                            <th>Schema</th>
-                            <th>Table</th>
-                            <th>Target</th>
-                            <th>Action</th>
-                            <th>Status</th>
-                            <th>Duration</th>
-                            <th>Error</th>
-                        </tr>
-                        </thead>
-                        <tbody id="gpcopyItemsBody">
-                        <tr>
-                            <td colspan="7" class="text-muted">Пока нет данных.</td>
-                        </tr>
-                        </tbody>
-                    </table>
+                    <div class="progress mb-3">
+                        <div id="gpcopyProgressBar"
+                             class="progress-bar"
+                             style="width: 0%;">
+                            0%
+                        </div>
+                    </div>
+
+                    <div class="row text-center mb-3">
+                        <div class="col">
+                            <div class="text-muted">Total</div>
+                            <b id="gpcopyTotal">0</b>
+                        </div>
+
+                        <div class="col">
+                            <div class="text-muted">Done</div>
+                            <b class="text-success" id="gpcopyDone">0</b>
+                        </div>
+
+                        <div class="col">
+                            <div class="text-muted">Running</div>
+                            <b class="text-primary" id="gpcopyRunning">0</b>
+                        </div>
+
+                        <div class="col">
+                            <div class="text-muted">Failed</div>
+                            <b class="text-danger" id="gpcopyFailed">0</b>
+                        </div>
+
+                        <div class="col">
+                            <div class="text-muted">Skipped</div>
+                            <b class="text-warning" id="gpcopySkipped">0</b>
+                        </div>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-sm table-bordered">
+                            <thead>
+                            <tr>
+                                <th>Schema</th>
+                                <th>Table</th>
+                                <th>Target</th>
+                                <th>Action</th>
+                                <th>Status</th>
+                                <th>Duration</th>
+                                <th>Error</th>
+                            </tr>
+                            </thead>
+
+                            <tbody id="gpcopyItemsBody">
+                            <tr>
+                                <td colspan="7" class="text-muted">
+                                    Пока нет данных.
+                                </td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
 
             </div>
@@ -291,7 +331,6 @@
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/gpcopy.js') }}"></script>
 <script src="{{ url_for('static', filename='js/object_tree.js') }}"></script>
-
+<script src="{{ url_for('static', filename='js/gpcopy.js') }}"></script>
 {% endblock %}

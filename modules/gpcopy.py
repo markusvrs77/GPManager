@@ -419,17 +419,20 @@ def build_gpcopy_command(
     gpcopy_path,
     source_host,
     dest_host,
-    include_json_path=None,
-    include_table_file=None,
-    include_table=None,
-    source_db=None,
-    dest_db=None,
+    source_port=None,
+    dest_port=None,
+    source_user=None,
     dest_user=None,
     jobs=4,
     on_segment_threshold=-1,
-    append=False,
+    include_table_json=None,
+    include_table_file=None,
+    include_table=None,
+    dbname=None,
+    dest_dbname=None,
     truncate=False,
     drop=False,
+    append=False,
     skip_existing=False,
     analyze=False,
     dry_run=False,
@@ -439,48 +442,53 @@ def build_gpcopy_command(
 ):
     cmd = [
         gpcopy_path,
-        "--source-host", str(source_host),
-        "--dest-host", str(dest_host),
+        "--source-host",
+        str(source_host),
+        "--dest-host",
+        str(dest_host),
     ]
 
-    use_include_mode = bool(
-        include_json_path
-        or include_table_file
-        or include_table
-    )
+    if source_port:
+        cmd += ["--source-port", str(source_port)]
 
-    # gpcopy 2.7.0:
-    # --dbname нельзя использовать вместе с:
-    # --include-table, --include-table-file, --include-table-json
-    if source_db and not use_include_mode:
-        cmd.extend(["--dbname", str(source_db)])
+    if dest_port:
+        cmd += ["--dest-port", str(dest_port)]
 
-    # Для include-table-json база назначения должна быть внутри JSON:
-    # "dest": "adb.schema.table"
-    if dest_db and not include_json_path:
-        cmd.extend(["--dest-dbname", str(dest_db)])
+    if source_user:
+        cmd += ["--source-user", str(source_user)]
 
     if dest_user:
-        cmd.extend(["--dest-user", str(dest_user)])
+        cmd += ["--dest-user", str(dest_user)]
 
-    cmd.extend(["--jobs", str(jobs)])
-    cmd.extend(["--on-segment-threshold", str(on_segment_threshold)])
+    cmd += ["--jobs", str(jobs)]
+    cmd += ["--on-segment-threshold", str(on_segment_threshold)]
 
-    if include_json_path:
-        cmd.extend(["--include-table-json", str(include_json_path)])
+    # ВАЖНО:
+    # gpcopy требует только один из:
+    # --dbname / --full / --include-table / --include-table-file / --include-table-json
+    if include_table_json:
+        cmd += ["--include-table-json", include_table_json]
     elif include_table_file:
-        cmd.extend(["--include-table-file", str(include_table_file)])
+        cmd += ["--include-table-file", include_table_file]
     elif include_table:
-        cmd.extend(["--include-table", str(include_table)])
-
-    if append:
-        cmd.append("--append")
+        cmd += ["--include-table", include_table]
+    elif dbname:
+        cmd += ["--dbname", dbname]
+        if dest_dbname:
+            cmd += ["--dest-dbname", dest_dbname]
+    else:
+        raise ValueError(
+            "Нужно указать один режим копирования: dbname, include_table, include_table_file или include_table_json"
+        )
 
     if truncate:
         cmd.append("--truncate")
 
     if drop:
         cmd.append("--drop")
+
+    if append:
+        cmd.append("--append")
 
     if skip_existing:
         cmd.append("--skip-existing")
@@ -492,16 +500,14 @@ def build_gpcopy_command(
         cmd.append("--dry-run")
 
     if validate_count:
-        cmd.extend(["--validate", "count"])
+        cmd += ["--validate", "count"]
 
     if no_ownership:
         cmd.append("--no-ownership")
 
     if extra_args:
-        if isinstance(extra_args, list):
-            cmd.extend(extra_args)
-        elif isinstance(extra_args, str) and extra_args.strip():
-            cmd.extend(extra_args.strip().split())
+        import shlex
+        cmd.extend(shlex.split(extra_args))
 
     return cmd
 
@@ -509,6 +515,46 @@ def build_gpcopy_command(
 # ------------------------------------------------------------
 # Main job runner
 # ------------------------------------------------------------
+def sql_literal(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def quote_ident(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def build_include_json_for_date(source_db, dest_db, table_configs):
+    result = []
+
+    for item in table_configs:
+        source_schema = item["source_schema"]
+        source_table = item["source_table"]
+        target_schema = item.get("target_schema") or source_schema
+        target_table = item.get("target_table") or source_table
+
+        date_column = item["date_column"]
+        date_from = item["date_from"]
+        date_to = item["date_to"]
+
+        source_full = f"{source_db}.{source_schema}.{source_table}"
+        dest_full = f"{dest_db}.{target_schema}.{target_table}"
+
+        sql = (
+            f"SELECT * FROM {quote_ident(source_schema)}.{quote_ident(source_table)} "
+            f"WHERE {quote_ident(date_column)} >= {sql_literal(date_from)} "
+            f"AND {quote_ident(date_column)} < {sql_literal(date_to)}"
+        )
+
+        result.append(
+            {
+                "source": source_full,
+                "dest": dest_full,
+                "sql": sql,
+            }
+        )
+
+    return result
+
 
 def run_gpcopy_job(job_id):
     include_file = None
