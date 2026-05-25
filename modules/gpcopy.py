@@ -415,7 +415,8 @@ def build_gpcopy_date_include_json_file(config):
 # Command builder
 # ------------------------------------------------------------
 
-def build_gpcopy_command(gpcopy_path,
+def build_gpcopy_command(
+    gpcopy_path,
     source_host,
     dest_host,
     include_json_path=None,
@@ -442,15 +443,23 @@ def build_gpcopy_command(gpcopy_path,
         "--dest-host", str(dest_host),
     ]
 
-    # В gpcopy 2.7.0 база источника задаётся через --dbname / -d
-    if source_db:
+    use_include_mode = bool(
+        include_json_path
+        or include_table_file
+        or include_table
+    )
+
+    # gpcopy 2.7.0:
+    # --dbname нельзя использовать вместе с:
+    # --include-table, --include-table-file, --include-table-json
+    if source_db and not use_include_mode:
         cmd.extend(["--dbname", str(source_db)])
 
-    # База назначения задаётся через --dest-dbname / -D
-    if dest_db:
+    # Для include-table-json база назначения должна быть внутри JSON:
+    # "dest": "adb.schema.table"
+    if dest_db and not include_json_path:
         cmd.extend(["--dest-dbname", str(dest_db)])
 
-    # В твоей версии есть только --dest-user, source-user нет
     if dest_user:
         cmd.extend(["--dest-user", str(dest_user)])
 
