@@ -556,11 +556,24 @@ def run_gpcopy_job(job_id):
             include_file = make_include_table_file(items)
 
         cmd = build_gpcopy_command(
-            config=config,
-            source_connection=source_connection,
-            dest_connection=dest_connection,
-            include_file=include_file,
-            include_json_file=include_json_file,
+            gpcopy_path=gpcopy_path,
+            source_host=source_host,
+            dest_host=dest_host,
+            source_db=source_db,
+            dest_db=dest_db,
+            dest_user=dest_user,
+            include_json_path=include_json_file,
+            jobs=jobs,
+            on_segment_threshold=on_segment_threshold,
+            append=append,
+            truncate=truncate,
+            drop=drop,
+            skip_existing=skip_existing,
+            analyze=analyze,
+            dry_run=dry_run,
+            validate_count=validate_count,
+            no_ownership=True,
+            extra_args=extra_args,
         )
 
         command_text = " ".join(cmd)
