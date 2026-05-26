@@ -244,38 +244,51 @@ def get_date_columns_for_table(connection_id, schema_name, table_name):
 # Include file for normal gpcopy
 # ------------------------------------------------------------
 
-def make_include_table_file(items):
-    fd, include_file = tempfile.mkstemp(
+def make_include_table_file(items, dbname=None):
+    fd, path = tempfile.mkstemp(
         prefix="gpcopy_include_",
-        suffix=".txt"
+        suffix=".txt",
+        text=True,
     )
 
-    with os.fdopen(fd, "w") as f:
-        for item in selected_tables:
-            schema_name = (
-                    item.get("schema")
-                    or item.get("schema_name")
-                    or item.get("source_schema")
-            )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for item in items:
+                schema_name = (
+                    get_item_value(item, "schema_name")
+                    or get_item_value(item, "schema")
+                )
 
-            table_name = (
-                    item.get("table")
-                    or item.get("table_name")
-                    or item.get("source_table")
-            )
+                table_name = (
+                    get_item_value(item, "table_name")
+                    or get_item_value(item, "table")
+                )
 
-            if not schema_name or not table_name:
-                continue
+                if not schema_name or not table_name:
+                    continue
 
-            full_table_name = "{}.{}.{}".format(
-                source_db,
-                schema_name,
-                table_name
-            )
+                if dbname:
+                    full_name = "{}.{}.{}".format(
+                        dbname,
+                        schema_name,
+                        table_name,
+                    )
+                else:
+                    full_name = "{}.{}".format(
+                        schema_name,
+                        table_name,
+                    )
 
-            f.write(full_table_name + "\n")
+                f.write(full_name + "\n")
 
-    return path
+        return path
+
+    except Exception:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        raise
 
 
 # ------------------------------------------------------------
@@ -613,9 +626,23 @@ def run_gpcopy_job(job_id):
         config_json = get_item_value(job, "config_json")
         config = json.loads(config_json or "{}")
 
+        mode = config.get("mode") or config.get("copy_mode") or ""
+
+        selected_tables = (
+                config.get("selected_tables")
+                or config.get("tables")
+                or []
+        )
+
+        table_configs = (
+                config.get("table_configs")
+                or config.get("date_table_configs")
+                or []
+        )
+
         source_connection_id = (
-            config.get("source_connection_id")
-            or config.get("connection_id")
+                config.get("source_connection_id")
+                or config.get("connection_id")
         )
 
         dest_connection_id = (
@@ -649,8 +676,6 @@ def run_gpcopy_job(job_id):
         # ------------------------------------------------------------
         # Build gpcopy runtime options
         # ------------------------------------------------------------
-
-        mode = config.get("mode") or ""
 
         gpcopy_path = (
                 config.get("gpcopy_path")
@@ -718,9 +743,15 @@ def run_gpcopy_job(job_id):
             raise Exception("Destination database/dbname is empty")
 
         if mode == "date_filter":
+            if not table_configs:
+                raise Exception("table_configs is empty")
+
             include_json_file = build_gpcopy_date_include_json_file(config)
         else:
-            include_file = make_include_table_file(items)
+            if not selected_tables and not items:
+                raise Exception("selected_tables is empty")
+
+            include_file = make_include_table_file(items, source_db)
 
         source_host = (
                 source_connection.get("host")

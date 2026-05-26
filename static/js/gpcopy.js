@@ -23,6 +23,172 @@ function gpcopyEl(id) {
     return document.getElementById(id);
 }
 
+const GPCOPY_STORAGE_KEY = "gpmanager_gpcopy_state_v1";
+
+const GPCOPY_UI_STORAGE_KEY = "gpmanager_gpcopy_ui_state_v1";
+function loadGpcopyUiState() {
+    try {
+        const raw = localStorage.getItem(GPCOPY_UI_STORAGE_KEY);
+        if (!raw) {
+            return {};
+        }
+
+        return JSON.parse(raw) || {};
+    } catch (e) {
+        console.warn("Failed to load gpcopy UI state", e);
+        return {};
+    }
+}
+
+function saveGpcopyUiState(patch) {
+    try {
+        const current = loadGpcopyUiState();
+        const next = Object.assign({}, current, patch || {});
+        localStorage.setItem(GPCOPY_UI_STORAGE_KEY, JSON.stringify(next));
+    } catch (e) {
+        console.warn("Failed to save gpcopy UI state", e);
+    }
+}
+
+function restoreGpcopyUiState() {
+    const state = loadGpcopyUiState();
+
+    const sourceSelect = gpcopyEl("sourceConnectionId");
+    const destSelect = gpcopyEl("destConnectionId");
+    const searchInput = gpcopyEl("gpcopyObjectSearch");
+    const targetSchema = gpcopyEl("gpcopyTargetSchema");
+    const targetMode = gpcopyEl("gpcopyTargetMode");
+
+    if (sourceSelect && state.sourceConnectionId) {
+        sourceSelect.value = state.sourceConnectionId;
+    }
+
+    if (destSelect && state.destConnectionId) {
+        destSelect.value = state.destConnectionId;
+    }
+
+    if (searchInput && typeof state.objectSearch === "string") {
+        searchInput.value = state.objectSearch;
+    }
+
+    if (targetSchema && typeof state.targetSchema === "string") {
+        targetSchema.value = state.targetSchema;
+    }
+
+    if (targetMode && state.targetMode) {
+        targetMode.value = state.targetMode;
+    }
+}
+
+function bindGpcopyUiStateEvents() {
+    const sourceSelect = gpcopyEl("sourceConnectionId");
+    const destSelect = gpcopyEl("destConnectionId");
+    const searchInput = gpcopyEl("gpcopyObjectSearch");
+    const targetSchema = gpcopyEl("gpcopyTargetSchema");
+    const targetMode = gpcopyEl("gpcopyTargetMode");
+
+    if (sourceSelect) {
+        sourceSelect.addEventListener("change", function () {
+            saveGpcopyUiState({
+                sourceConnectionId: sourceSelect.value
+            });
+
+            resetGpcopyTreeOnSourceChange();
+        });
+    }
+
+    if (destSelect) {
+        destSelect.addEventListener("change", function () {
+            saveGpcopyUiState({
+                destConnectionId: destSelect.value
+            });
+        });
+    }
+
+    if (searchInput) {
+        searchInput.addEventListener("input", function () {
+            saveGpcopyUiState({
+                objectSearch: searchInput.value
+            });
+
+            gpcopySearchChanged();
+        });
+    }
+
+    if (targetSchema) {
+        targetSchema.addEventListener("input", function () {
+            saveGpcopyUiState({
+                targetSchema: targetSchema.value
+            });
+        });
+    }
+
+    if (targetMode) {
+        targetMode.addEventListener("change", function () {
+            saveGpcopyUiState({
+                targetMode: targetMode.value
+            });
+        });
+    }
+}
+
+function getGpcopyState() {
+    try {
+        const raw = localStorage.getItem(GPCOPY_STORAGE_KEY);
+        if (!raw) {
+            return {};
+        }
+        return JSON.parse(raw) || {};
+    } catch (e) {
+        console.warn("Cannot read gpcopy state:", e);
+        return {};
+    }
+}
+
+function saveGpcopyStatePatch(patch) {
+    const state = getGpcopyState();
+    const nextState = Object.assign({}, state, patch || {});
+
+    try {
+        localStorage.setItem(GPCOPY_STORAGE_KEY, JSON.stringify(nextState));
+    } catch (e) {
+        console.warn("Cannot save gpcopy state:", e);
+    }
+}
+
+function gpcopyGetEl(id) {
+    return document.getElementById(id);
+}
+
+function gpcopyGetValue(id, defaultValue = "") {
+    const el = gpcopyGetEl(id);
+    if (!el) {
+        return defaultValue;
+    }
+    return el.value;
+}
+
+function gpcopySetValue(id, value) {
+    const el = gpcopyGetEl(id);
+    if (!el || value === undefined || value === null) {
+        return;
+    }
+    el.value = value;
+}
+
+function gpcopyIsChecked(id) {
+    const el = gpcopyGetEl(id);
+    return !!(el && el.checked);
+}
+
+function gpcopySetChecked(id, checked) {
+    const el = gpcopyGetEl(id);
+    if (!el) {
+        return;
+    }
+    el.checked = !!checked;
+}
+
 function gpcopyEscapeHtml(value) {
     return String(value === null || value === undefined ? "" : value)
         .replace(/&/g, "&amp;")
@@ -31,7 +197,38 @@ function gpcopyEscapeHtml(value) {
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
 }
+function gpcopyTableKey(schemaName, tableName) {
+    return String(schemaName || "") + "." + String(tableName || "");
+}
 
+function isGpcopyTableSelected(schemaName, tableName) {
+    const key = gpcopyTableKey(schemaName, tableName);
+
+    return selectedGpcopyTables.some(function (item) {
+        return gpcopyTableKey(item.schema, item.table) === key;
+    });
+}
+
+function setGpcopyTableSelected(schemaName, tableName, checked) {
+    const key = gpcopyTableKey(schemaName, tableName);
+
+    selectedGpcopyTables = selectedGpcopyTables.filter(function (item) {
+        return gpcopyTableKey(item.schema, item.table) !== key;
+    });
+
+    if (checked) {
+        selectedGpcopyTables.push({
+            schema: schemaName,
+            table: tableName
+        });
+    }
+
+    gpcopyUpdateSelectedCount();
+
+    if (typeof saveGpcopySelectedTablesState === "function") {
+        saveGpcopySelectedTablesState();
+    }
+}
 function gpcopyEscapeJs(value) {
     return String(value === null || value === undefined ? "" : value)
         .replace(/\\/g, "\\\\")
@@ -51,89 +248,33 @@ function gpcopyChecked(id) {
 }
 
 function gpcopyMakeKey(schemaName, tableName) {
-    return `${schemaName}.${tableName}`;
-}
-
-function gpcopySetStatus(message, type) {
-    const box =
-        gpcopyEl("gpcopyStatusBox") ||
-        gpcopyEl("gpcopyDateStatusBox") ||
-        gpcopyEl("gpcopyDateMessage");
-
-    if (!box) {
-        console.log(message);
-        return;
-    }
-
-    box.className = `alert alert-${type || "info"} mt-3`;
-    box.textContent = message;
-}
-
-function gpcopySetTreeStatus(message) {
-    const box = gpcopyEl("gpcopyObjectTreeStatus");
-    if (box) {
-        box.textContent = message || "";
-    }
-}
-
-function gpcopySetDateStatus(message, type) {
-    const box =
-        gpcopyEl("gpcopyDateStatusBox") ||
-        gpcopyEl("gpcopyDateMessage") ||
-        gpcopyEl("gpcopyStatusBox");
-
-    if (!box) {
-        console.log(message);
-        return;
-    }
-
-    box.className = `alert alert-${type || "info"} mt-3`;
-    box.textContent = message;
-}
-
-function setGpcopyDateStatus(message, type) {
-    gpcopySetDateStatus(message, type);
-}
-
-function getGpcopyConnectionIds() {
-    const sourceEl =
-        gpcopyEl("sourceConnectionId") ||
-        gpcopyEl("gpcopySourceConnectionId") ||
-        gpcopyEl("source_connection_id") ||
-        gpcopyEl("connectionId");
-
-    const destEl =
-        gpcopyEl("destConnectionId") ||
-        gpcopyEl("destinationConnectionId") ||
-        gpcopyEl("gpcopyDestConnectionId") ||
-        gpcopyEl("gpcopyDestinationConnectionId") ||
-        gpcopyEl("dest_connection_id");
-
-    return {
-        sourceConnectionId: sourceEl ? sourceEl.value : "",
-        destConnectionId: destEl ? destEl.value : ""
-    };
-}
-
-function gpcopyUpdateSelectedCount() {
-    const el = gpcopyEl("gpcopySelectedCount");
-    if (el) {
-        el.textContent = selectedGpcopyTables.length;
-    }
+    return String(schemaName || "") + "." + String(tableName || "");
 }
 
 function gpcopyIsSelected(schemaName, tableName) {
     const key = gpcopyMakeKey(schemaName, tableName);
 
     return selectedGpcopyTables.some(function (item) {
-        const schema = item.schema || item.schema_name;
-        const table = item.table || item.table_name;
-        return gpcopyMakeKey(schema, table) === key;
+        const s = item.schema || item.schema_name;
+        const t = item.table || item.table_name;
+        return gpcopyMakeKey(s, t) === key;
     });
 }
 
 function gpcopyAddSelectedTable(schemaName, tableName) {
-    if (!gpcopyIsSelected(schemaName, tableName)) {
+    if (!schemaName || !tableName) {
+        return;
+    }
+
+    const key = gpcopyMakeKey(schemaName, tableName);
+
+    const exists = selectedGpcopyTables.some(function (item) {
+        const s = item.schema || item.schema_name;
+        const t = item.table || item.table_name;
+        return gpcopyMakeKey(s, t) === key;
+    });
+
+    if (!exists) {
         selectedGpcopyTables.push({
             schema: schemaName,
             table: tableName,
@@ -141,16 +282,50 @@ function gpcopyAddSelectedTable(schemaName, tableName) {
             table_name: tableName
         });
     }
+
+    saveSelectedGpcopyTablesSafe();
 }
 
 function gpcopyRemoveSelectedTable(schemaName, tableName) {
     const key = gpcopyMakeKey(schemaName, tableName);
 
     selectedGpcopyTables = selectedGpcopyTables.filter(function (item) {
-        const schema = item.schema || item.schema_name;
-        const table = item.table || item.table_name;
-        return gpcopyMakeKey(schema, table) !== key;
+        const s = item.schema || item.schema_name;
+        const t = item.table || item.table_name;
+        return gpcopyMakeKey(s, t) !== key;
     });
+
+    saveSelectedGpcopyTablesSafe();
+}
+
+function saveSelectedGpcopyTablesSafe() {
+    try {
+        localStorage.setItem(
+            "gpmanager_gpcopy_selected_tables",
+            JSON.stringify(selectedGpcopyTables || [])
+        );
+    } catch (e) {
+        console.warn("Cannot save selected gpcopy tables:", e);
+    }
+}
+
+function restoreSelectedGpcopyTablesSafe() {
+    try {
+        const raw = localStorage.getItem("gpmanager_gpcopy_selected_tables");
+        if (!raw) {
+            return;
+        }
+
+        const parsed = JSON.parse(raw);
+
+        if (Array.isArray(parsed)) {
+            selectedGpcopyTables = parsed.filter(function (item) {
+                return (item.schema || item.schema_name) && (item.table || item.table_name);
+            });
+        }
+    } catch (e) {
+        console.warn("Cannot restore selected gpcopy tables:", e);
+    }
 }
 
 function getSelectedGpcopyTables() {
@@ -202,7 +377,7 @@ function getGpcopySelectedTablesSafe() {
             return;
         }
 
-        const key = `${schema}.${table}`;
+        const key = gpcopyMakeKey(schema, table);
 
         if (seen.has(key)) {
             return;
@@ -221,65 +396,21 @@ function getGpcopySelectedTablesSafe() {
     return result;
 }
 
-async function loadGpcopyObjectTree() {
-    const ids = getGpcopyConnectionIds();
-    const sourceConnectionId = ids.sourceConnectionId;
-    const treeBox = gpcopyEl("gpcopyObjectTree");
+function gpcopyUpdateSelectedCount() {
+    const selectedCount = getSelectedGpcopyTables().length;
 
-    if (!sourceConnectionId) {
-        gpcopySetTreeStatus("Выбери source connection.");
-        if (treeBox) {
-            treeBox.innerHTML = "";
+    const ids = [
+        "gpcopySelectedCount",
+        "selectedCount",
+        "gpcopySelectedTablesCount"
+    ];
+
+    ids.forEach(function (id) {
+        const el = gpcopyEl(id);
+        if (el) {
+            el.textContent = String(selectedCount);
         }
-        return;
-    }
-
-    gpcopySetTreeStatus("Loading source database objects...");
-
-    if (treeBox) {
-        treeBox.innerHTML = "";
-    }
-
-    selectedGpcopyTables = [];
-    gpcopyCollapsedSchemas = new Set();
-    gpcopyUpdateSelectedCount();
-
-    try {
-        const response = await fetch(
-            `/api/objects/tree?connection_id=${encodeURIComponent(sourceConnectionId)}`
-        );
-
-        const data = await response.json();
-
-        if (!response.ok || !data.ok) {
-            throw new Error(data.message || "Failed to load object tree");
-        }
-
-        gpcopyTreeData = data.tree;
-        renderGpcopyObjectTree();
-
-        const schemas = data.tree.schemas || [];
-        const tableCount = schemas.reduce(function (sum, schemaObj) {
-            return sum + ((schemaObj.tables || []).length);
-        }, 0);
-
-        gpcopySetTreeStatus(
-            `Loaded database ${data.tree.database || ""}: schemas=${schemas.length}, tables=${tableCount}`
-        );
-
-    } catch (e) {
-        console.error(e);
-        gpcopySetTreeStatus(e.message || String(e));
-
-        if (treeBox) {
-            treeBox.innerHTML = "";
-        }
-    }
-}
-
-function getGpcopySearchText() {
-    const searchInput = gpcopyEl("gpcopyObjectSearch");
-    return searchInput ? searchInput.value.trim().toLowerCase() : "";
+    });
 }
 
 function getGpcopyVisibleTablesBySchema(schemaName) {
@@ -296,14 +427,15 @@ function getGpcopyVisibleTablesBySchema(schemaName) {
     }
 
     const allTables = schemaObj.tables || [];
-    const searchText = getGpcopySearchText();
+    const searchInput = gpcopyEl("gpcopyObjectSearch");
+    const searchText = searchInput ? searchInput.value.trim().toLowerCase() : "";
 
     if (!searchText) {
         return allTables;
     }
 
     return allTables.filter(function (tableObj) {
-        const tableName = tableObj.table || "";
+        const tableName = tableObj.table || tableObj.table_name || "";
         const fullName = `${schemaName}.${tableName}`.toLowerCase();
 
         return (
@@ -314,17 +446,148 @@ function getGpcopyVisibleTablesBySchema(schemaName) {
     });
 }
 
+async function loadGpcopyObjectTree() {
+    const sourceConnectionSelect =
+        gpcopyEl("sourceConnectionId") ||
+        gpcopyEl("gpcopySourceConnectionId") ||
+        gpcopyEl("source_connection_id") ||
+        gpcopyEl("connectionId");
+
+    const treeBox =
+        gpcopyEl("gpcopyObjectTree") ||
+        gpcopyEl("objectTree");
+
+    if (!sourceConnectionSelect) {
+        gpcopySetTreeStatus("Source connection select не найден.", "danger");
+        return;
+    }
+
+    const connectionId = sourceConnectionSelect.value;
+
+    if (!connectionId) {
+        gpcopySetTreeStatus("Выбери Source connection.", "warning");
+        return;
+    }
+
+    if (treeBox) {
+        treeBox.innerHTML = `
+            <div class="text-muted small">
+                Loading source database objects...
+            </div>
+        `;
+    }
+
+    gpcopySetTreeStatus("Loading source database objects...", "info");
+
+    try {
+        const response = await fetch(
+            `/api/objects/tree?connection_id=${encodeURIComponent(connectionId)}`
+        );
+
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+            throw new Error(data.message || "Failed to load source object tree");
+        }
+
+        gpcopyTreeData = data.tree;
+
+        restoreSelectedGpcopyTablesSafe();
+
+        renderGpcopyObjectTree();
+
+        const totalTables = countGpcopyTreeTables(gpcopyTreeData);
+
+        gpcopySetTreeStatus(
+            `Loaded source objects. Tables: ${totalTables}`,
+            "success"
+        );
+
+        const searchInput = gpcopyEl("gpcopyObjectSearch");
+        if (searchInput && searchInput.value) {
+            renderGpcopyObjectTree();
+        }
+
+    } catch (e) {
+        console.error(e);
+
+        if (treeBox) {
+            treeBox.innerHTML = `
+                <div class="text-danger small">
+                    Failed to load source object tree: ${gpcopyEscapeHtml(e.message)}
+                </div>
+            `;
+        }
+
+        gpcopySetTreeStatus(
+            `Failed to load source object tree: ${e.message}`,
+            "danger"
+        );
+    }
+}
+
+function countGpcopyTreeTables(treeData) {
+    if (!treeData || !Array.isArray(treeData.schemas)) {
+        return 0;
+    }
+
+    let total = 0;
+
+    treeData.schemas.forEach(function (schema) {
+        total += (schema.tables || []).length;
+    });
+
+    return total;
+}
+
+function gpcopySetTreeStatus(message, type) {
+    const statusBox =
+        gpcopyEl("gpcopyObjectTreeStatus") ||
+        gpcopyEl("objectTreeStatus") ||
+        gpcopyEl("gpcopyTreeStatus");
+
+    if (!statusBox) {
+        return;
+    }
+
+    const alertType = type || "info";
+
+    statusBox.className = `alert alert-${alertType} py-2 small`;
+    statusBox.textContent = message || "";
+}
+
+
+function gpcopySetDateStatus(message, type) {
+    const statusBox =
+        gpcopyEl("gpcopyDateStatus") ||
+        gpcopyEl("gpcopyDateCopyStatus") ||
+        gpcopyEl("gpcopyByDateStatus") ||
+        gpcopyEl("dateCopyStatus");
+
+    if (!statusBox) {
+        console.warn("gpcopy date status box not found:", message);
+        return;
+    }
+
+    const alertType = type || "info";
+
+    statusBox.className = `alert alert-${alertType} py-2 small`;
+    statusBox.textContent = message || "";
+}
+
+
 function renderGpcopyObjectTree() {
-    const treeBox = gpcopyEl("gpcopyObjectTree");
+    const treeBox = gpcopyEl("gpcopyObjectTree") || gpcopyEl("objectTree");
 
     if (!treeBox) {
+        console.error("gpcopyObjectTree element not found");
         return;
     }
 
     if (!gpcopyTreeData || !Array.isArray(gpcopyTreeData.schemas)) {
         treeBox.innerHTML = `
             <div class="text-muted small">
-                Нет данных. Выбери source connection и нажми Load source objects.
+                Source object tree is empty. Нажми Load Source Objects.
             </div>
         `;
         gpcopyUpdateSelectedCount();
@@ -344,17 +607,22 @@ function renderGpcopyObjectTree() {
         const collapsed = gpcopyCollapsedSchemas.has(schemaName);
 
         const selectedInSchema = visibleTables.filter(function (tableObj) {
-            return gpcopyIsSelected(schemaName, tableObj.table);
+            const tableName = tableObj.table || tableObj.table_name;
+            return gpcopyIsSelected(schemaName, tableName);
         }).length;
 
         const allVisibleSelected =
             visibleTables.length > 0 && selectedInSchema === visibleTables.length;
+
+        const someVisibleSelected =
+            selectedInSchema > 0 && selectedInSchema < visibleTables.length;
 
         html += `
             <div class="gpcopy-schema-node mb-2" data-schema="${gpcopyEscapeHtml(schemaName)}">
                 <div class="d-flex align-items-center gap-2">
                     <input type="checkbox"
                            class="form-check-input gpcopy-schema-checkbox"
+                           data-schema="${gpcopyEscapeHtml(schemaName)}"
                            ${allVisibleSelected ? "checked" : ""}
                            onchange="gpcopyToggleSchemaCheckbox('${gpcopyEscapeJs(schemaName)}', this.checked)">
 
@@ -373,14 +641,20 @@ function renderGpcopyObjectTree() {
         `;
 
         if (!collapsed) {
-            html += `<div class="ms-4 mt-1">`;
+            html += `<div class="gpcopy-schema-tables ms-4 mt-1">`;
 
             visibleTables.forEach(function (tableObj) {
-                const tableName = tableObj.table;
+                const tableName = tableObj.table || tableObj.table_name;
+                const relkind = tableObj.relkind === "p" ? "partitioned" : "table";
                 const checked = gpcopyIsSelected(schemaName, tableName);
 
                 html += `
-                    <div class="d-flex align-items-center gap-2 mb-1 gpcopy-table-row">
+                    <label class="gpcopy-table-node d-flex align-items-center gap-2 mb-1"
+                           data-schema="${gpcopyEscapeHtml(schemaName)}"
+                           data-table="${gpcopyEscapeHtml(tableName)}"
+                           data-full-name="${gpcopyEscapeHtml(schemaName + "." + tableName)}"
+                           style="cursor:pointer;">
+
                         <input type="checkbox"
                                class="form-check-input gpcopy-table-checkbox"
                                data-schema="${gpcopyEscapeHtml(schemaName)}"
@@ -389,7 +663,8 @@ function renderGpcopyObjectTree() {
                                onchange="gpcopyToggleTableCheckbox('${gpcopyEscapeJs(schemaName)}', '${gpcopyEscapeJs(tableName)}', this.checked)">
 
                         <span>${gpcopyEscapeHtml(tableName)}</span>
-                    </div>
+                        <span class="text-muted small ms-1">${gpcopyEscapeHtml(relkind)}</span>
+                    </label>
                 `;
             });
 
@@ -408,6 +683,20 @@ function renderGpcopyObjectTree() {
     }
 
     treeBox.innerHTML = html;
+
+    document.querySelectorAll(".gpcopy-schema-checkbox").forEach(function (checkbox) {
+        const schemaName = checkbox.dataset.schema;
+        const tables = getGpcopyVisibleTablesBySchema(schemaName);
+
+        const selectedCount = tables.filter(function (tableObj) {
+            const tableName = tableObj.table || tableObj.table_name;
+            return gpcopyIsSelected(schemaName, tableName);
+        }).length;
+
+        checkbox.checked = tables.length > 0 && selectedCount === tables.length;
+        checkbox.indeterminate = selectedCount > 0 && selectedCount < tables.length;
+    });
+
     gpcopyUpdateSelectedCount();
 }
 
@@ -428,17 +717,48 @@ function gpcopyToggleTableCheckbox(schemaName, tableName, checked) {
         gpcopyRemoveSelectedTable(schemaName, tableName);
     }
 
-    renderGpcopyObjectTree();
+    const cb = document.querySelector(
+        `.gpcopy-table-checkbox[data-schema="${CSS.escape(schemaName)}"][data-table="${CSS.escape(tableName)}"]`
+    );
+
+    if (cb) {
+        cb.checked = !!checked;
+    }
+
+    updateGpcopySchemaCheckboxState(schemaName);
+    gpcopyUpdateSelectedCount();
+}
+
+function updateGpcopySchemaCheckboxState(schemaName) {
+    const schemaCheckbox = document.querySelector(
+        `.gpcopy-schema-checkbox[data-schema="${CSS.escape(schemaName)}"]`
+    );
+
+    if (!schemaCheckbox) {
+        return;
+    }
+
+    const tables = getGpcopyVisibleTablesBySchema(schemaName);
+
+    const selectedCount = tables.filter(function (tableObj) {
+        const tableName = tableObj.table || tableObj.table_name;
+        return gpcopyIsSelected(schemaName, tableName);
+    }).length;
+
+    schemaCheckbox.checked = tables.length > 0 && selectedCount === tables.length;
+    schemaCheckbox.indeterminate = selectedCount > 0 && selectedCount < tables.length;
 }
 
 function gpcopyToggleSchemaCheckbox(schemaName, checked) {
-    const visibleTables = getGpcopyVisibleTablesBySchema(schemaName);
+    const tables = getGpcopyVisibleTablesBySchema(schemaName);
 
-    visibleTables.forEach(function (tableObj) {
+    tables.forEach(function (tableObj) {
+        const tableName = tableObj.table || tableObj.table_name;
+
         if (checked) {
-            gpcopyAddSelectedTable(schemaName, tableObj.table);
+            gpcopyAddSelectedTable(schemaName, tableName);
         } else {
-            gpcopyRemoveSelectedTable(schemaName, tableObj.table);
+            gpcopyRemoveSelectedTable(schemaName, tableName);
         }
     });
 
@@ -458,10 +778,12 @@ function gpcopySearchChanged() {
 }
 
 function resetGpcopyTreeOnSourceChange() {
-    const searchInput = gpcopyEl("gpcopyObjectSearch");
+    const sourceSelect = gpcopyEl("sourceConnectionId");
 
-    if (searchInput) {
-        searchInput.value = "";
+    if (sourceSelect) {
+        saveGpcopyUiState({
+            sourceConnectionId: sourceSelect.value
+        });
     }
 
     const treeBox = gpcopyEl("gpcopyObjectTree");
@@ -473,8 +795,13 @@ function resetGpcopyTreeOnSourceChange() {
     gpcopyTreeData = null;
     selectedGpcopyTables = [];
     gpcopyCollapsedSchemas = new Set();
+
     gpcopyUpdateSelectedCount();
-    gpcopySetTreeStatus("");
+
+    gpcopySetTreeStatus(
+        "Source connection changed. Нажми Load source database objects.",
+        "info"
+    );
 }
 
 function getGpcopyTargetSchema() {
@@ -683,6 +1010,30 @@ function prepareGpcopyDateTables() {
         `Подготовлено таблиц: ${tables.length}. Для каждой таблицы укажи свою date column.`,
         "info"
     );
+}
+
+function getGpcopyConnectionIds() {
+    const sourceSelect =
+        gpcopyEl("sourceConnectionId") ||
+        gpcopyEl("gpcopySourceConnectionId") ||
+        gpcopyEl("source_connection_id") ||
+        gpcopyEl("connectionId");
+
+    const destSelect =
+        gpcopyEl("destConnectionId") ||
+        gpcopyEl("gpcopyDestConnectionId") ||
+        gpcopyEl("dest_connection_id") ||
+        gpcopyEl("targetConnectionId");
+
+    const sourceConnectionId = sourceSelect ? sourceSelect.value : "";
+    const destConnectionId = destSelect ? destSelect.value : "";
+
+    return {
+        source_connection_id: sourceConnectionId,
+        dest_connection_id: destConnectionId,
+        sourceConnectionId: sourceConnectionId,
+        destConnectionId: destConnectionId
+    };
 }
 
 async function loadGpcopyDateColumns(rowIndex, schemaName, tableName) {
@@ -1303,29 +1654,197 @@ function renderGpcopyItems(items) {
     }).join("");
 }
 
+function saveGpcopyFormState() {
+    saveGpcopyStatePatch({
+        sourceConnectionId: gpcopyGetValue("gpcopySourceConnectionId"),
+        destConnectionId: gpcopyGetValue("gpcopyDestConnectionId"),
+
+        tableFilter: gpcopyGetValue("gpcopyObjectFilter"),
+
+        targetSchema: gpcopyGetValue("gpcopyTargetSchema"),
+        targetTable: gpcopyGetValue("gpcopyTargetTable"),
+
+        dateFrom: gpcopyGetValue("gpcopyDateFrom"),
+        dateTo: gpcopyGetValue("gpcopyDateTo"),
+
+        append: gpcopyIsChecked("gpcopyAppend"),
+        truncate: gpcopyIsChecked("gpcopyTruncate"),
+        drop: gpcopyIsChecked("gpcopyDrop"),
+        skipExisting: gpcopyIsChecked("gpcopySkipExisting"),
+        noOwnership: gpcopyIsChecked("gpcopyNoOwnership"),
+        analyze: gpcopyIsChecked("gpcopyAnalyze"),
+        dryRun: gpcopyIsChecked("gpcopyDryRun"),
+
+        jobs: gpcopyGetValue("gpcopyJobs"),
+        onSegmentThreshold: gpcopyGetValue("gpcopyOnSegmentThreshold")
+    });
+}
+
+function restoreGpcopyFormState() {
+    const state = getGpcopyState();
+
+    gpcopySetValue("gpcopySourceConnectionId", state.sourceConnectionId);
+    gpcopySetValue("gpcopyDestConnectionId", state.destConnectionId);
+
+    gpcopySetValue("gpcopyObjectFilter", state.tableFilter);
+
+    gpcopySetValue("gpcopyTargetSchema", state.targetSchema);
+    gpcopySetValue("gpcopyTargetTable", state.targetTable);
+
+    gpcopySetValue("gpcopyDateFrom", state.dateFrom);
+    gpcopySetValue("gpcopyDateTo", state.dateTo);
+
+    gpcopySetChecked("gpcopyAppend", state.append);
+    gpcopySetChecked("gpcopyTruncate", state.truncate);
+    gpcopySetChecked("gpcopyDrop", state.drop);
+    gpcopySetChecked("gpcopySkipExisting", state.skipExisting);
+    gpcopySetChecked("gpcopyNoOwnership", state.noOwnership);
+    gpcopySetChecked("gpcopyAnalyze", state.analyze);
+    gpcopySetChecked("gpcopyDryRun", state.dryRun);
+
+    gpcopySetValue("gpcopyJobs", state.jobs);
+    gpcopySetValue("gpcopyOnSegmentThreshold", state.onSegmentThreshold);
+}
+
+function getSavedExpandedSchemas() {
+    const state = getGpcopyState();
+    return state.expandedSchemas || {};
+}
+
+function saveSchemaExpanded(schemaName, expanded) {
+    const state = getGpcopyState();
+    const expandedSchemas = state.expandedSchemas || {};
+
+    expandedSchemas[schemaName] = !!expanded;
+
+    saveGpcopyStatePatch({
+        expandedSchemas: expandedSchemas
+    });
+}
+
+function getSavedSelectedTables() {
+    const state = getGpcopyState();
+    return state.selectedTables || {};
+}
+
+function saveSelectedGpcopyTables() {
+    const selected = {};
+
+    document.querySelectorAll(".gpcopy-table-checkbox").forEach(function (cb) {
+        const schemaName = cb.dataset.schema || "";
+        const tableName = cb.dataset.table || "";
+
+        if (!schemaName || !tableName) {
+            return;
+        }
+
+        const key = schemaName + "." + tableName;
+
+        if (cb.checked) {
+            selected[key] = true;
+        }
+    });
+
+    saveGpcopyStatePatch({
+        selectedTables: selected
+    });
+}
+
+function restoreSelectedGpcopyTables() {
+    const selected = getSavedSelectedTables();
+
+    document.querySelectorAll(".gpcopy-table-checkbox").forEach(function (cb) {
+        const schemaName = cb.dataset.schema || "";
+        const tableName = cb.dataset.table || "";
+        const key = schemaName + "." + tableName;
+
+        cb.checked = !!selected[key];
+    });
+
+    if (typeof updateGpcopySelectedCount === "function") {
+        updateGpcopySelectedCount();
+    }
+}
+
+function restoreGpcopyTreeUiState() {
+    const state = getGpcopyState();
+    const filterValue = state.tableFilter || "";
+
+    if (filterValue) {
+        gpcopySetValue("gpcopyObjectFilter", filterValue);
+
+        if (typeof filterGpcopyObjectTree === "function") {
+            filterGpcopyObjectTree();
+        }
+    }
+
+    const expandedSchemas = getSavedExpandedSchemas();
+
+    document.querySelectorAll("[data-gpcopy-schema-body]").forEach(function (body) {
+        const schemaName = body.dataset.gpcopySchemaBody;
+
+        if (expandedSchemas[schemaName] === true) {
+            body.style.display = "";
+        } else if (expandedSchemas[schemaName] === false) {
+            body.style.display = "none";
+        }
+    });
+
+    restoreSelectedGpcopyTables();
+    bindGpcopyTreePersistEvents();
+}
+
+function bindGpcopyTreePersistEvents() {
+    document.querySelectorAll(".gpcopy-table-checkbox").forEach(function (cb) {
+        cb.addEventListener("change", function () {
+            saveSelectedGpcopyTables();
+            saveGpcopyFormState();
+        });
+    });
+
+    document.querySelectorAll("[data-gpcopy-schema-toggle]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            const schemaName = btn.dataset.gpcopySchemaToggle;
+            const body = document.querySelector('[data-gpcopy-schema-body="' + cssEscapeValue(schemaName) + '"]');
+
+            if (!body) {
+                return;
+            }
+
+            const isHidden = body.style.display === "none";
+            body.style.display = isHidden ? "" : "none";
+
+            saveSchemaExpanded(schemaName, isHidden);
+        });
+    });
+}
+
+function cssEscapeValue(value) {
+    if (window.CSS && CSS.escape) {
+        return CSS.escape(value);
+    }
+
+    return String(value).replace(/"/g, '\\"');
+}
+
 document.addEventListener("DOMContentLoaded", function () {
-    const searchInput = gpcopyEl("gpcopyObjectSearch");
-
-    if (searchInput) {
-        searchInput.addEventListener("input", gpcopySearchChanged);
-    }
-
-    const sourceSelect =
-        gpcopyEl("sourceConnectionId") ||
-        gpcopyEl("gpcopySourceConnectionId") ||
-        gpcopyEl("source_connection_id") ||
-        gpcopyEl("connectionId");
-
-    if (sourceSelect) {
-        sourceSelect.addEventListener("change", resetGpcopyTreeOnSourceChange);
-    }
+    restoreGpcopyUiState();
+    bindGpcopyUiStateEvents();
 
     gpcopyUpdateSelectedCount();
+
+    const searchInput = gpcopyEl("gpcopyObjectSearch");
+
+    if (searchInput && searchInput.value) {
+        renderGpcopyObjectTree();
+    }
 });
 
 /* Export functions for onclick in gpcopy.html */
 window.loadGpcopyObjectTree = loadGpcopyObjectTree;
 window.renderGpcopyObjectTree = renderGpcopyObjectTree;
+window.countGpcopyTreeTables = countGpcopyTreeTables;
+window.gpcopySetTreeStatus = gpcopySetTreeStatus;
 
 window.gpcopyFilterObjectTree = gpcopyFilterObjectTree;
 window.filterGpcopyObjectTree = filterGpcopyObjectTree;
@@ -1352,3 +1871,5 @@ window.pollGpcopyJob = pollGpcopyJob;
 
 window.gpcopySetDateStatus = gpcopySetDateStatus;
 window.setGpcopyDateStatus = setGpcopyDateStatus;
+
+window.getGpcopyConnectionIds = getGpcopyConnectionIds;
