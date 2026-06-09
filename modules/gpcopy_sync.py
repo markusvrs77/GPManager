@@ -240,61 +240,22 @@ def run_gpcopy_sync_job(job_id):
 
                     target_conn.commit()
 
-                    # 2. Build include-table-json for gpcopy
-                    source_cols_sql = build_cols_list(common_cols)
-                    source_sql = f"""
-                        SELECT {source_cols_sql}
-                        FROM {full_table(source_schema, source_table)}
-                    """
-
-                    include_json = [
-                        {
-                            "source": f"{source_db}.{source_schema}.{source_table}",
-                            "dest": f"{dest_db}.{stage_schema}.{stage_table}",
-                            "sql": source_sql,
-                        }
-                    ]
-
-                    fd, include_json_file = tempfile.mkstemp(
-                        prefix=f"gpcopy_sync_{job_id}_",
-                        suffix=".json",
-                        text=True,
+                    # 2. Copy PROD -> TEST staging через psycopg2 COPY
+                    print(
+                        f"[gpcopy_sync] copy source to staging via psycopg2: "
+                        f"{source_schema}.{source_table} -> {stage_schema}.{stage_table}"
                     )
 
-                    try:
-                        with os.fdopen(fd, "w", encoding="utf-8") as f:
-                            json.dump(include_json, f, ensure_ascii=False, indent=2)
+                    copy_source_to_stage_via_psycopg2(
+                        source_conn=source_conn,
+                        target_conn=target_conn,
+                        source_schema=source_schema,
+                        source_table=source_table,
+                        stage_schema=stage_schema,
+                        stage_table=stage_table,
+                        columns=common_cols,
+                    )
 
-                        cmd = build_gpcopy_sync_command(
-                            gpcopy_path=gpcopy_path,
-                            source_host=source_host,
-                            dest_host=dest_host,
-                            source_port=source_port,
-                            dest_port=dest_port,
-                            dest_user=dest_user,
-                            include_json_file=include_json_file,
-                            jobs=jobs,
-                        )
-
-                        print("[gpcopy_sync] command:", " ".join(cmd))
-
-                        proc = subprocess.run(
-                            cmd,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=True,
-                        )
-
-                        print(proc.stdout)
-
-                        if proc.returncode != 0:
-                            raise Exception(f"gpcopy failed with code {proc.returncode}: {proc.stdout[-4000:]}")
-
-                    finally:
-                        try:
-                            os.remove(include_json_file)
-                        except Exception:
-                            pass
 
                     # 3. Проверяем, сколько строк пришло в staging
                     stage_count_row = run_sql_fetch_one(
