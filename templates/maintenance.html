@@ -4,11 +4,9 @@
 
 <div class="container-fluid py-4">
 
-    <div class="mb-3">
-        <h2 class="mb-1">Tables Maintenance</h2>
-        <div class="text-muted">
-            Skew Analyzer, Distribution Recommendation and REORGANIZE in one workspace.
-        </div>
+    <h2>Tables Maintenance</h2>
+    <div class="text-muted mb-3">
+        Skew Analyzer, Distribution Recommendation and REORGANIZE in one workspace.
     </div>
 
     <div class="row g-3">
@@ -132,6 +130,7 @@
         <!-- RIGHT SIDE -->
         <div class="col-lg-8">
 
+            <!-- SKEW ANALYZE -->
             <div class="card mb-3">
                 <div class="card-header fw-bold">
                     Skew Analyze
@@ -144,31 +143,92 @@
                         class="btn btn-warning w-100 mb-3"
                         onclick="handleSkewActionButton()"
                     >
-                        Run Skew Analyze
+                        Run Skew Analysis
                     </button>
 
-                    <div id="skewStatusBox" class="alert alert-info">
+                    <button
+                        type="button"
+                        id="skewExportExcelButton"
+                        class="btn btn-outline-success w-100 mb-3"
+                        onclick="exportSkewExcel()"
+                    >
+                        Export Skew Excel
+                    </button>
+
+                    <div id="skewRunStatus" class="alert alert-info">
                         Ready.
                     </div>
 
-                    <div id="skewProgressBox" class="mb-3">
-                        <div class="d-flex justify-content-between">
-                            <strong>Skew progress</strong>
-                            <span id="skewProgressPercent">0%</span>
-                        </div>
-                        <div class="progress">
-                            <div
-                                id="skewProgressBar"
-                                class="progress-bar"
-                                style="width: 0%"
-                            >
-                                0%
-                            </div>
+                    <div class="d-flex justify-content-between">
+                        <strong>Skew progress</strong>
+                        <span id="skewJobProgressText">0%</span>
+                    </div>
+
+                    <div class="progress mb-3">
+                        <div
+                            id="skewJobProgressBar"
+                            class="progress-bar"
+                            style="width: 0%"
+                        >
+                            0%
                         </div>
                     </div>
+
+                    <div class="row text-center mb-3">
+                        <div class="col">
+                            <div class="text-muted small">Total</div>
+                            <strong id="skewJobTotal">0</strong>
+                        </div>
+
+                        <div class="col">
+                            <div class="text-muted small">Done</div>
+                            <strong id="skewJobDone" class="text-success">0</strong>
+                        </div>
+
+                        <div class="col">
+                            <div class="text-muted small">Failed</div>
+                            <strong id="skewJobFailed" class="text-danger">0</strong>
+                        </div>
+
+                        <div class="col">
+                            <div class="text-muted small">Skipped</div>
+                            <strong id="skewJobSkipped" class="text-warning">0</strong>
+                        </div>
+                    </div>
+
+                    <div class="table-responsive job-items-scroll">
+                        <table class="table table-sm table-bordered align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Schema</th>
+                                    <th>Table</th>
+                                    <th>Status</th>
+                                    <th>Skew ratio</th>
+                                    <th>Total rows</th>
+                                    <th>Segments</th>
+                                    <th>Empty segs</th>
+                                    <th>Max rows</th>
+                                    <th>Min rows</th>
+                                    <th>Duration</th>
+                                    <th>Error</th>
+                                </tr>
+                            </thead>
+
+                            <tbody id="skewJobItemsBody">
+                                <tr>
+                                    <td colspan="11" class="text-muted">
+                                        Пока нет данных.
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <pre id="skewRawOutput" class="d-none"></pre>
                 </div>
             </div>
 
+            <!-- DISTRIBUTION RECOMMENDATION -->
             <div class="card mb-3">
                 <div class="card-header fw-bold">
                     Distribution recommendation
@@ -203,6 +263,7 @@
                 </div>
             </div>
 
+            <!-- REORGANIZE -->
             <div class="card mb-3">
                 <div class="card-header fw-bold">
                     Reorganize
@@ -242,14 +303,17 @@
                             <div class="text-muted small">Total</div>
                             <strong id="reorganizeTotal">0</strong>
                         </div>
+
                         <div class="col">
                             <div class="text-muted small">Done</div>
                             <strong id="reorganizeDone" class="text-success">0</strong>
                         </div>
+
                         <div class="col">
                             <div class="text-muted small">Failed</div>
                             <strong id="reorganizeFailed" class="text-danger">0</strong>
                         </div>
+
                         <div class="col">
                             <div class="text-muted small">Skipped</div>
                             <strong id="reorganizeSkipped" class="text-warning">0</strong>
@@ -267,6 +331,7 @@
                                     <th>Error</th>
                                 </tr>
                             </thead>
+
                             <tbody id="reorganizeItemsBody">
                                 <tr>
                                     <td colspan="5" class="text-muted">
@@ -286,8 +351,8 @@
 
 </div>
 
-<script src="{{ url_for('static', filename='js/object_tree.js') }}?v=10"></script>
-<script src="{{ url_for('static', filename='js/skew.js') }}?v=10"></script>
-<script src="{{ url_for('static', filename='js/reorganize.js') }}?v=10"></script>
+<script src="{{ url_for('static', filename='js/object_tree.js') }}?v=11"></script>
+<script src="{{ url_for('static', filename='js/skew.js') }}?v=11"></script>
+<script src="{{ url_for('static', filename='js/reorganize.js') }}?v=11"></script>
 
 {% endblock %}

@@ -23,6 +23,58 @@ function gpcopyEl(id) {
     return document.getElementById(id);
 }
 
+function gpcopySetStatus(message, type = "info") {
+    const statusBox =
+        gpcopyEl("gpcopyStatusBox") ||
+        gpcopyEl("gpcopyStatus") ||
+        gpcopyEl("gpcopyJobStatus") ||
+        gpcopyEl("gpcopyMainStatus") ||
+        gpcopyEl("gpcopySyncStatusBox");
+
+    if (!statusBox) {
+        console.log("[gpcopy]", message);
+        return;
+    }
+
+    statusBox.className = `alert alert-${type} py-2 small`;
+    statusBox.textContent = message || "";
+}
+
+function gpcopySetDateStatus(message, type = "info") {
+    const statusBox =
+        gpcopyEl("gpcopyDateStatusBox") ||
+        gpcopyEl("gpcopyDateStatus") ||
+        gpcopyEl("gpcopyDateCopyStatus") ||
+        gpcopyEl("gpcopyByDateStatus") ||
+        gpcopyEl("dateCopyStatus") ||
+        gpcopyEl("gpcopySyncStatusBox");
+
+    if (!statusBox) {
+        console.log("[gpcopy date]", message);
+        return;
+    }
+
+    statusBox.className = `alert alert-${type} py-2 small`;
+    statusBox.textContent = message || "";
+}
+
+/*
+    Совместимость со старым кодом.
+    Где-то в файле вызывается setGpcopyDateStatus,
+    а где-то gpcopySetDateStatus.
+*/
+function setGpcopyDateStatus(message, type = "info") {
+    return gpcopySetDateStatus(message, type);
+}
+
+function setGpcopyStatus(message, type = "info") {
+    return gpcopySetStatus(message, type);
+}
+
+//function gpcopyEl(id) {
+//    return document.getElementById(id);
+//}
+
 const GPCOPY_STORAGE_KEY = "gpmanager_gpcopy_state_v1";
 
 const GPCOPY_UI_STORAGE_KEY = "gpmanager_gpcopy_ui_state_v1";
@@ -1840,6 +1892,214 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 });
 
+function prepareGpcopySyncTables() {
+    const tables = getGpcopySelectedTablesSafe();
+    const body = document.getElementById("gpcopySyncTablesBody");
+
+    if (!body) {
+        alert("gpcopySyncTablesBody not found");
+        return;
+    }
+
+    if (!tables.length) {
+        body.innerHTML = `
+            <tr>
+                <td colspan="5" class="text-warning">
+                    Сначала выбери таблицы слева.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    const targetSchema = getGpcopyTargetSchema ? getGpcopyTargetSchema() : "";
+
+    body.innerHTML = tables.map(function (t, index) {
+        const schema = t.schema || t.schema_name;
+        const table = t.table || t.table_name;
+
+        const sourceFull = `${schema}.${table}`;
+        const targetFull = targetSchema ? `${targetSchema}.${table}` : sourceFull;
+
+        return `
+            <tr data-index="${index}"
+                data-schema="${gpcopyEscapeHtml(schema)}"
+                data-table="${gpcopyEscapeHtml(table)}">
+
+                <td>${gpcopyEscapeHtml(sourceFull)}</td>
+
+                <td>
+                    <input class="form-control form-control-sm gpcopy-sync-target"
+                           id="gpcopySyncTarget_${index}"
+                           value="${gpcopyEscapeHtml(targetFull)}">
+                </td>
+
+                <td>
+                    <input class="form-control form-control-sm gpcopy-sync-key-columns"
+                           id="gpcopySyncKeys_${index}"
+                           placeholder="id или cli_code,trn_date">
+                </td>
+
+                <td>
+                    <input class="form-control form-control-sm gpcopy-sync-compare-columns"
+                           id="gpcopySyncCompare_${index}"
+                           placeholder="* или amount,status,updated_at"
+                           value="*">
+                </td>
+
+                <td class="text-center">
+                    <input type="checkbox"
+                           class="form-check-input gpcopy-sync-delete-missing"
+                           id="gpcopySyncDelete_${index}">
+                </td>
+            </tr>
+        `;
+    }).join("");
+
+    setGpcopySyncStatus(`Подготовлено таблиц: ${tables.length}. Укажи key columns.`, "info");
+}
+
+function collectGpcopySyncConfigs() {
+    const rows = document.querySelectorAll("#gpcopySyncTablesBody tr[data-index]");
+    const configs = [];
+
+    rows.forEach(function (row) {
+        const index = row.dataset.index;
+        const schema = row.dataset.schema;
+        const table = row.dataset.table;
+
+        const target = document.getElementById(`gpcopySyncTarget_${index}`)?.value.trim();
+        const keyColumnsRaw = document.getElementById(`gpcopySyncKeys_${index}`)?.value.trim();
+        const compareColumnsRaw = document.getElementById(`gpcopySyncCompare_${index}`)?.value.trim();
+        const deleteMissing = document.getElementById(`gpcopySyncDelete_${index}`)?.checked === true;
+
+        const keyColumns = keyColumnsRaw
+            ? keyColumnsRaw.split(",").map(x => x.trim()).filter(Boolean)
+            : [];
+
+        const compareColumns = compareColumnsRaw && compareColumnsRaw !== "*"
+            ? compareColumnsRaw.split(",").map(x => x.trim()).filter(Boolean)
+            : ["*"];
+
+        configs.push({
+            schema: schema,
+            table: table,
+            source: `${schema}.${table}`,
+            target: target,
+            key_columns: keyColumns,
+            compare_columns: compareColumns,
+            delete_missing: deleteMissing
+        });
+    });
+
+    return configs;
+}
+
+function buildGpcopySyncPayload() {
+    const ids = getGpcopyConnectionIds();
+    const tableConfigs = collectGpcopySyncConfigs();
+
+    for (const cfg of tableConfigs) {
+        if (!cfg.key_columns.length) {
+            throw new Error(`Для таблицы ${cfg.source} не указан key columns`);
+        }
+
+        if (!cfg.target) {
+            throw new Error(`Для таблицы ${cfg.source} не указан target`);
+        }
+    }
+
+    return {
+        source_connection_id: Number(ids.sourceConnectionId || ids.source_connection_id),
+        dest_connection_id: Number(ids.destConnectionId || ids.dest_connection_id),
+        table_configs: tableConfigs,
+        gpcopy_path: gpcopyValue("gpcopyPath", "/usr/local/gpdb/greenplum-db/bin/gpcopy"),
+        jobs: Number(gpcopyValue("gpcopyJobs", "4")),
+        dry_run: false
+    };
+}
+
+function setGpcopySyncStatus(message, type) {
+    const box = document.getElementById("gpcopySyncStatusBox");
+
+    if (!box) {
+        console.log(message);
+        return;
+    }
+
+    box.className = `alert alert-${type || "info"} mt-3`;
+    box.textContent = message;
+}
+
+async function previewGpcopySyncDiff() {
+    try {
+        const payload = buildGpcopySyncPayload();
+
+        const response = await fetch("/api/gpcopy/sync/preview", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+            throw new Error(data.message || "Preview failed");
+        }
+
+        setGpcopySyncStatus(
+            `Preview готов. Insert=${data.total_insert}, Update=${data.total_update}, Delete=${data.total_delete}`,
+            "success"
+        );
+
+        console.log("sync preview", data);
+
+    } catch (e) {
+        console.error(e);
+        setGpcopySyncStatus(e.message, "danger");
+    }
+}
+
+async function startGpcopySyncApply() {
+    try {
+        const payload = buildGpcopySyncPayload();
+
+        if (!confirm("Внимание! На TEST будут выполнены INSERT/UPDATE/DELETE. Продолжить?")) {
+            return;
+        }
+
+        const response = await fetch("/api/gpcopy/sync/apply", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+            throw new Error(data.message || "Sync apply failed");
+        }
+
+        setGpcopySyncStatus(`Sync запущен. Job #${data.job_id}`, "success");
+
+        if (typeof startGpcopyPolling === "function") {
+            startGpcopyPolling(data.job_id);
+        }
+
+    } catch (e) {
+        console.error(e);
+        setGpcopySyncStatus(e.message, "danger");
+    }
+}
+
+window.prepareGpcopySyncTables = prepareGpcopySyncTables;
+window.previewGpcopySyncDiff = previewGpcopySyncDiff;
+window.startGpcopySyncApply = startGpcopySyncApply;
+
 /* Export functions for onclick in gpcopy.html */
 window.loadGpcopyObjectTree = loadGpcopyObjectTree;
 window.renderGpcopyObjectTree = renderGpcopyObjectTree;
@@ -1873,3 +2133,8 @@ window.gpcopySetDateStatus = gpcopySetDateStatus;
 window.setGpcopyDateStatus = setGpcopyDateStatus;
 
 window.getGpcopyConnectionIds = getGpcopyConnectionIds;
+
+window.gpcopySetStatus = gpcopySetStatus;
+window.gpcopySetDateStatus = gpcopySetDateStatus;
+window.setGpcopyDateStatus = setGpcopyDateStatus;
+window.setGpcopyStatus = setGpcopyStatus;

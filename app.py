@@ -9,6 +9,17 @@ from modules.connections import (
     test_gp_connection,
 )
 
+from modules.gpcopy_sync import (
+    preview_gpcopy_sync,
+    run_gpcopy_sync_job,
+)
+
+import io
+import os
+import sqlite3
+from flask import send_file
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
 from modules.vacuum_analyze import run_vacuum_analyze_job
 from job_manager import (
     create_job,
@@ -214,79 +225,75 @@ def api_skew_results():
     )
 
 @app.route("/api/skew/start", methods=["POST"])
-def api_skew_start_job():
+def api_skew_start():
     data = request.get_json(silent=True) or {}
 
-    connection_id = data.get("connection_id")
-    tables = data.get("tables") or []
+    connection_id = (
+        data.get("connection_id")
+        or data.get("source_connection_id")
+        or data.get("connectionId")
+    )
+
+    tables = data.get("tables") or data.get("selected_tables") or []
 
     if not connection_id:
-        return jsonify(
-            {
-                "ok": False,
-                "message": "connection_id обязателен",
-            }
-        ), 400
+        return jsonify({
+            "ok": False,
+            "message": "connection_id is required",
+        }), 400
 
     if not tables:
-        return jsonify(
-            {
-                "ok": False,
-                "message": "Не выбраны таблицы",
-            }
-        ), 400
+        return jsonify({
+            "ok": False,
+            "message": "tables is empty",
+        }), 400
 
     try:
-        config = {
-            "source_connection_id": source_connection_id,
-            "dest_connection_id": dest_connection_id,
-            "tables": tables,
-
-            "gpcopy_path": gpcopy_path,
-            "jobs": jobs,
-            "on_segment_threshold": on_segment_threshold,
-
-            "target_schema": target_schema,
-            "target_mode": target_mode,
-
-            "truncate": truncate,
-            "drop": drop,
-            "append": append,
-            "skip_existing": skip_existing,
-            "analyze": analyze,
-            "dry_run": dry_run,
-            "validate_count": validate_count,
-            "extra_args": extra_args,
-        }
-
         job_id = create_job(
             job_type="skew",
             connection_id=int(connection_id),
-            config=config,
+            config={
+                "connection_id": int(connection_id),
+                "tables": tables,
+            },
         )
 
-        #run_background_job(job_id, run_skew_job)
+        create_job_items(
+            job_id=job_id,
+            items=[
+                {
+                    "schema_name": item.get("schema") or item.get("schema_name"),
+                    "table_name": item.get("table") or item.get("table_name"),
+                    "action": "SKEW",
+                }
+                for item in tables
+                if (item.get("schema") or item.get("schema_name"))
+                and (item.get("table") or item.get("table_name"))
+            ],
+        )
+
+        import threading
+
         threading.Thread(
             target=run_skew_job,
             args=(job_id,),
-            daemon=True
+            daemon=True,
         ).start()
 
-        return jsonify(
-            {
-                "ok": True,
-                "job_id": job_id,
-            }
-        )
+        return jsonify({
+            "ok": True,
+            "job_id": job_id,
+            "message": "Skew job started",
+        })
 
     except Exception as e:
-        return jsonify(
-            {
-                "ok": False,
-                "message": str(e),
-            }
-        ), 500
+        import traceback
 
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
 
 @app.route("/api/jobs/<int:job_id>")
 def api_get_job(job_id):
@@ -363,29 +370,52 @@ def api_get_job_items(job_id):
 
 @app.route("/api/jobs/<int:job_id>/stop", methods=["POST"])
 def api_stop_job(job_id):
-    job = get_job(job_id)
+    try:
+        job = get_job(job_id)
 
-    if not job:
-        return jsonify(
-            {
+        if not job:
+            return jsonify({
                 "ok": False,
                 "message": "Job not found",
-            }
-        ), 404
+            }), 404
 
-    update_job_status(
-        job_id=job_id,
-        status="stopping",
-        error_message="Stop requested by user",
-    )
+        status = (
+            job.get("status")
+            if isinstance(job, dict)
+            else get_item_value(job, "status")
+        )
 
-    return jsonify(
-        {
+        if status in ("done", "failed", "cancelled", "interrupted"):
+            return jsonify({
+                "ok": True,
+                "message": "Job already finished",
+                "job_id": job_id,
+                "status": status,
+            })
+
+        # Важно: ставим stop flag, а не убиваем Flask/thread напрямую
+        request_stop_job(job_id)
+
+        try:
+            mark_job_stopping(job_id)
+        except Exception:
+            # Если такой функции нет — не падаем
+            pass
+
+        return jsonify({
             "ok": True,
-            "message": "Stop requested",
             "job_id": job_id,
-        }
-    )
+            "message": "Stop requested",
+        })
+
+    except Exception as e:
+        import traceback
+
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
 
 
 @app.route("/api/jobs/<int:job_id>/skew-results")
@@ -1335,6 +1365,290 @@ def api_gpcopy_start_date():
             "traceback": traceback.format_exc(),
         }), 500
 
+def get_app_sqlite_path():
+    db_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "instance",
+        "gp_reorganize_center.sqlite3"
+    )
+
+    if not os.path.exists(db_path):
+        db_path = os.path.join("instance", "gp_reorganize_center.sqlite3")
+
+    return db_path
+
+
+def sqlite_rows(query, params=None):
+    conn = sqlite3.connect(get_app_sqlite_path())
+    conn.row_factory = sqlite3.Row
+
+    try:
+        cur = conn.cursor()
+        cur.execute(query, params or [])
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+@app.route("/api/jobs/<int:job_id>/skew-export.xlsx")
+def api_export_skew_job_excel(job_id):
+    try:
+        job_rows = sqlite_rows(
+            """
+            SELECT *
+            FROM jobs
+            WHERE id = ?
+            """,
+            [job_id]
+        )
+
+        if not job_rows:
+            return jsonify({
+                "ok": False,
+                "message": "Job not found",
+            }), 404
+
+        job = job_rows[0]
+
+        items = sqlite_rows(
+            """
+            SELECT *
+            FROM job_items
+            WHERE job_id = ?
+            ORDER BY id
+            """,
+            [job_id]
+        )
+
+        results = sqlite_rows(
+            """
+            SELECT *
+            FROM skew_results
+            WHERE job_id = ?
+            ORDER BY schema_name, table_name
+            """,
+            [job_id]
+        )
+
+        result_map = {}
+
+        for row in results:
+            key = "{}.{}".format(
+                row.get("schema_name"),
+                row.get("table_name")
+            )
+            result_map[key] = row
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Skew Analysis"
+
+        headers = [
+            "Job ID",
+            "Schema",
+            "Table",
+            "Item Status",
+            "Skew Status",
+            "Skew Ratio",
+            "Total Rows",
+            "Segment Count",
+            "Empty Segments",
+            "Max Rows",
+            "Min Rows",
+            "Duration Seconds",
+            "Error",
+        ]
+
+        ws.append(headers)
+
+        header_fill = PatternFill("solid", fgColor="1F4E78")
+        header_font = Font(color="FFFFFF", bold=True)
+
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        for item in items:
+            schema_name = (
+                item.get("schema_name")
+                or item.get("schema")
+                or ""
+            )
+
+            table_name = (
+                item.get("table_name")
+                or item.get("table")
+                or ""
+            )
+
+            key = "{}.{}".format(schema_name, table_name)
+            skew = result_map.get(key, {})
+
+            total_rows = skew.get("total_rows")
+            empty_segments = skew.get("empty_segments")
+            segment_count = (
+                skew.get("segment_count")
+                or skew.get("segments_count")
+                or skew.get("total_segments")
+                or ""
+            )
+
+            ws.append([
+                job_id,
+                schema_name,
+                table_name,
+                item.get("status") or "",
+                skew.get("status") or "",
+                skew.get("skew_ratio") or "",
+                total_rows if total_rows is not None else "",
+                segment_count,
+                empty_segments if empty_segments is not None else "",
+                skew.get("max_rows") or "",
+                skew.get("min_rows") or "",
+                item.get("duration_seconds") or "",
+                item.get("error_message") or "",
+            ])
+
+        # Цвета по статусам
+        status_colors = {
+            "done": "C6EFCE",
+            "failed": "FFC7CE",
+            "running": "BDD7EE",
+            "queued": "D9EAD3",
+            "skipped": "FFF2CC",
+            "OK": "C6EFCE",
+            "WARNING": "FFF2CC",
+            "CRITICAL": "FFC7CE",
+            "EMPTY": "D9EAD3",
+            "FAILED": "FFC7CE",
+        }
+
+        for row in ws.iter_rows(min_row=2):
+            item_status_cell = row[3]
+            skew_status_cell = row[4]
+
+            for cell in (item_status_cell, skew_status_cell):
+                color = status_colors.get(str(cell.value))
+                if color:
+                    cell.fill = PatternFill("solid", fgColor=color)
+
+        # Автоширина
+        for column_cells in ws.columns:
+            max_length = 0
+            column_letter = column_cells[0].column_letter
+
+            for cell in column_cells:
+                value = "" if cell.value is None else str(cell.value)
+                max_length = max(max_length, len(value))
+
+            ws.column_dimensions[column_letter].width = min(max_length + 3, 60)
+
+        ws.freeze_panes = "A2"
+
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        filename = "skew_analysis_job_{}.xlsx".format(job_id)
+
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    except Exception as e:
+        import traceback
+
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+@app.route("/api/gpcopy/sync/preview", methods=["POST"])
+def api_gpcopy_sync_preview():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        result = preview_gpcopy_sync(data)
+        return jsonify(result)
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@app.route("/api/gpcopy/sync/apply", methods=["POST"])
+def api_gpcopy_sync_apply():
+    data = request.get_json(silent=True) or {}
+
+    source_connection_id = data.get("source_connection_id")
+    dest_connection_id = data.get("dest_connection_id")
+    table_configs = data.get("table_configs") or []
+
+    if not source_connection_id:
+        return jsonify({"ok": False, "message": "source_connection_id is required"}), 400
+
+    if not dest_connection_id:
+        return jsonify({"ok": False, "message": "dest_connection_id is required"}), 400
+
+    if not table_configs:
+        return jsonify({"ok": False, "message": "table_configs is empty"}), 400
+
+    try:
+        job_id = create_job(
+            job_type="gpcopy_sync",
+            connection_id=int(source_connection_id),
+            config={
+                "mode": "sync_diff",
+                "source_connection_id": int(source_connection_id),
+                "dest_connection_id": int(dest_connection_id),
+                "table_configs": table_configs,
+                "gpcopy_path": data.get("gpcopy_path"),
+                "jobs": data.get("jobs") or 4,
+            },
+        )
+
+        create_job_items(
+            job_id=job_id,
+            items=[
+                {
+                    "schema_name": cfg.get("schema"),
+                    "table_name": cfg.get("table"),
+                    "action": "GPCOPY SYNC",
+                }
+                for cfg in table_configs
+            ],
+        )
+
+        import threading
+
+        threading.Thread(
+            target=run_gpcopy_sync_job,
+            args=(job_id,),
+            daemon=True,
+        ).start()
+
+        return jsonify({
+            "ok": True,
+            "job_id": job_id,
+            "message": "GPCOPY sync started",
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
 
 if __name__ == "__main__":
     init_db()

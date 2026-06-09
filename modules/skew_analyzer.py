@@ -1,6 +1,8 @@
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 
+from job_manager import is_stop_requested
+
 from db import sqlite_cursor
 from modules.connections import open_gp_connection
 from job_manager import (
@@ -18,6 +20,7 @@ from job_manager import (
     is_stop_requested,
     clear_stop_flag,
 )
+from modules.gpcopy import safe_mark_job_cancelled
 
 
 def analyze_table_skew(connection_id, schema_name, table_name, job_id=None):
@@ -166,8 +169,9 @@ def run_skew_job(job_id):
 
         for item in items:
             if is_stop_requested(job_id):
-                mark_item_skipped(item["id"], "Job stopped by user")
-                continue
+                safe_mark_job_cancelled(job_id, "Stop requested")
+                refresh_job_progress(job_id)
+                return
 
             schema_name = item["schema_name"]
             table_name = item["table_name"]

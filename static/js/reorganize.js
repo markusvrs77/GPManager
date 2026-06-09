@@ -6,6 +6,36 @@ let applyDistributionStartedAt = null;
 
 const REORGANIZE_JOB_STORAGE_KEY = "greenplum_reorganize_current_reorganize_job_id";
 
+function reorgEl(id) {
+    return document.getElementById(id);
+}
+
+function reorgSetText(id, value) {
+    const el = reorgEl(id);
+    if (el) {
+        el.textContent = value;
+    }
+}
+
+function reorgSetHtml(id, value) {
+    const el = reorgEl(id);
+    if (el) {
+        el.innerHTML = value;
+    }
+}
+
+function setReorganizeStatus(message, type = "info") {
+    const box = reorgEl("reorganizeStatusBox");
+
+    if (!box) {
+        console.log("[reorganize]", message);
+        return;
+    }
+
+    box.className = "alert alert-" + type;
+    box.textContent = message || "";
+}
+
 function showReorganizeMessage(message, type = "info") {
     const alertBox = document.getElementById("reorganizeMessage");
 
@@ -102,7 +132,7 @@ async function startReorganizeJob() {
     	console.log("Selected skew detected tables:", selectedSkewTables.length);
     }
 
-    const statusBox = document.getElementById("reorganizeRunStatus");
+
     const rawOutput = document.getElementById("reorganizeRawOutput");
     const jobItemsBody = document.getElementById("jobItemsBody");
 
@@ -110,22 +140,20 @@ async function startReorganizeJob() {
     jobItemsBody.innerHTML = "";
 
     if (!connectionId) {
-        statusBox.className = "alert alert-danger";
+        setReorganizeStatus("Сначала выбери таблицы.", "danger");
         statusBox.textContent = "Сначала выбери connection.";
         return;
     }
 
     if (selectedTables.length === 0) {
-        statusBox.className = "alert alert-danger";
-        statusBox.textContent = "Сначала выбери таблицы.";
+        setReorganizeStatus("Сначала выбери таблицы.", "danger");
         return;
     }
 
-    resetJobProgress();
+    resetReorganizeJobProgress();
     setReorganizeButtonStoppingMode();
 
-    statusBox.className = "alert alert-info";
-    statusBox.textContent = `Starting reorganize job for ${selectedTables.length} selected tables...`;
+    setReorganizeStatus(`Starting reorganize job for ${selectedTables.length} tables...`, "info");
 
     try {
         const response = await fetch("/api/reorganize/start", {
@@ -142,7 +170,7 @@ async function startReorganizeJob() {
         const data = await response.json();
 
         if (!data.ok) {
-            statusBox.className = "alert alert-danger";
+            setReorganizeStatus("Сначала выбери таблицы.", "danger");
             statusBox.textContent = data.message || "Failed to start reorganize job.";
             rawOutput.textContent = JSON.stringify(data, null, 2);
             setReorganizeButtonRunMode();
@@ -152,14 +180,14 @@ async function startReorganizeJob() {
         currentReorganizeJobId = data.job_id;
         saveCurrentReorganizeJobId(currentReorganizeJobId);
 
-        statusBox.className = "alert alert-info";
+        setReorganizeStatus(`Starting reorganize job for ${selectedTables.length} tables...`, "info");
         statusBox.textContent = `Job #${currentReorganizeJobId} started. Expanded tables: ${data.total_items}`;
 
         setReorganizeButtonStopMode();
         startPollingReorganizeJob(currentReorganizeJobId);
 
     } catch (e) {
-        statusBox.className = "alert alert-danger";
+        setReorganizeStatus("Сначала выбери таблицы.", "danger");
         statusBox.textContent = "Error: " + e;
         setReorganizeButtonRunMode();
     }
@@ -191,8 +219,8 @@ async function pollReorganizeJob(jobId) {
         currentReorganizeJobId = job.id;
         saveCurrentReorganizeJobId(job.id);
 
-        renderJobProgress(job);
-        await loadJobItems(job.id);
+        renderReorganizeJobProgress(job);
+        await loadReorganizeJobItems(job.id);
 
         document.getElementById("reorganizeRawOutput").textContent =
             JSON.stringify(job, null, 2);
@@ -211,13 +239,13 @@ async function pollReorganizeJob(jobId) {
     }
 }
 
-async function loadJobItems(jobId) {
+async function loadReorganizeJobItems(jobId) {
     try {
-        const response = await fetch(`/api/jobs/${jobId}/items`);
-        const data = await response.json();
+        const itemsResponse = await fetch(`/api/jobs/${jobId}/items`);
+        const itemsData = await itemsResponse.json();
 
-        if (data.ok) {
-            renderJobItems(data.items);
+        if (itemsData.ok) {
+            renderReorganizeJobItems(itemsData.items);
         }
     } catch (e) {
         console.error(e);
@@ -225,18 +253,18 @@ async function loadJobItems(jobId) {
 }
 
 function applyReorganizeJobStatusToUi(job) {
-    const statusBox = document.getElementById("reorganizeRunStatus");
+
 
     if (job.status === "done") {
         setReorganizeButtonRunMode();
-        statusBox.className = "alert alert-success";
+        setReorganizeStatus(`Job #${currentReorganizeJobId} started.`, "success");
         statusBox.textContent = `Last job #${job.id} done.`;
         return;
     }
 
     if (job.status === "failed") {
         setReorganizeButtonRunMode();
-        statusBox.className = "alert alert-danger";
+        setReorganizeStatus("Сначала выбери таблицы.", "danger");
         statusBox.textContent = `Last job #${job.id} failed: ${job.error_message || ""}`;
         return;
     }
@@ -250,7 +278,7 @@ function applyReorganizeJobStatusToUi(job) {
 
     if (job.status === "interrupted") {
         setReorganizeButtonRunMode();
-        statusBox.className = "alert alert-danger";
+        setReorganizeStatus("Сначала выбери таблицы.", "danger");
         statusBox.textContent = `Last job #${job.id} interrupted: ${job.error_message || "Application was restarted"}`;
         return;
     }
@@ -264,18 +292,18 @@ function applyReorganizeJobStatusToUi(job) {
 
     if (job.status === "running" || job.status === "queued") {
         setReorganizeButtonStopMode();
-        statusBox.className = "alert alert-info";
+        setReorganizeStatus(`Starting reorganize job for ${selectedTables.length} tables...`, "info");
         statusBox.textContent = `Job #${job.id} status: ${job.status}`;
         return;
     }
 
     setReorganizeButtonRunMode();
-    statusBox.className = "alert alert-info";
+    setReorganizeStatus(`Starting reorganize job for ${selectedTables.length} tables...`, "info");
     statusBox.textContent = `Job #${job.id} status: ${job.status}`;
 }
 
 async function stopCurrentReorganizeJob() {
-    const statusBox = document.getElementById("reorganizeRunStatus");
+
 
     if (!currentReorganizeJobId) {
         statusBox.className = "alert alert-warning";
@@ -297,13 +325,13 @@ async function stopCurrentReorganizeJob() {
             statusBox.className = "alert alert-warning";
             statusBox.textContent = `Stop requested for job #${currentReorganizeJobId}.`;
         } else {
-            statusBox.className = "alert alert-danger";
+            setReorganizeStatus("Сначала выбери таблицы.", "danger");
             statusBox.textContent = data.message || "Failed to stop job.";
             setReorganizeButtonStopMode();
         }
 
     } catch (e) {
-        statusBox.className = "alert alert-danger";
+        setReorganizeStatus("Сначала выбери таблицы.", "danger");
         statusBox.textContent = "Error: " + e;
         setReorganizeButtonStopMode();
     }
@@ -332,7 +360,7 @@ async function restoreReorganizePageState() {
         currentReorganizeJobId = job.id;
 
         renderJobProgress(job);
-        await loadJobItems(job.id);
+        loadReorganizeJobItems(job.id);
         applyReorganizeJobStatusToUi(job);
 
         if (["queued", "running", "stopping"].includes(job.status)) {
@@ -345,39 +373,59 @@ async function restoreReorganizePageState() {
     }
 }
 
-function resetJobProgress() {
-    document.getElementById("jobProgressText").textContent = "0%";
+function resetReorganizeJobProgress() {
+    reorgSetText("reorganizeProgressPercent", "0%");
+    reorgSetText("reorganizeTotal", "0");
+    reorgSetText("reorganizeDone", "0");
+    reorgSetText("reorganizeFailed", "0");
+    reorgSetText("reorganizeSkipped", "0");
 
-    const bar = document.getElementById("jobProgressBar");
-    bar.style.width = "0%";
-    bar.textContent = "0%";
+    const bar = reorgEl("reorganizeProgressBar");
 
-    document.getElementById("jobTotal").textContent = "0";
-    document.getElementById("jobDone").textContent = "0";
-    document.getElementById("jobFailed").textContent = "0";
-    document.getElementById("jobSkipped").textContent = "0";
+    if (bar) {
+        bar.style.width = "0%";
+        bar.textContent = "0%";
+    }
 }
 
-function renderJobProgress(job) {
+function renderReorganizeJobProgress(job) {
     const progress = Number(job.progress_percent || 0);
 
-    document.getElementById("jobProgressText").textContent = `${progress}%`;
+    reorgSetText("reorganizeProgressPercent", `${progress}%`);
+    reorgSetText("reorganizeTotal", job.total_items || 0);
+    reorgSetText("reorganizeDone", job.done_items || 0);
+    reorgSetText("reorganizeFailed", job.failed_items || 0);
+    reorgSetText("reorganizeSkipped", job.skipped_items || 0);
 
-    const bar = document.getElementById("jobProgressBar");
-    bar.style.width = `${progress}%`;
-    bar.textContent = `${progress}%`;
+    const bar = reorgEl("reorganizeProgressBar");
 
-    document.getElementById("jobTotal").textContent = job.total_items || 0;
-    document.getElementById("jobDone").textContent = job.done_items || 0;
-    document.getElementById("jobFailed").textContent = job.failed_items || 0;
-    document.getElementById("jobSkipped").textContent = job.skipped_items || 0;
+    if (bar) {
+        bar.style.width = `${progress}%`;
+        bar.textContent = `${progress}%`;
+    }
 }
 
-function renderJobItems(items) {
-    const body = document.getElementById("jobItemsBody");
+function renderReorganizeJobItems(items) {
+    const body = reorgEl("reorganizeItemsBody");
+
+    if (!body) {
+        return;
+    }
+
     body.innerHTML = "";
 
-    items.forEach(item => {
+    if (!items || !items.length) {
+        body.innerHTML = `
+            <tr>
+                <td colspan="5" class="text-muted">
+                    Пока нет данных.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    items.forEach(function (item) {
         const tr = document.createElement("tr");
 
         tr.innerHTML = `

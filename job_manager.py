@@ -1,13 +1,33 @@
 import json
 import threading
 from datetime import datetime
-
+import os
+import sqlite3
 from db import sqlite_cursor
 
 
 STOP_FLAGS = {}
 RUNNING_THREADS = {}
 
+def get_job_manager_db_connection():
+    """
+    SQLite connection для job_manager.
+    Используем стандартный путь instance/gp_reorganize_center.sqlite3.
+    """
+
+    db_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "instance",
+        "gp_reorganize_center.sqlite3"
+    )
+
+    if not os.path.exists(db_path):
+        db_path = os.path.join("instance", "gp_reorganize_center.sqlite3")
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    return conn
 
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -229,7 +249,29 @@ def set_stop_flag(job_id):
 
 
 def is_stop_requested(job_id):
-    return STOP_FLAGS.get(int(job_id), False)
+    conn = get_job_manager_db_connection()
+
+    try:
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT stop_requested
+            FROM jobs
+            WHERE id = ?
+            """,
+            (job_id,)
+        )
+
+        row = cur.fetchone()
+
+        if not row:
+            return False
+
+        return bool(row["stop_requested"])
+
+    finally:
+        conn.close()
 
 
 def clear_stop_flag(job_id):
@@ -686,11 +728,28 @@ def update_job_status(job_id, status, error_message=None, log_file=None):
 
 
 def request_stop_job(job_id):
-    """
-    Старое имя функции для остановки job.
-    Используется в app.py / модулях.
-    """
-    return set_stop_flag(job_id)
+    conn = get_job_manager_db_connection()
+
+    try:
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            UPDATE jobs
+            SET stop_requested = 1,
+                status = CASE
+                    WHEN status IN ('queued', 'running') THEN 'stopping'
+                    ELSE status
+                END
+            WHERE id = ?
+            """,
+            (job_id,)
+        )
+
+        conn.commit()
+
+    finally:
+        conn.close()
 
 
 def update_job_item_status(item_id, status, error_message=None, worker_id=None):
