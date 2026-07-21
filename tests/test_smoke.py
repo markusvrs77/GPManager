@@ -41,3 +41,8 @@ def test_chartjs_only_on_charting_pages(client):
     assert "chart.js" in dash
     assert "chart.js" in maint
     assert "chart.js" not in conns
+
+
+def test_single_session_limits_function(client):
+    html = client.get("/dashboard").get_data(as_text=True)
+    assert html.count("async function loadSessionLimitsStats(") == 1

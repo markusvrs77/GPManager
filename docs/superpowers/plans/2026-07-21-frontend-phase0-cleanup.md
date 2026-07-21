@@ -309,7 +309,7 @@ Expected: FAIL (`assert 2 == 1` — two definitions exist).
 
 - [ ] **Step 3: Delete the first (broken) implementation**
 
-In `templates/dashboard.html`, delete the first `sessionLimitBadge()` + first `async function loadSessionLimitsStats()` block (the one that references the non-existent IDs `slNodes`, `slTotal`, `slActive`, `slIdle`, `slIdleTxn`, and `sessionLimitsTableBody`). Keep `renderSessionLimits()`, `setSessionMessage()`, the second `loadSessionLimitsStats()`, and the `DOMContentLoaded` handler.
+In `templates/dashboard.html`, delete the dead first-implementation cluster: `getDashboardConnectionId()`, `sessionLimitBadge()`, and the first `async function loadSessionLimitsStats()` (the one that references the non-existent IDs `slNodes`, `slTotal`, `slActive`, `slIdle`, `slIdleTxn`, and `sessionLimitsTableBody`). All three are used only by that broken copy. Keep `renderSessionLimits()`, `setSessionMessage()`, the second `loadSessionLimitsStats()` (uses `dashboardConnectionId` directly), and the `DOMContentLoaded` handler.
 
 - [ ] **Step 4: Run the smoke suite — expect PASS**
 
