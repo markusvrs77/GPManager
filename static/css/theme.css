@@ -193,6 +193,33 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 .tree-line:hover, .skew-problem-row:hover { background: var(--row-hover); }
 .gpcopy-section { background: var(--surface); border-color: var(--glass-border); color: var(--text); }
 
+/* text utilities that break in dark */
+.text-dark { color: var(--text) !important; }
+.text-primary { color: var(--a1) !important; }
+
+/* alerts -> consistent glass with a semantic accent stripe */
+.alert {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--hairline);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+}
+.alert-info { border-left-color: #3b82f6; }
+.alert-success { border-left-color: var(--ok); }
+.alert-warning { border-left-color: var(--warn); }
+.alert-danger { border-left-color: var(--crit); }
+
+/* checkboxes / radios use the accent */
+.form-check-input { background-color: var(--surface-2); border-color: var(--hairline); }
+.form-check-input:checked { background-color: var(--a1); border-color: var(--a1); }
+.form-check-input:focus { border-color: color-mix(in srgb, var(--a1) 55%, transparent); box-shadow: 0 0 0 3px var(--ring); }
+.form-check-label { color: var(--text); }
+
+/* gpcopy date section stays on-brand */
+.gpcopy-date-section { border-color: color-mix(in srgb, var(--a1) 55%, transparent); }
+.gpcopy-date-header { background: var(--accent-grad); }
+
 /* reduced motion */
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
