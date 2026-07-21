@@ -27,10 +27,26 @@
                     <select id="schJobType" class="form-select mb-3" onchange="onJobTypeChange()">
                         <option value="gpcopy">gpcopy (tables)</option>
                         <option value="gpcopy_date">gpcopy by date window</option>
+                        <option value="gpcopy_increment">gpcopy increment (watermark)</option>
+                        <option value="gpcopy_partition_diff">gpcopy partitions-diff</option>
                         <option value="vacuum">vacuum / analyze</option>
                         <option value="reorganize">reorganize</option>
                         <option value="skew">skew analysis</option>
                     </select>
+
+                    <div id="schWatermarkBox" class="mb-3" style="display:none">
+                        <label class="form-label">Watermark-колонка (increment)</label>
+                        <input type="text" id="schWatermark" class="form-control" placeholder="id / date_change$">
+                    </div>
+
+                    <div id="schDestConnBox" class="mb-3" style="display:none">
+                        <label class="form-label">Dest connection</label>
+                        <select id="schDestConnection" class="form-select">
+                            {% for c in connections %}
+                            <option value="{{ c.id }}">{{ c.name }} / {{ c.host }} / {{ c.database_name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
 
                     <label class="form-label">Connection</label>
                     <select id="schConnection" class="form-select mb-3">

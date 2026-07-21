@@ -2138,3 +2138,175 @@ window.gpcopySetStatus = gpcopySetStatus;
 window.gpcopySetDateStatus = gpcopySetDateStatus;
 window.setGpcopyDateStatus = setGpcopyDateStatus;
 window.setGpcopyStatus = setGpcopyStatus;
+
+/* ============================================================
+ * gpcopy v2: increment / partition-diff + schedule
+ * ============================================================ */
+
+function gpcopyV2Escape(value) {
+    return String(value == null ? "" : value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+function gpcopyV2ModeChange() {
+    const mode = document.getElementById("gpcopyV2Mode").value;
+    document.getElementById("gpcopyV2WatermarkBox").style.display =
+        mode === "increment" ? "" : "none";
+}
+
+function gpcopyV2BuildPayload() {
+    const ids = getGpcopyConnectionIds();
+    const selected = getGpcopySelectedTablesSafe();
+    const watermark = (document.getElementById("gpcopyV2Watermark").value || "").trim();
+    const mode = document.getElementById("gpcopyV2Mode").value;
+
+    const tables = selected.map(function (t) {
+        const row = {
+            schema: t.schema || t.schema_name,
+            table: t.table || t.table_name,
+        };
+        if (mode === "increment") {
+            row.watermark_column = watermark;
+        }
+        return row;
+    });
+
+    return {
+        mode: mode,
+        source_connection_id: ids.sourceConnectionId,
+        dest_connection_id: ids.destConnectionId,
+        tables: tables,
+        jobs: getGpcopyJobs(),
+    };
+}
+
+function gpcopyV2SetResult(html) {
+    document.getElementById("gpcopyV2Result").innerHTML = html;
+}
+
+async function gpcopyV2Preview() {
+    const p = gpcopyV2BuildPayload();
+
+    if (!p.tables.length) {
+        gpcopyV2SetResult('<span class="text-danger">Выбери таблицы слева.</span>');
+        return;
+    }
+
+    try {
+        if (p.mode === "increment") {
+            const res = await fetch("/api/gpcopy/increment/preview", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(p),
+            });
+            const data = await res.json();
+
+            if (!data.ok) {
+                gpcopyV2SetResult('<span class="text-danger">' + gpcopyV2Escape(data.message) + "</span>");
+                return;
+            }
+
+            gpcopyV2SetResult(
+                data.tables.map(function (t) {
+                    return "<div><code>" + gpcopyV2Escape(t.schema + "." + t.table) +
+                        "</code> watermark=<b>" + gpcopyV2Escape(t.watermark === null ? "нет (полная догрузка)" : t.watermark) +
+                        "</b><br><span class='text-muted'>" + gpcopyV2Escape(t.sql) + "</span></div>";
+                }).join("")
+            );
+        } else {
+            const first = p.tables[0];
+            const res = await fetch("/api/gpcopy/partition-diff/preview", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    source_connection_id: p.source_connection_id,
+                    dest_connection_id: p.dest_connection_id,
+                    schema: first.schema,
+                    table: first.table,
+                }),
+            });
+            const data = await res.json();
+
+            if (!data.ok) {
+                gpcopyV2SetResult('<span class="text-danger">' + gpcopyV2Escape(data.message) + "</span>");
+                return;
+            }
+
+            gpcopyV2SetResult(
+                "<div class='mb-1'>Партиций к копированию: <b>" + data.to_copy.length + "</b> из " + data.partitions.length + "</div>" +
+                data.partitions.map(function (r) {
+                    const cls = r.action === "skip" ? "text-muted" : "text-warning";
+                    return "<div class='" + cls + "'><code>" + gpcopyV2Escape(r.partition) +
+                        "</code> src=" + gpcopyV2Escape(r.src_count) +
+                        " dest=" + gpcopyV2Escape(r.dest_count === null ? "—" : r.dest_count) +
+                        " → " + gpcopyV2Escape(r.action) + "</div>";
+                }).join("")
+            );
+        }
+    } catch (e) {
+        gpcopyV2SetResult('<span class="text-danger">' + gpcopyV2Escape(e) + "</span>");
+    }
+}
+
+async function gpcopyV2Start() {
+    const p = gpcopyV2BuildPayload();
+
+    if (!p.tables.length) {
+        gpcopyV2SetResult('<span class="text-danger">Выбери таблицы слева.</span>');
+        return;
+    }
+
+    const url = p.mode === "increment"
+        ? "/api/gpcopy/increment/start"
+        : "/api/gpcopy/partition-diff/start";
+
+    const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(p),
+    });
+    const data = await res.json();
+
+    gpcopyV2SetResult(
+        data.ok
+            ? '<span class="text-success">Job #' + parseInt(data.job_id, 10) + " запущен.</span>"
+            : '<span class="text-danger">' + gpcopyV2Escape(data.message) + "</span>"
+    );
+}
+
+async function gpcopyV2Schedule() {
+    const p = gpcopyV2BuildPayload();
+    const out = document.getElementById("gpcopyV2SchedResult");
+
+    if (!p.tables.length) {
+        out.textContent = "Выбери таблицы слева.";
+        return;
+    }
+
+    const jobType = p.mode === "increment" ? "gpcopy_increment" : "gpcopy_partition_diff";
+
+    const res = await fetch("/api/schedules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            name: (document.getElementById("gpcopyV2SchedName").value || "").trim() || ("gpcopy-" + p.mode),
+            job_type: jobType,
+            cron_expr: (document.getElementById("gpcopyV2SchedCron").value || "").trim(),
+            config: p,
+        }),
+    });
+    const data = await res.json();
+
+    out.textContent = data.ok
+        ? "Расписание #" + parseInt(data.id, 10) + " создано — см. страницу Schedules."
+        : "Ошибка: " + (data.message || "");
+}
+
+window.gpcopyV2ModeChange = gpcopyV2ModeChange;
+window.gpcopyV2Preview = gpcopyV2Preview;
+window.gpcopyV2Start = gpcopyV2Start;
+window.gpcopyV2Schedule = gpcopyV2Schedule;

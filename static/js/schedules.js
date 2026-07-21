@@ -25,6 +25,10 @@ function onJobTypeChange() {
     const type = document.getElementById("schJobType").value;
     document.getElementById("schDateWindow").style.display =
         type === "gpcopy_date" ? "" : "none";
+    document.getElementById("schWatermarkBox").style.display =
+        type === "gpcopy_increment" ? "" : "none";
+    document.getElementById("schDestConnBox").style.display =
+        (type === "gpcopy_increment" || type === "gpcopy_partition_diff") ? "" : "none";
     if (type === "gpcopy_date") previewWindow();
 }
 
@@ -100,6 +104,23 @@ async function createSchedule() {
         if (!dw.column) { errEl.textContent = "Укажи date column"; return; }
         config.date_window = dw;
         config.selected_tables = config.tables;
+    }
+
+    if (jobType === "gpcopy_increment") {
+        const wm = (document.getElementById("schWatermark").value || "").trim();
+        if (!wm) { errEl.textContent = "Укажи watermark-колонку"; return; }
+        config.tables = config.tables.map(function (t) {
+            return { schema: t.schema, table: t.table, watermark_column: wm };
+        });
+        config.source_connection_id = config.connection_id;
+        config.dest_connection_id =
+            parseInt(document.getElementById("schDestConnection").value, 10);
+    }
+
+    if (jobType === "gpcopy_partition_diff") {
+        config.source_connection_id = config.connection_id;
+        config.dest_connection_id =
+            parseInt(document.getElementById("schDestConnection").value, 10);
     }
 
     const data = await api("/api/schedules", "POST", {
