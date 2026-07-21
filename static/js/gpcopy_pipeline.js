@@ -41,6 +41,9 @@
         syncKeys: {},              // "schema.table" -> {columns:[], source}
         syncUnresolved: [],
         sets: [],
+        expandedSchema: null,      // раскрытая схема в модалке
+        schemaTables: {},          // schema -> [table, ...] (кэш)
+        schemaFilter: "",
     };
 
     var MODE_NAMES = {
@@ -181,6 +184,49 @@
 
     /* ---------------- modal: schemas ---------------- */
 
+    function loadSchemaTables(schema) {
+        return api("/api/catalog/expand-mask", "POST",
+            { connection_id: srcId(), mask: schema + ".*" })
+            .then(function (d) {
+                if (!d.ok) { toast(d.message, "error"); return; }
+                state.schemaTables[schema] = d.tables
+                    .map(function (t) { return t.table; })
+                    .sort();
+                renderModalSchemas();
+            });
+    }
+
+    function renderSchemaPanel(schema) {
+        var all = state.schemaTables[schema];
+        if (!all) { return '<div class="gpp-hint" style="margin: 0;">Загружаю таблицы…</div>'; }
+
+        var f = (state.schemaFilter || "").toLowerCase();
+        var vis = f
+            ? all.filter(function (t) { return t.toLowerCase().indexOf(f) !== -1; })
+            : all;
+        var top = vis.slice(0, 200);
+
+        var html = '<input class="gpp-sc-filter" id="gppScFilter" ' +
+            'placeholder="Фильтр по ' + fmtN(all.length) + ' таблицам…" value="' +
+            esc(state.schemaFilter) + '">' +
+            '<div class="gpp-tbl-list">' +
+            top.map(function (t) {
+                var key = schema + "." + t;
+                return '<label class="gpp-tbl-row"><input type="checkbox" data-key="' +
+                    esc(key) + '"' + (state.sel.has(key) ? " checked" : "") + "> " +
+                    esc(t) + "</label>";
+            }).join("") +
+            "</div>";
+
+        if (!vis.length) {
+            html += '<div class="gpp-hint">Ничего не найдено.</div>';
+        } else if (vis.length > top.length) {
+            html += '<div class="gpp-hint">Показаны первые 200 из ' + fmtN(vis.length) +
+                " — уточни фильтр.</div>";
+        }
+        return html;
+    }
+
     function renderModalSchemas() {
         var box = $("gppSelSchemas");
         if (!state.catalog) { box.innerHTML = ""; return; }
@@ -189,17 +235,38 @@
         var html = "";
         state.catalog.schemas.forEach(function (s) {
             var selN = by[s.schema] || 0;
-            html += '<div class="gpp-sc"><span><code>' + esc(s.schema) + "</code> " +
-                '<span class="cnt">' + fmtN(s.count) + "</span></span><span>" +
+            var open = state.expandedSchema === s.schema;
+            html += '<div class="gpp-scw">' +
+                '<div class="gpp-sc' + (open ? " open" : "") + '" data-open="' +
+                esc(s.schema) + '"><span><span class="chev">' + (open ? "▼" : "▶") +
+                "</span><code>" + esc(s.schema) + "</code> " +
+                '<span class="cnt">' + fmtN(s.total) + "</span></span><span>" +
                 (selN ? '<span class="selcnt">выбрано ' + fmtN(selN) + "</span> " : "") +
                 '<button class="gpp-btn sm" data-schema="' + esc(s.schema) +
-                '" data-act="' + (selN >= s.count ? "unsel" : "sel") + '">' +
-                (selN >= s.count ? "снять" : "выбрать все") + "</button></span></div>";
+                '" data-act="' + (selN >= s.total ? "unsel" : "sel") + '">' +
+                (selN >= s.total ? "снять" : "выбрать все") + "</button></span></div>" +
+                (open ? '<div class="gpp-sc-panel">' + renderSchemaPanel(s.schema) + "</div>" : "") +
+                "</div>";
         });
         box.innerHTML = html;
 
+        // клик по строке схемы — раскрыть/свернуть список таблиц
+        box.querySelectorAll(".gpp-sc[data-open]").forEach(function (row) {
+            row.onclick = function (ev) {
+                if (ev.target.closest("button")) { return; }
+                var schema = row.getAttribute("data-open");
+                state.expandedSchema = state.expandedSchema === schema ? null : schema;
+                state.schemaFilter = "";
+                if (state.expandedSchema && !state.schemaTables[schema]) {
+                    loadSchemaTables(schema);
+                }
+                renderModalSchemas();
+            };
+        });
+
         box.querySelectorAll("button[data-schema]").forEach(function (btn) {
-            btn.onclick = function () {
+            btn.onclick = function (ev) {
+                ev.stopPropagation();
                 var schema = btn.getAttribute("data-schema");
                 if (btn.getAttribute("data-act") === "unsel") {
                     Array.from(state.sel).forEach(function (k) {
@@ -219,6 +286,30 @@
                         });
                         onSelectionChanged();
                     });
+            };
+        });
+
+        // фильтр внутри раскрытой схемы (перерисовываем, сохраняя фокус и курсор)
+        var filter = $("gppScFilter");
+        if (filter) {
+            filter.oninput = function () {
+                state.schemaFilter = filter.value;
+                renderModalSchemas();
+                var el = $("gppScFilter");
+                if (el) {
+                    el.focus();
+                    el.setSelectionRange(el.value.length, el.value.length);
+                }
+            };
+        }
+
+        // чекбоксы таблиц
+        box.querySelectorAll('.gpp-tbl-row input[type="checkbox"]').forEach(function (cb) {
+            cb.onchange = function () {
+                var key = cb.getAttribute("data-key");
+                if (cb.checked) { state.sel.add(key); }
+                else { state.sel.delete(key); }
+                onSelectionChanged();
             };
         });
     }
