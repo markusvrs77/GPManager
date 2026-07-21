@@ -2232,6 +2232,54 @@ def api_gpcopy_partition_diff_preview():
         return jsonify({"ok": False, "message": str(e)}), 500
 
 
+@app.route("/api/gpcopy/partition-diff/preview-bulk", methods=["POST"])
+def api_gpcopy_partition_diff_preview_bulk():
+    """Быстрый diff по статистике каталога для пачки таблиц (один запрос на сторону)."""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        from db import get_connection_by_id as _get_conn
+        from modules.gpcopy_partition import diff_partitions_stats
+
+        source_cfg = _get_conn(int(data["source_connection_id"]))
+        dest_cfg = _get_conn(int(data["dest_connection_id"]))
+
+        tables = [
+            (t["schema"], t["table"])
+            for t in (data.get("tables") or [])
+        ]
+        if not tables:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        diff_by_root, _leaves = diff_partitions_stats(
+            source_cfg, dest_cfg, tables,
+            exact=bool(data.get("exact")),
+        )
+
+        out = []
+        total_copy = 0
+        for (schema, table) in tables:
+            rows = diff_by_root.get((schema, table)) or []
+            missing = sum(1 for r in rows if r["action"] == "copy_missing")
+            changed = sum(1 for r in rows if r["action"] == "copy_changed")
+            total_copy += missing + changed
+            out.append({
+                "schema": schema,
+                "table": table,
+                "partitions": len(rows),
+                "missing": missing,
+                "changed": changed,
+                "to_copy": missing + changed,
+            })
+
+        return jsonify({"ok": True, "tables": out, "total_to_copy": total_copy})
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
 @app.route("/api/gpcopy/partition-diff/start", methods=["POST"])
 def api_gpcopy_partition_diff_start():
     data = request.get_json(silent=True) or {}

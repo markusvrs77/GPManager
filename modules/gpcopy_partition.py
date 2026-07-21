@@ -149,6 +149,169 @@ def diff_partitions(source_cfg, dest_cfg, schema, table):
         dest_conn.close()
 
 
+# ------------------------------------------------------------
+# Быстрый diff по статистике каталога (reltuples, один запрос
+# на сторону для всех таблиц сразу) + батч-COUNT для точного режима.
+# ------------------------------------------------------------
+
+_LEAF_STATS_CTE = """
+    WITH RECURSIVE tree AS (
+        SELECT c.oid, c.oid AS root_oid,
+               n.nspname AS root_schema, c.relname AS root_table
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE (n.nspname, c.relname) IN %s
+        UNION ALL
+        SELECT child.oid, tree.root_oid, tree.root_schema, tree.root_table
+        FROM tree
+        JOIN pg_inherits i ON i.inhparent = tree.oid
+        JOIN pg_class child ON child.oid = i.inhrelid
+    )
+    SELECT t.root_schema, t.root_table,
+           n.nspname AS leaf_schema, c.relname AS leaf_table,
+           c.reltuples::bigint AS rows
+    FROM tree t
+    JOIN pg_class c ON c.oid = t.oid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE NOT EXISTS (
+        SELECT 1 FROM pg_inherits i2 WHERE i2.inhparent = t.oid
+    )
+    ORDER BY t.root_schema, t.root_table, c.relname
+"""
+
+
+def fetch_leaf_stats(conn, tables):
+    """
+    Один запрос: leaf-партиции и reltuples для ВСЕХ переданных таблиц.
+    tables: [(schema, table)].
+    -> {(root_schema, root_table): {leaf_table: {"schema","table","rows"}}}
+    Непартиционированная таблица возвращается сама как единственный leaf.
+    """
+    if not tables:
+        return {}
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(_LEAF_STATS_CTE, (tuple(tables),))
+        rows = cur.fetchall()
+
+    out = {}
+    for r in rows:
+        root = (r["root_schema"], r["root_table"])
+        out.setdefault(root, {})[r["leaf_table"]] = {
+            "schema": r["leaf_schema"],
+            "table": r["leaf_table"],
+            "rows": int(r["rows"]),
+        }
+    return out
+
+
+def classify_stats_maps(src_stats, dest_stats):
+    """
+    Чистая функция: покорневая классификация по статистике.
+    -> {root_key: [{partition, src_count, dest_count, action}]}
+    """
+    out = {}
+    for root, leaves in src_stats.items():
+        src_counts = {name: info["rows"] for name, info in leaves.items()}
+        dest_counts = {
+            name: info["rows"]
+            for name, info in (dest_stats.get(root) or {}).items()
+        }
+        out[root] = classify_partition_diff(src_counts, dest_counts)
+    return out
+
+
+def build_batched_count_sql(leaves, chunk=50):
+    """
+    SQL-чанки для точного пересчёта: один запрос считает до `chunk` партиций
+    через UNION ALL (вместо round-trip на каждую).
+    leaves: [(schema, table)] -> ["SELECT 'p1', count(*) FROM ... UNION ALL ...", ...]
+    """
+    chunks = []
+    for i in range(0, len(leaves), chunk):
+        parts = [
+            "SELECT '{}' AS partition, count(*) AS cnt FROM {}.{}".format(
+                t.replace("'", "''"), quote_ident(s), quote_ident(t)
+            )
+            for s, t in leaves[i:i + chunk]
+        ]
+        chunks.append(" UNION ALL ".join(parts))
+    return chunks
+
+
+def fetch_counts_batched(conn, leaves, chunk=50):
+    """Точные COUNT(*) батчами. Несуществующие партиции просто пропускаются."""
+    counts = {}
+    for sql in build_batched_count_sql(leaves, chunk):
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                for name, cnt in cur.fetchall():
+                    counts[name] = int(cnt)
+        except Exception:
+            conn.rollback()
+            # чанк с несуществующей таблицей — падаем на поштучный счёт
+            for s, t in leaves:
+                if t in counts:
+                    continue
+                try:
+                    counts[t] = _count_rows(conn, s, t)
+                except Exception:
+                    conn.rollback()
+    return counts
+
+
+def diff_partitions_stats(source_cfg, dest_cfg, tables, exact=False):
+    """
+    Diff для пачки таблиц: по reltuples (мгновенно) или точный (COUNT батчами).
+    tables: [(schema, table)].
+    -> ({root_key: diff_rows}, {root_key: {leaf_name: (schema, table)}})
+    """
+    source_conn = open_psycopg2_connection_by_cfg(source_cfg)
+    dest_conn = open_psycopg2_connection_by_cfg(dest_cfg)
+
+    try:
+        src_stats = fetch_leaf_stats(source_conn, tables)
+        dest_stats = fetch_leaf_stats(dest_conn, tables)
+
+        leaves_by_root = {
+            root: {name: (info["schema"], info["table"])
+                   for name, info in leaves.items()}
+            for root, leaves in src_stats.items()
+        }
+
+        if not exact:
+            return classify_stats_maps(src_stats, dest_stats), leaves_by_root
+
+        # Точный режим: reltuples заменяем настоящими COUNT(*) батчами.
+        all_leaves = [
+            (info["schema"], info["table"])
+            for leaves in src_stats.values()
+            for info in leaves.values()
+        ]
+        src_counts_flat = fetch_counts_batched(source_conn, all_leaves)
+        dest_leaves = [
+            lv for root, leaves in leaves_by_root.items()
+            for name, lv in leaves.items()
+            if name in (dest_stats.get(root) or {})
+        ]
+        dest_counts_flat = fetch_counts_batched(dest_conn, dest_leaves)
+
+        out = {}
+        for root, leaves in src_stats.items():
+            src_counts = {n: src_counts_flat.get(n, l["rows"])
+                          for n, l in leaves.items()}
+            dest_present = dest_stats.get(root) or {}
+            dest_counts = {n: dest_counts_flat[n]
+                           for n in dest_present if n in dest_counts_flat}
+            out[root] = classify_partition_diff(src_counts, dest_counts)
+        return out, leaves_by_root
+
+    finally:
+        source_conn.close()
+        dest_conn.close()
+
+
 def run_gpcopy_partition_diff_job(job_id):
     include_file = None
     started = time.time()
@@ -170,15 +333,22 @@ def run_gpcopy_partition_diff_job(job_id):
         clear_stop_flag(job_id)
         mark_job_running(job_id)
 
-        # Собираем список отличающихся leaf-партиций по всем выбранным таблицам.
+        # Diff по всем таблицам сразу: stats (reltuples, мгновенно) —
+        # дефолт; count_mode="exact" пересчитывает COUNT(*) батчами.
+        exact = (config.get("count_mode") or "stats") == "exact"
+        roots = [
+            (entry.get("schema") or entry.get("schema_name"),
+             entry.get("table") or entry.get("table_name"))
+            for entry in tables
+        ]
+
+        diff_by_root, leaves_by_root = diff_partitions_stats(
+            source_cfg, dest_cfg, roots, exact=exact,
+        )
+
         copy_items = []
-        for entry in tables:
-            schema = entry.get("schema") or entry.get("schema_name")
-            table = entry.get("table") or entry.get("table_name")
-
-            diff_rows, leaves = diff_partitions(source_cfg, dest_cfg, schema, table)
-            leaf_by_name = {t: (s, t) for (s, t) in leaves}
-
+        for root, diff_rows in diff_by_root.items():
+            leaf_by_name = leaves_by_root.get(root) or {}
             for name in partitions_to_copy(diff_rows):
                 s, t = leaf_by_name[name]
                 copy_items.append({"schema_name": s, "table_name": t})

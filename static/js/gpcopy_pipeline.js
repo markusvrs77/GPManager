@@ -1069,38 +1069,53 @@
         var tables = selTables();
         var box = $("gppPartPreview");
         if (!tables.length) {
-            box.innerHTML = '<span class="warn">Сначала выбери таблицы (шаг 1).</span>';
-            return;
-        }
-        if (tables.length > 5) {
-            box.innerHTML = "Выбрано " + fmtN(tables.length) +
-                " таблиц — превью показываем до 5. Diff по всем посчитается при запуске.";
+            box.innerHTML = '<div class="gpp-hint warn">Сначала выбери таблицы (шаг 1).</div>';
             return;
         }
 
-        box.textContent = "Считаю партиции…";
-        var lines = [];
+        var exact = $("gppPartExact").checked;
+        var btn = $("gppPartPreviewBtn");
+        btn.disabled = true;
+        box.innerHTML = '<div class="gpp-hint">' +
+            (exact ? "Точный пересчёт COUNT(*) батчами…" : "Читаю статистику каталога…") +
+            "</div>";
 
-        function next(i) {
-            if (i >= tables.length) { box.innerHTML = lines.join("<br>"); return; }
-            var t = tables[i];
-            api("/api/gpcopy/partition-diff/preview", "POST", {
-                source_connection_id: srcId(), dest_connection_id: dstId(),
-                schema: t.schema, table: t.table,
-            }).then(function (d) {
-                if (!d.ok) {
-                    lines.push(esc(t.schema + "." + t.table) +
-                        ': <span class="bad">' + esc(d.message) + "</span>");
-                } else {
-                    lines.push("<b>" + esc(t.schema + "." + t.table) + "</b>: партиций " +
-                        fmtN(d.partitions.length) + ', перелить <span class="' +
-                        (d.to_copy.length ? "warn" : "good") + '">' +
-                        fmtN(d.to_copy.length) + "</span>");
-                }
-                next(i + 1);
-            });
-        }
-        next(0);
+        api("/api/gpcopy/partition-diff/preview-bulk", "POST", {
+            source_connection_id: srcId(), dest_connection_id: dstId(),
+            tables: tables, exact: exact,
+        }).then(function (d) {
+            btn.disabled = false;
+            if (!d.ok) {
+                box.innerHTML = '<div class="gpp-hint bad">' + esc(d.message) + "</div>";
+                return;
+            }
+            // сначала те, где есть что переливать
+            d.tables.sort(function (a, b) { return b.to_copy - a.to_copy; });
+
+            var top = d.tables.slice(0, 200);
+            box.innerHTML =
+                '<div class="gpp-hint" style="margin-top: 0;">Итого перелить: <span class="' +
+                (d.total_to_copy ? "warn" : "good") + '">' + fmtN(d.total_to_copy) +
+                " партиций</span>" + (exact ? " (точный COUNT)" : " (по статистике)") +
+                "</div>" +
+                top.map(function (t) {
+                    var right = t.to_copy
+                        ? '<span class="gpp-key-badge comp">перелить ' + fmtN(t.to_copy) +
+                          (t.missing ? " · нет " + fmtN(t.missing) : "") +
+                          (t.changed ? " · разл. " + fmtN(t.changed) : "") + "</span>"
+                        : '<span class="gpp-key-badge pk">совпадает</span>';
+                    return '<div class="gpp-key-row"><span>' +
+                        esc(t.schema + "." + t.table) +
+                        ' <span class="cols">· партиций ' + fmtN(t.partitions) +
+                        "</span></span>" + right + "</div>";
+                }).join("") +
+                (d.tables.length > top.length
+                    ? '<div class="gpp-hint">…и ещё ' + fmtN(d.tables.length - top.length) + "</div>"
+                    : "");
+        }).catch(function (e) {
+            btn.disabled = false;
+            box.innerHTML = '<div class="gpp-hint bad">' + esc(String(e)) + "</div>";
+        });
     }
 
     /* ---------------- date window ---------------- */
@@ -1301,6 +1316,7 @@
         return api("/api/gpcopy/partition-diff/start", "POST", {
             source_connection_id: srcId(), dest_connection_id: dstId(),
             tables: tables, gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
+            count_mode: $("gppPartExact").checked ? "exact" : "stats",
         });
     }
 
@@ -1360,6 +1376,7 @@
 
         // part
         base.tables = tables;
+        base.count_mode = $("gppPartExact").checked ? "exact" : "stats";
         return Promise.resolve(base);
     }
 
