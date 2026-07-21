@@ -591,6 +591,45 @@ def get_active_jobs(job_type=None):
 
         return [dict(row) for row in cur.fetchall()]
 
+
+def list_recent_jobs(job_types=None, limit=20):
+    """
+    Последние jobs (любых статусов) для ленты запусков.
+    job_types — список типов (None = все), новые первыми.
+    """
+    limit = max(1, min(int(limit or 20), 100))
+
+    sql = """
+        SELECT
+            id,
+            job_type,
+            status,
+            connection_id,
+            total_items,
+            done_items,
+            failed_items,
+            skipped_items,
+            progress_percent,
+            started_at,
+            finished_at,
+            error_message
+        FROM jobs
+    """
+    params = []
+
+    if job_types:
+        placeholders = ",".join("?" for _ in job_types)
+        sql += " WHERE job_type IN ({})".format(placeholders)
+        params.extend(job_types)
+
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+
+    with sqlite_cursor() as cur:
+        cur.execute(sql, params)
+        return [dict(row) for row in cur.fetchall()]
+
+
 def create_job_items(job_id, items):
     """
     Создаёт job_items для job.

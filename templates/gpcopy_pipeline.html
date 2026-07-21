@@ -1,0 +1,383 @@
+{% extends "base.html" %}
+
+{% block title %}gpcopy · GPManager{% endblock %}
+
+{% block content %}
+<style>
+/* ============ gpcopy pipeline («конвейер задачи») ============ */
+.gpp { max-width: 1060px; margin: 0 auto; }
+.gpp h2 { font-size: 22px; margin-bottom: 2px; }
+.gpp .gpp-sub { color: var(--text-muted); font-size: 13px; margin-bottom: 18px; }
+
+.gpp-pipe { display: flex; align-items: stretch; gap: 14px;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 14px 18px; margin-bottom: 14px; }
+.gpp-db { flex: 1; background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); padding: 10px 14px; }
+.gpp-db .lbl { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 4px; }
+.gpp-db select { width: 100%; background: transparent; border: none;
+  color: var(--text); font-weight: 600; font-size: 14.5px; padding: 0; }
+.gpp-db select:focus { outline: none; }
+.gpp-db .meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.gpp-db .meta .ok { color: var(--ok); }
+.gpp-arrow { align-self: center; font-size: 22px; color: var(--a1); flex: none; }
+
+.gpp-step { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 18px 20px; margin-bottom: 14px; position: relative; }
+.gpp-step .n { position: absolute; left: -1px; top: -1px; background: var(--accent-grad);
+  color: #fff; font-size: 12px; font-weight: 700; border-radius: var(--radius) 0 10px 0;
+  padding: 3px 12px; }
+.gpp-step h3 { font-size: 15px; margin: 10px 0 12px; }
+.gpp-step h3 .mut { color: var(--text-muted); font-weight: 400; }
+
+.gpp-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.gpp-chip { background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill); padding: 4px 12px; font-size: 13px; }
+.gpp-chip b { color: var(--a2); }
+.gpp-chip .x { color: var(--text-muted); margin-left: 6px; cursor: pointer; border: none;
+  background: none; padding: 0 2px; font-size: 13px; }
+.gpp-chip .x:hover { color: var(--crit); }
+
+.gpp-btn { background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--text); border-radius: 9px; padding: 8px 16px; font-size: 14px;
+  cursor: pointer; transition: border-color var(--dur-fast) var(--ease); }
+.gpp-btn:hover { border-color: var(--a1); }
+.gpp-btn:disabled { opacity: .5; cursor: default; }
+.gpp-btn.primary { background: var(--accent-grad); border: none; color: #fff; font-weight: 650; }
+.gpp-btn.ghost { background: transparent; }
+.gpp-btn.big { padding: 12px 28px; font-size: 15px; }
+.gpp-btn.sm { padding: 4px 12px; font-size: 12.5px; }
+
+.gpp-modes { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+@media (max-width: 900px) { .gpp-modes { grid-template-columns: repeat(2, 1fr); } }
+.gpp-mode { background: var(--surface-2); border: 1.5px solid var(--hairline);
+  border-radius: 12px; padding: 12px; cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease); }
+.gpp-mode:hover { border-color: var(--text-muted); }
+.gpp-mode.sel { border-color: var(--a1); background: rgba(99, 102, 241, .10); }
+.gpp-mode .ic { font-size: 20px; }
+.gpp-mode .t { font-weight: 650; font-size: 13.5px; margin: 6px 0 2px; }
+.gpp-mode .d { font-size: 11.5px; color: var(--text-muted); line-height: 1.35; }
+
+.gpp-params { margin-top: 14px; padding: 14px; background: var(--surface-2);
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm); display: none; }
+.gpp-params.show { display: block; }
+.gpp-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+.gpp-f { display: flex; flex-direction: column; gap: 4px; }
+.gpp-f label { font-size: 11.5px; color: var(--text-muted); }
+.gpp-f input, .gpp-f select { background: var(--solid); border: 1px solid var(--hairline);
+  color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 13.5px; min-width: 170px; }
+.gpp-hint { font-size: 12.5px; color: var(--text-muted); margin-top: 8px; }
+.gpp-hint .good { color: var(--ok); }
+.gpp-hint .warn { color: var(--warn); }
+.gpp-hint .bad { color: var(--crit); }
+details.gpp-exp { margin-top: 12px; }
+details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
+
+.gpp-when { display: flex; gap: 10px; margin-bottom: 14px; }
+.gpp-when .opt { flex: 1; text-align: center; padding: 10px; border: 1.5px solid var(--hairline);
+  border-radius: var(--radius-sm); cursor: pointer; background: var(--surface-2); font-size: 14px; }
+.gpp-when .opt.sel { border-color: var(--a1); background: rgba(99, 102, 241, .10); }
+
+.gpp-summary { background: var(--surface-2); border-left: 3px solid var(--a1);
+  border-radius: 8px; padding: 12px 16px; font-size: 14px; margin: 14px 0; }
+.gpp-summary b { color: var(--a2); }
+.gpp-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.gpp-msg { font-size: 13px; margin-top: 10px; }
+.gpp-msg.err { color: var(--crit); }
+.gpp-msg.ok { color: var(--ok); }
+
+.gpp-runs .run { display: flex; align-items: center; gap: 14px; padding: 10px 4px;
+  border-bottom: 1px solid var(--hairline); font-size: 13.5px; }
+.gpp-runs .run:last-child { border-bottom: none; }
+.gpp-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.gpp-dot.g { background: var(--ok); }
+.gpp-dot.b { background: var(--a1); box-shadow: 0 0 8px var(--a1); }
+.gpp-dot.r { background: var(--crit); }
+.gpp-dot.i { background: var(--idle); }
+.gpp-bar { flex: 1; height: 6px; background: var(--surface-2); border-radius: 4px;
+  overflow: hidden; min-width: 80px; }
+.gpp-bar i { display: block; height: 100%; background: var(--accent-grad); border-radius: 4px; }
+.gpp-bar i.done { background: var(--ok); }
+.gpp-bar i.fail { background: var(--crit); }
+.gpp-runs .meta { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+
+/* selector modal */
+.gpp-overlay { position: fixed; inset: 0; background: rgba(5, 6, 12, .6);
+  display: none; align-items: center; justify-content: center; z-index: 1050; }
+.gpp-overlay.show { display: flex; }
+.gpp-modal { width: min(880px, 94vw); max-height: 88vh; overflow: auto;
+  background: var(--solid); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 22px; box-shadow: var(--shadow); }
+.gpp-modal h4 { margin: 0 0 4px; font-size: 17px; }
+.gpp-modal .ms { color: var(--text-muted); font-size: 12.5px; margin-bottom: 14px; }
+.gpp-bigsearch { width: 100%; background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--text); border-radius: var(--radius-sm); padding: 12px 16px; font-size: 15px;
+  margin-bottom: 10px; }
+.gpp-selgrid { display: grid; grid-template-columns: 1fr 300px; gap: 16px; }
+@media (max-width: 760px) { .gpp-selgrid { grid-template-columns: 1fr; } }
+.gpp-sc { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 7px 10px; border: 1px solid var(--hairline); border-radius: 8px;
+  margin-bottom: 6px; font-size: 13px; background: var(--surface-2); }
+.gpp-sc code { font-family: var(--font-mono); font-size: .92em; }
+.gpp-sc .cnt { color: var(--text-muted); }
+.gpp-sc .selcnt { color: var(--a2); font-weight: 650; }
+.gpp-sidebl { background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); padding: 12px; margin-bottom: 10px; }
+.gpp-sidebl .t { font-size: 11.5px; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 8px; }
+.gpp-sidebl textarea { width: 100%; background: var(--solid); border: 1px solid var(--hairline);
+  color: var(--text); border-radius: 8px; padding: 8px; font-size: 12.5px;
+  font-family: var(--font-mono); }
+.gpp-search-res { max-height: 220px; overflow-y: auto; margin-bottom: 10px; }
+.gpp-search-res .hit { display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 8px; font-size: 12.5px; font-family: var(--font-mono);
+  border-radius: 6px; cursor: pointer; }
+.gpp-search-res .hit:hover { background: var(--row-hover); }
+.gpp-search-res .hit.in { color: var(--ok); }
+.gpp-modal .foot { display: flex; justify-content: space-between; align-items: center;
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--hairline); }
+</style>
+
+<div class="gpp">
+    <h2>gpcopy</h2>
+    <div class="gpp-sub">
+        Задача читается сверху вниз: откуда → куда → что → как → когда.
+        <a href="/gpcopy/classic">Классический интерфейс</a>
+    </div>
+
+    <!-- PIPELINE HEADER -->
+    <div class="gpp-pipe">
+        <div class="gpp-db">
+            <div class="lbl">Источник</div>
+            <select id="gppSrc">
+                {% for c in connections %}
+                <option value="{{ c.id }}">{{ c.name }} · {{ c.database or c.dbname }}</option>
+                {% endfor %}
+            </select>
+            <div class="meta" id="gppSrcMeta">каталог не загружен</div>
+        </div>
+        <div class="gpp-arrow">→</div>
+        <div class="gpp-db">
+            <div class="lbl">Назначение</div>
+            <select id="gppDst">
+                {% for c in connections %}
+                <option value="{{ c.id }}">{{ c.name }} · {{ c.database or c.dbname }}</option>
+                {% endfor %}
+            </select>
+            <div class="meta" id="gppDstMeta">&nbsp;</div>
+        </div>
+        <button class="gpp-btn sm" id="gppCatalogRefresh" title="Обновить каталог"
+                style="align-self: center;">⟳</button>
+    </div>
+
+    <!-- STEP 1: WHAT -->
+    <div class="gpp-step">
+        <div class="n">1 · ЧТО</div>
+        <h3>Таблицы <span class="mut" id="gppSelCount">— ничего не выбрано</span></h3>
+        <div class="gpp-chips" id="gppSelChips"></div>
+        <div class="gpp-chips" style="margin-top: 10px;">
+            <button class="gpp-btn" id="gppOpenSel">＋ Выбрать таблицы</button>
+            <button class="gpp-btn ghost" id="gppClearSel" style="color: var(--text-muted);">Очистить</button>
+        </div>
+    </div>
+
+    <!-- STEP 2: HOW -->
+    <div class="gpp-step">
+        <div class="n">2 · КАК</div>
+        <h3>Режим копирования</h3>
+        <div class="gpp-modes" id="gppModes">
+            <div class="gpp-mode sel" data-m="full"><div class="ic">📦</div>
+                <div class="t">Полное</div>
+                <div class="d">Вся таблица целиком. Первая загрузка.</div></div>
+            <div class="gpp-mode" data-m="inc"><div class="ic">⚡</div>
+                <div class="t">Инкремент</div>
+                <div class="d">Только новые строки по watermark. Для логов.</div></div>
+            <div class="gpp-mode" data-m="date"><div class="ic">📅</div>
+                <div class="t">По датам</div>
+                <div class="d">Срез за период. Колонки подберутся сами.</div></div>
+            <div class="gpp-mode" data-m="part"><div class="ic">🧩</div>
+                <div class="t">Партиции</div>
+                <div class="d">Только партиции, отличающиеся от источника.</div></div>
+            <div class="gpp-mode" data-m="sync"><div class="ic">🔁</div>
+                <div class="t">Sync по ключу</div>
+                <div class="d">INSERT/UPDATE/DELETE. Точная копия.</div></div>
+        </div>
+
+        <div class="gpp-params show" id="gppP-full">
+            <div class="gpp-row">
+                <div class="gpp-f"><label>Существующие таблицы</label>
+                    <select id="gppFullExisting">
+                        <option value="truncate">--truncate (перезаписать данные)</option>
+                        <option value="drop">--drop (пересоздать)</option>
+                        <option value="skip_existing">--skip-existing (пропустить)</option>
+                        <option value="append">--append (дописать)</option>
+                    </select></div>
+            </div>
+        </div>
+
+        <div class="gpp-params" id="gppP-inc">
+            <div class="gpp-row">
+                <div class="gpp-f" style="flex: 1;"><label>Watermark-колонки (приоритет, через запятую)</label>
+                    <input id="gppIncPriority" value="id, date_change$, updated_at" style="min-width: 300px;"></div>
+                <button class="gpp-btn" id="gppIncCheck">Проверить колонки</button>
+            </div>
+            <div class="gpp-hint" id="gppIncHint">Не у всех таблиц колонка называется одинаково —
+                перечисли варианты, для остальных возьмём первую date/timestamp-колонку.</div>
+        </div>
+
+        <div class="gpp-params" id="gppP-date">
+            <div class="gpp-row">
+                <div class="gpp-f"><label>Период</label>
+                    <select id="gppDatePreset">
+                        <option value="yesterday">Вчера</option>
+                        <option value="today">Сегодня</option>
+                        <option value="last7">Последние 7 дней</option>
+                        <option value="last_month">Прошлый месяц</option>
+                        <option value="custom">Свой диапазон…</option>
+                    </select></div>
+                <div class="gpp-f" id="gppDateFromF" style="display: none;"><label>С (включительно)</label>
+                    <input id="gppDateFrom" type="date" style="min-width: 140px;"></div>
+                <div class="gpp-f" id="gppDateToF" style="display: none;"><label>По (не включая)</label>
+                    <input id="gppDateTo" type="date" style="min-width: 140px;"></div>
+                <div class="gpp-f" style="flex: 1;"><label>Колонки дат (приоритет)</label>
+                    <input id="gppDatePriority" value="date_change$, updated_at, created_at"
+                           style="min-width: 260px;"></div>
+                <button class="gpp-btn" id="gppDateCheck">Проверить колонки</button>
+            </div>
+            <div class="gpp-hint" id="gppDateHint">Колонка подбирается автоматически для каждой
+                таблицы одним запросом; без совпадений — первая date/timestamp-колонка.</div>
+        </div>
+
+        <div class="gpp-params" id="gppP-part">
+            <div class="gpp-hint" style="margin-top: 0;">Перед копированием посчитаем строки в
+                leaf-партициях источника и назначения — перельём только отличающиеся
+                (<code>--truncate</code>).</div>
+            <div class="gpp-row" style="margin-top: 10px;">
+                <button class="gpp-btn" id="gppPartPreviewBtn">Показать diff (до 5 таблиц)</button>
+            </div>
+            <div class="gpp-hint" id="gppPartPreview"></div>
+        </div>
+
+        <div class="gpp-params" id="gppP-sync">
+            <div class="gpp-row">
+                <button class="gpp-btn" id="gppSyncKeys">Ключи: PK + уник. индексы</button>
+                <button class="gpp-btn" id="gppSyncCompute">Вычислить ключ (по данным)</button>
+            </div>
+            <div class="gpp-hint" id="gppSyncHint">Ключ ищем по иерархии: PK → кратчайший
+                уникальный индекс → вычисление по данным (для таблиц без индексов).</div>
+        </div>
+
+        <details class="gpp-exp">
+            <summary>Эксперт: gpcopy path · jobs · threshold · extra args</summary>
+            <div class="gpp-params show" style="margin-top: 8px;">
+                <div class="gpp-row">
+                    <div class="gpp-f"><label>jobs</label>
+                        <input id="gppJobs" value="4" style="min-width: 70px;"></div>
+                    <div class="gpp-f"><label>on-segment-threshold</label>
+                        <input id="gppThreshold" value="-1" style="min-width: 70px;"></div>
+                    <div class="gpp-f" style="flex: 1;"><label>gpcopy path</label>
+                        <input id="gppPath" value="/usr/local/gpdb/greenplum-db/bin/gpcopy"
+                               style="min-width: 320px;"></div>
+                    <div class="gpp-f"><label>extra args</label>
+                        <input id="gppExtra" value="" style="min-width: 160px;"></div>
+                </div>
+            </div>
+        </details>
+    </div>
+
+    <!-- STEP 3: WHEN -->
+    <div class="gpp-step">
+        <div class="n">3 · КОГДА</div>
+        <div class="gpp-when" id="gppWhen" style="margin-top: 12px;">
+            <div class="opt sel" data-w="now">▶ Запустить сейчас</div>
+            <div class="opt" data-w="sched">🗓 По расписанию</div>
+        </div>
+        <div class="gpp-params" id="gppP-sched">
+            <div class="gpp-row">
+                <div class="gpp-f"><label>Расписание</label>
+                    <select id="gppSchedPreset">
+                        <option value="0 2 * * *">Каждую ночь в 02:00</option>
+                        <option value="0 * * * *">Ежечасно</option>
+                        <option value="0 6 * * 1">По понедельникам в 06:00</option>
+                        <option value="custom">Cron-выражение…</option>
+                    </select></div>
+                <div class="gpp-f" id="gppSchedCronF" style="display: none;"><label>Cron</label>
+                    <input id="gppSchedCron" value="0 2 * * *" style="min-width: 140px;"></div>
+                <div class="gpp-f" style="flex: 1;"><label>Имя</label>
+                    <input id="gppSchedName" placeholder="nightly-dwh-increment"></div>
+            </div>
+            <div class="gpp-hint" id="gppSchedNext"></div>
+        </div>
+
+        <div class="gpp-summary" id="gppSummary"></div>
+
+        <div class="gpp-actions">
+            <button class="gpp-btn primary big" id="gppGo">▶ Запустить</button>
+            <button class="gpp-btn ghost" id="gppSaveSet">Сохранить как набор</button>
+        </div>
+        <div class="gpp-msg" id="gppMsg"></div>
+    </div>
+
+    <!-- RUNS FEED -->
+    <div class="gpp-step">
+        <h3 style="margin-top: 0;">Запуски</h3>
+        <div class="gpp-runs" id="gppRuns">
+            <div class="gpp-hint">Пока нет запусков.</div>
+        </div>
+    </div>
+</div>
+
+<!-- TABLE SELECTOR MODAL -->
+<div class="gpp-overlay" id="gppSelModal" role="dialog" aria-modal="true"
+     aria-labelledby="gppSelTitle">
+    <div class="gpp-modal">
+        <h4 id="gppSelTitle">Выбор таблиц <span id="gppSelModalMeta"
+            style="color: var(--text-muted); font-weight: 400;"></span></h4>
+        <div class="ms">Поиск, маска, схемы целиком, вставка списка, наборы.
+            Выбор — счётчиками, без рендера тысяч строк.</div>
+
+        <input class="gpp-bigsearch" id="gppSelSearch"
+               placeholder="Поиск…  или маска: dwh_dm.fact_* (Enter — выбрать всё найденное)">
+        <div class="gpp-search-res" id="gppSelSearchResults"></div>
+
+        <div class="gpp-selgrid">
+            <div id="gppSelSchemas"></div>
+            <div>
+                <div class="gpp-sidebl">
+                    <div class="t">Наборы</div>
+                    <div class="gpp-chips" id="gppSelSets"></div>
+                    <div class="gpp-row" style="margin-top: 8px;">
+                        <input id="gppSelSetName" placeholder="имя набора"
+                               style="flex: 1; background: var(--solid); border: 1px solid var(--hairline);
+                                      color: var(--text); border-radius: 8px; padding: 5px 8px; font-size: 12.5px;">
+                        <button class="gpp-btn sm" id="gppSelSetSave">Сохранить</button>
+                    </div>
+                </div>
+                <div class="gpp-sidebl">
+                    <div class="t">Вставить список</div>
+                    <textarea id="gppSelPaste" rows="4"
+                              placeholder="dwh.orders&#10;dwh.payments"></textarea>
+                    <button class="gpp-btn sm" id="gppSelPasteApply" style="margin-top: 6px;">Добавить</button>
+                    <div class="gpp-hint" id="gppSelPasteResult" style="margin-top: 6px;"></div>
+                </div>
+                <div class="gpp-sidebl">
+                    <div class="t">Итог</div>
+                    <div style="font-size: 20px; font-weight: 700;" id="gppSelTotal">0</div>
+                    <div style="font-size: 12px; color: var(--text-muted);" id="gppSelTotalSchemas"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="foot">
+            <button class="gpp-btn ghost" id="gppSelCancel">Закрыть</button>
+            <button class="gpp-btn primary" id="gppSelDone">Готово</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}"></script>
+{% endblock %}

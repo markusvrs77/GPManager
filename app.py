@@ -28,6 +28,7 @@ from job_manager import (
     get_job,
     get_job_items,
     get_latest_job,
+    list_recent_jobs,
     mark_interrupted_jobs_on_startup,
     set_stop_flag,
 )
@@ -85,6 +86,7 @@ from modules.gpcopy_partition import (
 
 gpm_scheduler.register_runner("gpcopy_increment", run_gpcopy_increment_job)
 gpm_scheduler.register_runner("gpcopy_partition_diff", run_gpcopy_partition_diff_job)
+gpm_scheduler.register_runner("gpcopy_sync", run_gpcopy_sync_job)
 
 
 app = Flask(__name__)
@@ -498,6 +500,18 @@ def api_get_active_jobs():
             "jobs": get_active_jobs(job_type),
         }
     )
+
+
+@app.route("/api/jobs/recent")
+def api_jobs_recent():
+    types_arg = (request.args.get("types") or "").strip()
+    job_types = [t.strip() for t in types_arg.split(",") if t.strip()] or None
+    limit = request.args.get("limit", 20, type=int)
+
+    return jsonify({
+        "ok": True,
+        "jobs": list_recent_jobs(job_types, limit),
+    })
 
 
 @app.route("/api/skew-results/<int:result_id>/segments")
@@ -959,11 +973,18 @@ def update_job_status(job_id, status, error_message=None):
 
 @app.route("/gpcopy")
 def gpcopy_page():
-    connections = list_connections()
+    return render_template(
+        "gpcopy_pipeline.html",
+        connections=list_connections(),
+    )
 
+
+@app.route("/gpcopy/classic")
+def gpcopy_classic_page():
+    # Старый интерфейс — оставлен на переходный период.
     return render_template(
         "gpcopy.html",
-        connections=connections,
+        connections=list_connections(),
     )
 
 
