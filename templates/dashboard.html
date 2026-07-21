@@ -343,16 +343,32 @@ function renderSessionLimits(data) {
 
     const body = document.getElementById("sessionLimitsBody");
 
+    // safe cell builder — textContent only, never innerHTML with DB values
+    function cell(value, cls, bold) {
+        const td = document.createElement("td");
+        if (cls) { td.className = cls; }
+        const val = value == null ? "" : String(value);
+        if (bold) {
+            const b = document.createElement("b");
+            b.textContent = val;
+            td.appendChild(b);
+        } else {
+            td.textContent = val;
+        }
+        return td;
+    }
+
+    body.replaceChildren();
+
     if (!rows.length) {
-        body.innerHTML = `
-            <tr>
-                <td colspan="13" class="text-muted">Нет данных.</td>
-            </tr>
-        `;
+        const tr = document.createElement("tr");
+        tr.appendChild(cell("Нет данных.", "text-muted"));
+        tr.firstChild.colSpan = 13;
+        body.appendChild(tr);
         return;
     }
 
-    body.innerHTML = rows.map(row => {
+    rows.forEach(row => {
         const used = Number(row.used_percent || 0);
         let usedClass = "text-success";
 
@@ -362,24 +378,22 @@ function renderSessionLimits(data) {
             usedClass = "text-warning fw-bold";
         }
 
-        return `
-            <tr>
-                <td>${row.node_type || ""}</td>
-                <td>${row.segment_id ?? ""}</td>
-                <td>${row.hostname || ""}</td>
-                <td>${row.address || ""}</td>
-                <td>${row.port || ""}</td>
-                <td><b>${row.total_sessions || 0}</b></td>
-                <td class="text-primary"><b>${row.active_sessions || 0}</b></td>
-                <td>${row.idle_sessions || 0}</td>
-                <td class="text-danger"><b>${row.idle_in_transaction_sessions || 0}</b></td>
-                <td>${row.max_connections || 0}</td>
-                <td>${row.superuser_reserved_connections || 0}</td>
-                <td>${row.free_connections || 0}</td>
-                <td class="${usedClass}">${used.toFixed(2)}%</td>
-            </tr>
-        `;
-    }).join("");
+        const tr = document.createElement("tr");
+        tr.appendChild(cell(row.node_type || ""));
+        tr.appendChild(cell(row.segment_id ?? ""));
+        tr.appendChild(cell(row.hostname || ""));
+        tr.appendChild(cell(row.address || ""));
+        tr.appendChild(cell(row.port || ""));
+        tr.appendChild(cell(row.total_sessions || 0, null, true));
+        tr.appendChild(cell(row.active_sessions || 0, "text-primary", true));
+        tr.appendChild(cell(row.idle_sessions || 0));
+        tr.appendChild(cell(row.idle_in_transaction_sessions || 0, "text-danger", true));
+        tr.appendChild(cell(row.max_connections || 0));
+        tr.appendChild(cell(row.superuser_reserved_connections || 0));
+        tr.appendChild(cell(row.free_connections || 0));
+        tr.appendChild(cell(used.toFixed(2) + "%", usedClass));
+        body.appendChild(tr);
+    });
 
     if (window.gpMotion) {
         window.gpMotion.stagger(body.querySelectorAll("tr"), { step: 16, y: 6, dur: 200 });
