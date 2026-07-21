@@ -185,6 +185,16 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 .gpp-key-badge.uniq { color: var(--a2); border-color: var(--a2); }
 .gpp-key-badge.comp { color: var(--warn); border-color: var(--warn); }
 .gpp-key-badge.none { color: var(--crit); border-color: var(--crit); }
+.gpp-key-badge.man { color: var(--a1); border-color: var(--a1); }
+.gpp-key-row.off { opacity: .45; }
+.gpp-key-row .edit { color: var(--text-muted); cursor: pointer; margin-left: 6px; }
+.gpp-key-row .edit:hover { color: var(--a2); }
+.gpp-key-row input[type="checkbox"] { accent-color: var(--a1); margin-right: 8px; }
+.gpp-key-row .colinput { background: var(--surface-2); border: 1px solid var(--a1);
+  color: var(--text); border-radius: 6px; padding: 1px 6px; font-size: 12px;
+  font-family: var(--font-mono); width: 180px; }
+.gpp-wm-chip { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);
+  white-space: nowrap; }
 .gpp-sidebl { background: var(--surface-2); border: 1px solid var(--hairline);
   border-radius: var(--radius-sm); padding: 12px; margin-bottom: 10px; }
 .gpp-sidebl .t { font-size: 11.5px; letter-spacing: .07em; text-transform: uppercase;
@@ -293,9 +303,13 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
                     <div class="gpp-f" style="flex: 1;"><label>Watermark-колонки (приоритет, через запятую)</label>
                         <input id="gppIncPriority" value="id, date_change$, updated_at" style="min-width: 300px;"></div>
                     <button class="gpp-btn" id="gppIncCheck">Проверить колонки</button>
+                    <button class="gpp-btn" id="gppIncWmPreview" title="Текущий max(колонка) в назначении">Watermark-превью</button>
                 </div>
                 <div class="gpp-hint" id="gppIncHint">Не у всех таблиц колонка называется одинаково —
                     перечисли варианты, для остальных возьмём первую date/timestamp-колонку.</div>
+                <input class="gpp-sc-filter" id="gppIncFilter" placeholder="Фильтр по списку…"
+                       style="display: none; margin-top: 8px;">
+                <div class="gpp-key-list" id="gppIncList"></div>
             </div>
 
             <div id="gppIncKey" style="display: none;">

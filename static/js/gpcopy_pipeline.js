@@ -38,6 +38,11 @@
         sel: new Set(),            // "schema.table"
         catalog: null,             // {total, schemas:[{schema,count}], cached_at}
         incResolved: null,         // [{schema,table,column,via}]
+        incOverrides: {},          // "schema.table" -> колонка, заданная вручную
+        incExcluded: {},           // "schema.table" -> true (исключена из запуска)
+        incWatermarks: {},         // "schema.table" -> значение watermark в dest (или null)
+        incFilter: "",
+        incEditing: null,          // строка с открытым инлайн-редактором колонки
         dateResolved: null,
         syncKeys: {},              // "schema.table" -> {columns:[], source}
         syncUnresolved: [],
@@ -105,9 +110,13 @@
 
     function invalidateResolutions() {
         state.incResolved = null;
+        state.incWatermarks = {};
+        state.incEditing = null;
         state.dateResolved = null;
         state.syncKeys = {};
         state.syncUnresolved = [];
+        var incList = $("gppIncList");
+        if (incList) { incList.innerHTML = ""; }
     }
 
     /* ---------------- persistence ---------------- */
@@ -653,8 +662,199 @@
             }
             hint.innerHTML = msg;
             state[target] = d.resolved;
+            if (target === "incResolved") {
+                renderIncList();
+                renderIncSummaryHint();
+            }
             return d;
         });
+    }
+
+    /* ---------------- increment: per-table watermark list ---------------- */
+
+    var INC_BADGES = {
+        priority: ["pk", "приоритет"],
+        fallback_date: ["comp", "date-фолбэк"],
+        manual: ["man", "вручную"],
+    };
+
+    function incRowsData() {
+        var map = {};
+        (state.incResolved || []).forEach(function (r) {
+            map[r.schema + "." + r.table] = r;
+        });
+        return selTables().map(function (t) {
+            var key = t.schema + "." + t.table;
+            var ov = state.incOverrides[key];
+            var res = map[key];
+            return {
+                key: key,
+                schema: t.schema,
+                table: t.table,
+                column: ov || (res ? res.column : null),
+                via: ov ? "manual" : (res ? res.via : null),
+                excluded: !!state.incExcluded[key],
+                wm: state.incWatermarks[key],
+            };
+        });
+    }
+
+    function renderIncList() {
+        var box = $("gppIncList");
+        if (!box || !state.incResolved) { return; }
+
+        var rows = incRowsData();
+        var f = (state.incFilter || "").toLowerCase();
+        if (f) {
+            rows = rows.filter(function (r) {
+                return r.key.toLowerCase().indexOf(f) !== -1;
+            });
+        }
+        // проблемные — наверх
+        rows.sort(function (a, b) {
+            if (!a.column !== !b.column) { return a.column ? 1 : -1; }
+            return a.key < b.key ? -1 : 1;
+        });
+
+        var top = rows.slice(0, 200);
+        box.innerHTML = top.map(function (r) {
+            var colHtml;
+            if (state.incEditing === r.key) {
+                colHtml = '<input class="colinput" id="gppIncColEdit" value="' +
+                    esc(r.column || "") + '">';
+            } else {
+                colHtml = r.column
+                    ? '<span class="cols">→ ' + esc(r.column) + "</span>"
+                    : '<span class="cols" style="color: var(--crit);">колонка не найдена</span>';
+                colHtml += ' <span class="edit" data-inc-e="' + esc(r.key) +
+                    '" title="Задать колонку вручную">✎</span>';
+            }
+
+            var right = "";
+            if (r.wm !== undefined) {
+                right += '<span class="gpp-wm-chip">' +
+                    (r.wm === null ? "пусто → полная догрузка" : "wm: " + esc(String(r.wm))) +
+                    "</span> ";
+            }
+            var b = INC_BADGES[r.via];
+            right += r.column
+                ? '<span class="gpp-key-badge ' + b[0] + '">' + b[1] + "</span>"
+                : '<span class="gpp-key-badge none">нет колонки</span>';
+
+            return '<div class="gpp-key-row' + (r.excluded ? " off" : "") +
+                '"><span><input type="checkbox" data-inc-x="' + esc(r.key) + '"' +
+                (r.excluded ? "" : " checked") + ">" + esc(r.key) + " " + colHtml +
+                "</span><span>" + right + "</span></div>";
+        }).join("") +
+        (rows.length > top.length
+            ? '<div class="gpp-hint">…и ещё ' + fmtN(rows.length - top.length) +
+              " — используй фильтр.</div>"
+            : "");
+
+        $("gppIncFilter").style.display = incRowsData().length > 15 ? "" : "none";
+
+        // чекбоксы включения
+        box.querySelectorAll("input[data-inc-x]").forEach(function (cb) {
+            cb.onchange = function () {
+                var k = cb.getAttribute("data-inc-x");
+                if (cb.checked) { delete state.incExcluded[k]; }
+                else { state.incExcluded[k] = true; }
+                renderIncList();
+                renderIncSummaryHint();
+            };
+        });
+
+        // инлайн-редактор колонки
+        box.querySelectorAll(".edit[data-inc-e]").forEach(function (el) {
+            el.onclick = function () {
+                state.incEditing = el.getAttribute("data-inc-e");
+                renderIncList();
+                var inp = $("gppIncColEdit");
+                if (inp) { inp.focus(); inp.select(); }
+            };
+        });
+
+        var inp = $("gppIncColEdit");
+        if (inp) {
+            var apply = function () {
+                var key = state.incEditing;
+                var val = inp.value.trim();
+                state.incEditing = null;
+                if (!val) { renderIncList(); return; }
+
+                var dot = key.indexOf(".");
+                // проверяем, что колонка существует в этой таблице
+                api("/api/catalog/resolve-columns", "POST", {
+                    connection_id: srcId(),
+                    tables: [{ schema: key.slice(0, dot), table: key.slice(dot + 1) }],
+                    priority: [val],
+                }).then(function (d) {
+                    if (d.ok && d.resolved && d.resolved.length) {
+                        state.incOverrides[key] = val;
+                        delete state.incWatermarks[key];
+                    } else {
+                        toast("Колонки «" + val + "» нет в " + key, "error");
+                    }
+                    renderIncList();
+                    renderIncSummaryHint();
+                });
+            };
+            inp.onkeydown = function (e) {
+                if (e.key === "Enter") { apply(); }
+                if (e.key === "Escape") { state.incEditing = null; renderIncList(); }
+            };
+            inp.onblur = apply;
+        }
+    }
+
+    function renderIncSummaryHint() {
+        var rows = incRowsData();
+        var run = rows.filter(function (r) { return !r.excluded && r.column; }).length;
+        var noCol = rows.filter(function (r) { return !r.column; }).length;
+        var off = rows.filter(function (r) { return r.excluded; }).length;
+
+        var msg = 'К копированию: <span class="good">' + fmtN(run) + "</span> из " +
+            fmtN(rows.length);
+        if (noCol) { msg += ' · <span class="warn">без колонки: ' + fmtN(noCol) + "</span>"; }
+        if (off) { msg += " · исключено: " + fmtN(off); }
+        $("gppIncHint").innerHTML = msg;
+    }
+
+    function previewWatermarks() {
+        if (!state.incResolved) {
+            checkColumns("gppIncPriority", "gppIncHint", "incResolved")
+                .then(function (d) { if (d) { previewWatermarks(); } });
+            return;
+        }
+        var rows = incRowsData().filter(function (r) { return !r.excluded && r.column; });
+        var CAPW = 50;
+        var todo = rows.slice(0, CAPW);
+        if (!todo.length) { toast("Нет таблиц с колонкой", "warning"); return; }
+
+        var btn = $("gppIncWmPreview");
+        btn.disabled = true;
+        $("gppIncHint").textContent =
+            "Читаю watermark в назначении (" + fmtN(todo.length) + " таблиц)…";
+
+        api("/api/gpcopy/increment/preview", "POST", {
+            source_connection_id: srcId(),
+            dest_connection_id: dstId(),
+            tables: todo.map(function (r) {
+                return { schema: r.schema, table: r.table, watermark_column: r.column };
+            }),
+        }).then(function (d) {
+            btn.disabled = false;
+            if (!d.ok) { toast(d.message, "error"); renderIncSummaryHint(); return; }
+            d.tables.forEach(function (t) {
+                state.incWatermarks[t.schema + "." + t.table] = t.watermark;
+            });
+            renderIncList();
+            var empty = d.tables.filter(function (t) { return t.watermark === null; }).length;
+            renderIncSummaryHint();
+            $("gppIncHint").innerHTML += " · превью: у " + fmtN(empty) +
+                " watermark пуст (полная догрузка)" +
+                (rows.length > CAPW ? " · показаны первые " + CAPW : "");
+        }).catch(function () { btn.disabled = false; renderIncSummaryHint(); });
     }
 
     /* ---------------- smart resolution: sync keys ---------------- */
@@ -920,16 +1120,12 @@
     }
 
     function buildIncTables() {
-        // watermark по резолву; таблицы без колонки пропускаем
-        var byKey = {};
-        (state.incResolved || []).forEach(function (r) {
-            byKey[r.schema + "." + r.table] = r.column;
-        });
-        return selTables()
-            .filter(function (t) { return byKey[t.schema + "." + t.table]; })
-            .map(function (t) {
-                return { schema: t.schema, table: t.table,
-                         watermark_column: byKey[t.schema + "." + t.table] };
+        // watermark по резолву + ручные замены; исключённые и без колонки пропускаем
+        return incRowsData()
+            .filter(function (r) { return !r.excluded && r.column; })
+            .map(function (r) {
+                return { schema: r.schema, table: r.table,
+                         watermark_column: r.column };
             });
     }
 
@@ -1349,6 +1545,11 @@
         // smart checks
         $("gppIncCheck").onclick = function () {
             checkColumns("gppIncPriority", "gppIncHint", "incResolved");
+        };
+        $("gppIncWmPreview").onclick = previewWatermarks;
+        $("gppIncFilter").oninput = function () {
+            state.incFilter = $("gppIncFilter").value;
+            renderIncList();
         };
         $("gppDateCheck").onclick = function () {
             checkColumns("gppDatePriority", "gppDateHint", "dateResolved");
