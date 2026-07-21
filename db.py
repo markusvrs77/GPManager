@@ -159,6 +159,86 @@ def init_db():
             """
         )
 
+        # --- Scheduler (spec: docs/superpowers/specs/2026-07-21-scheduler-cron-design.md §3) ---
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                job_type TEXT NOT NULL,
+                config_json TEXT,
+                cron_expr TEXT NOT NULL,
+                timezone TEXT,
+                overlap_policy TEXT NOT NULL DEFAULT 'skip',
+                max_retries INTEGER NOT NULL DEFAULT 0,
+                retry_delay_seconds INTEGER NOT NULL DEFAULT 0,
+                notify_on TEXT NOT NULL DEFAULT 'failure',
+                notify_channel_ids TEXT,
+                next_run_at TEXT,
+                last_run_at TEXT,
+                last_status TEXT,
+                last_job_id INTEGER,
+                last_error TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schedule_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                schedule_id INTEGER NOT NULL,
+                fired_at TEXT,
+                run_date TEXT,
+                job_id INTEGER,
+                status TEXT NOT NULL,
+                attempt_no INTEGER NOT NULL DEFAULT 0,
+                error TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule_id
+            ON schedule_runs(schedule_id, status)
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scheduler_lock (
+                id INTEGER PRIMARY KEY,
+                holder TEXT,
+                heartbeat_at TEXT,
+                expires_at TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO scheduler_lock (id, holder, heartbeat_at, expires_at)
+            VALUES (1, NULL, NULL, NULL)
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notification_channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL,
+                config_json TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+
     ensure_column_exists(
         "skew_results",
         "job_id",
