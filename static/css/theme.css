@@ -248,13 +248,38 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 .card.gp-stat { transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease); }
 .card.gp-stat:hover { transform: translateY(-3px); box-shadow: 0 20px 44px color-mix(in srgb, var(--a1) 22%, rgba(0, 0, 0, .28)); }
 
-/* native checkboxes / radios -> accent color everywhere (tree, forms) */
-input[type="checkbox"], input[type="radio"] {
-  accent-color: var(--a1);
-  width: 16px;
-  height: 16px;
+/* uniform, stylish custom checkbox everywhere (tree, forms) */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;          /* stop flex rows from resizing it */
+  margin: 0;
+  border: 1.5px solid color-mix(in srgb, var(--text) 38%, transparent);
+  border-radius: 5px;
+  background: var(--surface-2);
   cursor: pointer;
+  display: inline-grid;
+  place-content: center;
+  vertical-align: middle;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
+input[type="checkbox"]::before {
+  content: "";
+  width: 11px;
+  height: 11px;
+  transform: scale(0);
+  transition: transform var(--dur) var(--ease-spring);
+  background: #fff;
+  clip-path: polygon(14% 44%, 0 65%, 40% 100%, 100% 16%, 82% 0, 38% 68%);
+}
+input[type="checkbox"]:hover { border-color: var(--a1); }
+input[type="checkbox"]:checked { background: var(--accent-grad); border-color: transparent; }
+input[type="checkbox"]:checked::before { transform: scale(1); }
+input[type="checkbox"]:focus-visible { outline: 2px solid var(--a2); outline-offset: 2px; }
+input[type="radio"] { accent-color: var(--a1); width: 16px; height: 16px; cursor: pointer; }
 
 /* custom scrollbars */
 * {
