@@ -58,6 +58,20 @@ from modules.gpcopy import (
 
 from modules.dashboard import get_session_limits_stats
 
+import json as _json
+from datetime import datetime as _datetime
+
+import scheduler as gpm_scheduler
+import scheduler_store
+from modules.date_window import resolve_date_window
+
+# Реестр раннеров для планировщика (spec §5): job_type -> существующая функция.
+gpm_scheduler.register_runner("gpcopy", run_gpcopy_job)
+gpm_scheduler.register_runner("gpcopy_date", run_gpcopy_job)
+gpm_scheduler.register_runner("vacuum", run_vacuum_analyze_job)
+gpm_scheduler.register_runner("skew", run_skew_job)
+gpm_scheduler.register_runner("reorganize", run_reorganize_job)
+
 
 app = Flask(__name__)
 
@@ -1649,6 +1663,168 @@ def api_gpcopy_sync_apply():
             "message": str(e),
             "traceback": traceback.format_exc(),
         }), 500
+
+# ============================================================
+# Scheduler (spec §8)
+# ============================================================
+
+@app.route("/schedules")
+def schedules_page():
+    return render_template(
+        "schedules.html",
+        connections=list_connections(),
+    )
+
+
+@app.route("/api/schedules", methods=["GET", "POST"])
+def api_schedules():
+    if request.method == "GET":
+        return jsonify({"ok": True, "schedules": scheduler_store.list_schedules()})
+
+    data = request.get_json(silent=True) or {}
+
+    try:
+        schedule_id = scheduler_store.create_schedule({
+            "name": data.get("name"),
+            "job_type": data.get("job_type"),
+            "cron_expr": data.get("cron_expr"),
+            "config_json": _json.dumps(data.get("config") or {}, ensure_ascii=False),
+            "overlap_policy": data.get("overlap_policy"),
+            "max_retries": data.get("max_retries"),
+            "retry_delay_seconds": data.get("retry_delay_seconds"),
+            "notify_on": data.get("notify_on"),
+            "notify_channel_ids": _json.dumps(data.get("notify_channel_ids") or []),
+            "enabled": data.get("enabled", 1),
+        })
+        return jsonify({"ok": True, "id": schedule_id})
+    except (ValueError, KeyError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+
+@app.route("/api/schedules/<int:schedule_id>", methods=["PUT", "DELETE"])
+def api_schedule_item(schedule_id):
+    if request.method == "DELETE":
+        scheduler_store.delete_schedule(schedule_id)
+        return jsonify({"ok": True})
+
+    data = request.get_json(silent=True) or {}
+    update = {}
+
+    for key in (
+        "name", "job_type", "cron_expr", "overlap_policy",
+        "max_retries", "retry_delay_seconds", "notify_on", "enabled",
+    ):
+        if key in data:
+            update[key] = data[key]
+
+    if "config" in data:
+        update["config_json"] = _json.dumps(data["config"], ensure_ascii=False)
+
+    if "notify_channel_ids" in data:
+        update["notify_channel_ids"] = _json.dumps(data["notify_channel_ids"])
+
+    try:
+        scheduler_store.update_schedule(schedule_id, update)
+        return jsonify({"ok": True})
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+
+@app.route("/api/schedules/<int:schedule_id>/toggle", methods=["POST"])
+def api_schedule_toggle(schedule_id):
+    schedule = scheduler_store.get_schedule(schedule_id)
+
+    if not schedule:
+        return jsonify({"ok": False, "message": "Schedule not found"}), 404
+
+    new_enabled = 0 if schedule["enabled"] else 1
+    scheduler_store.set_enabled(schedule_id, new_enabled)
+    return jsonify({"ok": True, "enabled": new_enabled})
+
+
+@app.route("/api/schedules/<int:schedule_id>/run-now", methods=["POST"])
+def api_schedule_run_now(schedule_id):
+    try:
+        result = gpm_scheduler.run_now(schedule_id)
+        return jsonify({"ok": True, **result})
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 404
+
+
+@app.route("/api/schedules/<int:schedule_id>/runs")
+def api_schedule_runs(schedule_id):
+    return jsonify({"ok": True, "runs": scheduler_store.list_runs(schedule_id)})
+
+
+@app.route("/api/schedules/preview", methods=["POST"])
+def api_schedules_preview():
+    data = request.get_json(silent=True) or {}
+    out = {"ok": True}
+
+    cron_expr = data.get("cron_expr")
+
+    if cron_expr:
+        if not scheduler_store.validate_cron(cron_expr):
+            return jsonify({"ok": False, "message": "Invalid cron expression"}), 400
+
+        from croniter import croniter as _croniter
+
+        it = _croniter(cron_expr, _datetime.now())
+        out["next_runs"] = [
+            it.get_next(_datetime).strftime("%Y-%m-%d %H:%M:%S") for _ in range(5)
+        ]
+
+    date_window = data.get("date_window")
+
+    if date_window:
+        try:
+            date_from, date_to = resolve_date_window(date_window, _datetime.now())
+            out["date_from"] = date_from
+            out["date_to"] = date_to
+        except ValueError as e:
+            return jsonify({"ok": False, "message": str(e)}), 400
+
+    return jsonify(out)
+
+
+@app.route("/api/notification-channels", methods=["GET", "POST"])
+def api_notification_channels():
+    if request.method == "GET":
+        return jsonify({"ok": True, "channels": scheduler_store.list_channels()})
+
+    data = request.get_json(silent=True) or {}
+
+    try:
+        channel_id = scheduler_store.create_channel({
+            "name": data.get("name"),
+            "type": data.get("type") or "webhook",
+            "config_json": _json.dumps(data.get("config") or {}, ensure_ascii=False),
+            "enabled": data.get("enabled", 1),
+        })
+        return jsonify({"ok": True, "id": channel_id})
+    except KeyError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+
+@app.route("/api/notification-channels/<int:channel_id>", methods=["PUT", "DELETE"])
+def api_notification_channel_item(channel_id):
+    if request.method == "DELETE":
+        scheduler_store.delete_channel(channel_id)
+        return jsonify({"ok": True})
+
+    data = request.get_json(silent=True) or {}
+    update = {}
+
+    for key in ("name", "type", "enabled"):
+        if key in data:
+            update[key] = data[key]
+
+    if "config" in data:
+        update["config_json"] = _json.dumps(data["config"], ensure_ascii=False)
+
+    scheduler_store.update_channel(channel_id, update)
+    return jsonify({"ok": True})
+
 
 if __name__ == "__main__":
     init_db()

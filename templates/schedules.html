@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block title %}Schedules · GPManager{% endblock %}
+
+{% block content %}
+
+<div class="container-fluid py-4">
+
+    <div class="mb-3">
+        <h2 class="mb-1">Schedules</h2>
+        <div class="text-muted">
+            Запуск gpcopy, vacuum, reorganize и skew по расписанию (cron)
+        </div>
+    </div>
+
+    <div class="row g-3">
+
+        <div class="col-lg-4">
+            <div class="card shadow-sm">
+                <div class="card-header fw-bold">New schedule</div>
+                <div class="card-body">
+
+                    <label class="form-label">Name</label>
+                    <input type="text" id="schName" class="form-control mb-3" placeholder="nightly-gpcopy">
+
+                    <label class="form-label">Job type</label>
+                    <select id="schJobType" class="form-select mb-3" onchange="onJobTypeChange()">
+                        <option value="gpcopy">gpcopy (tables)</option>
+                        <option value="gpcopy_date">gpcopy by date window</option>
+                        <option value="vacuum">vacuum / analyze</option>
+                        <option value="reorganize">reorganize</option>
+                        <option value="skew">skew analysis</option>
+                    </select>
+
+                    <label class="form-label">Connection</label>
+                    <select id="schConnection" class="form-select mb-3">
+                        {% for c in connections %}
+                        <option value="{{ c.id }}">{{ c.name }} / {{ c.host }} / {{ c.database_name }}</option>
+                        {% endfor %}
+                    </select>
+
+                    <label class="form-label">Tables (schema.table, по одной в строке)</label>
+                    <textarea id="schTables" class="form-control mb-3" rows="3" placeholder="dwh.orders&#10;dwh.payments"></textarea>
+
+                    <div id="schDateWindow" class="border rounded p-2 mb-3" style="display:none">
+                        <div class="fw-bold small mb-2">Date window (резолв при запуске)</div>
+
+                        <label class="form-label small">Date column</label>
+                        <input type="text" id="dwColumn" class="form-control form-control-sm mb-2" placeholder="date_change$">
+
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label class="form-label small">From</label>
+                                <select id="dwFrom" class="form-select form-select-sm" onchange="previewWindow()">
+                                    <option value="n_days_ago:7">7 дней назад</option>
+                                    <option value="yesterday">вчера</option>
+                                    <option value="this_month_to_date">начало месяца</option>
+                                    <option value="last_month">прошлый месяц</option>
+                                    <option value="expr:run_date-1d">run_date-1d</option>
+                                </select>
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label small">To</label>
+                                <select id="dwTo" class="form-select form-select-sm" onchange="previewWindow()">
+                                    <option value="yesterday">вчера (вкл.)</option>
+                                    <option value="today">сегодня (вкл.)</option>
+                                    <option value="last_month">прошлый месяц</option>
+                                    <option value="expr:run_date-1d">run_date-1d</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="small text-muted mt-2" id="dwPreview">—</div>
+                    </div>
+
+                    <label class="form-label">Cron</label>
+                    <div class="d-flex gap-1 flex-wrap mb-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setCron('0 2 * * *')">Ночью 02:00</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setCron('0 * * * *')">Ежечасно</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setCron('0 3 * * 0')">Вс 03:00</button>
+                    </div>
+                    <input type="text" id="schCron" class="form-control mb-1" value="0 2 * * *" oninput="previewCron()">
+                    <div class="small text-muted mb-3" id="cronPreview">—</div>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col-6">
+                            <label class="form-label small">Overlap</label>
+                            <select id="schOverlap" class="form-select form-select-sm">
+                                <option value="skip">skip</option>
+                                <option value="queue">queue</option>
+                                <option value="parallel">parallel</option>
+                            </select>
+                        </div>
+                        <div class="col-3">
+                            <label class="form-label small">Retries</label>
+                            <input type="number" id="schRetries" class="form-control form-control-sm" value="0" min="0">
+                        </div>
+                        <div class="col-3">
+                            <label class="form-label small">Delay, с</label>
+                            <input type="number" id="schRetryDelay" class="form-control form-control-sm" value="60" min="0">
+                        </div>
+                    </div>
+
+                    <button type="button" class="btn btn-primary w-100" onclick="createSchedule()">Create schedule</button>
+                    <div class="small text-danger mt-2" id="schError"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-8">
+            <div class="card shadow-sm">
+                <div class="card-header fw-bold d-flex justify-content-between align-items-center">
+                    <span>Schedules</span>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadSchedules()">Refresh</button>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Type</th>
+                                    <th>Cron</th>
+                                    <th>Next run</th>
+                                    <th>Last</th>
+                                    <th>On</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="schedulesBody">
+                                <tr><td colspan="7" class="text-muted p-3">Загрузка…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card shadow-sm mt-3" id="runsCard" style="display:none">
+                <div class="card-header fw-bold">Run history — <span id="runsTitle"></span></div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-sm mb-0">
+                            <thead>
+                                <tr><th>Fired</th><th>Run date</th><th>Job</th><th>Status</th><th>#</th><th>Error</th></tr>
+                            </thead>
+                            <tbody id="runsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/schedules.js') }}"></script>
+{% endblock %}

@@ -38,6 +38,7 @@
         <a href="/maintenance" class="{% if request.path == '/maintenance' %}active{% endif %}">Maintenance</a>
         <a href="/vacuum" class="{% if request.path == '/vacuum' %}active{% endif %}">Vacuum / Analyze</a>
         <a href="{{ url_for('gpcopy_page') }}" class="{% if request.path.startswith('/gpcopy') %}active{% endif %}">gpcopy</a>
+        <a href="/schedules" class="{% if request.path.startswith('/schedules') %}active{% endif %}">Schedules</a>
     </div>
 
     <div class="gp-spacer"></div>

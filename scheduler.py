@@ -242,6 +242,23 @@ def tick(now=None):
     return "leader"
 
 
+def run_now(schedule_id, now=None):
+    """Ручной запуск расписания (кнопка Run now). Уважает overlap-политику."""
+    now = now or datetime.now()
+    schedule = store.get_schedule(schedule_id)
+
+    if not schedule:
+        raise ValueError("Schedule not found: {}".format(schedule_id))
+
+    policy = schedule.get("overlap_policy") or "skip"
+
+    if policy != "parallel" and store.get_active_run(schedule_id):
+        return {"started": False, "reason": "previous run still active"}
+
+    _launch(schedule, store.fmt(now), 0, now)
+    return {"started": True}
+
+
 def _loop():
     while True:
         try:
