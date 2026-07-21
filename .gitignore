@@ -1,3 +1,10 @@
 
 instance/*.sqlite3
 instance/*.db
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Local Claude Code worktree / preview config (machine-specific paths)
+.claude/
