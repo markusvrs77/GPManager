@@ -1658,6 +1658,9 @@ if __name__ == "__main__":
     if interrupted_jobs:
         print("Interrupted jobs after application startup:", interrupted_jobs)
 
+    from scheduler import start_scheduler
+    start_scheduler()
+
     app.run(
         host=APP_HOST,
         port=APP_PORT,
