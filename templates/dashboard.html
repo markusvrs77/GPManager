@@ -380,6 +380,10 @@ function renderSessionLimits(data) {
             </tr>
         `;
     }).join("");
+
+    if (window.gpMotion) {
+        window.gpMotion.stagger(body.querySelectorAll("tr"), { step: 16, y: 6, dur: 200 });
+    }
 }
 
 async function loadSessionLimitsStats() {
