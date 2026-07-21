@@ -144,8 +144,29 @@ h1, h2, h3, h4, h5, h6 { color: var(--text); }
 .btn-outline-primary:hover { background: var(--accent-grad); border-color: transparent; color: #fff; }
 
 /* tables */
-.table { color: var(--text); border-color: var(--hairline); vertical-align: middle; }
-.table > :not(caption) > * > * { border-bottom-color: var(--hairline); background: transparent; }
+.table {
+  --bs-table-color: var(--text);
+  --bs-table-bg: transparent;
+  --bs-table-border-color: var(--hairline);
+  color: var(--text);
+  border-color: var(--hairline);
+  vertical-align: middle;
+  font-size: 13.5px;
+}
+.table > :not(caption) > * > * {
+  color: var(--text);
+  border-bottom-color: var(--hairline);
+  background: transparent;
+  padding: 9px 12px;
+}
+/* numeric-ish cells read better as tabular mono */
+.table td b, .table td strong, .table td .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* zebra for scannability */
+.table:not(.table-borderless) > tbody > tr:nth-child(even) > * {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+/* native select dropdown options readable in dark */
+.form-select option, .form-control option { background: var(--solid); color: var(--text); }
 .table thead th, .sticky-table-head th {
   background: var(--table-head);
   -webkit-backdrop-filter: blur(8px);
