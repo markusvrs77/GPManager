@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 
+{% block title %}Dashboard · GPManager{% endblock %}
+
 {% block content %}
 
 <div class="container-fluid py-4">
@@ -14,43 +16,42 @@
     <div class="row g-3 mb-4">
 
         <div class="col-md-3">
-            <div class="card shadow-sm h-100">
+            <div class="card gp-stat shadow-sm h-100">
                 <div class="card-body">
-                    <div class="text-muted small">Total skew tables</div>
-                    <h3 class="mb-0">{{ skew_summary.total }}</h3>
+                    <div class="gp-k">Total skew tables</div>
+                    <div class="gp-v">{{ skew_summary.total }}</div>
                 </div>
             </div>
         </div>
 
         <div class="col-md-3">
-            <div class="card shadow-sm h-100">
+            <div class="card gp-stat shadow-sm h-100">
                 <div class="card-body">
-                    <div class="text-muted small">Max skew</div>
-                    <h3 class="mb-0 text-danger">{{ skew_summary.max_skew }}</h3>
+                    <div class="gp-k">Max skew</div>
+                    <div class="gp-v gp-accent">{{ skew_summary.max_skew }}</div>
                 </div>
             </div>
         </div>
 
         <div class="col-md-3">
-            <div class="card shadow-sm h-100">
+            <div class="card gp-stat shadow-sm h-100">
                 <div class="card-body">
-                    <div class="text-muted small">Avg skew</div>
-                    <h3 class="mb-0 text-primary">{{ skew_summary.avg_skew }}</h3>
+                    <div class="gp-k">Avg skew</div>
+                    <div class="gp-v">{{ skew_summary.avg_skew }}</div>
                 </div>
             </div>
         </div>
 
         <div class="col-md-3">
-            <div class="card shadow-sm h-100">
+            <div class="card gp-stat shadow-sm h-100">
                 <div class="card-body">
-                    <div class="text-muted small">Last skew job</div>
+                    <div class="gp-k">Last skew job</div>
 
                     {% if latest_skew_job %}
-                        <h5 class="mb-0">
-                            #{{ latest_skew_job.id }} {{ latest_skew_job.status }}
-                        </h5>
+                        <div class="gp-v" style="font-size: 22px;">#{{ latest_skew_job.id }}</div>
+                        <span class="badge bg-secondary mt-1">{{ latest_skew_job.status }}</span>
                     {% else %}
-                        <h5 class="mb-0 text-muted">No job</h5>
+                        <div class="gp-v" style="font-size: 22px; color: var(--text-muted);">No job</div>
                     {% endif %}
                 </div>
             </div>
@@ -324,117 +325,6 @@ function renderDashboardSkewCharts() {
 
 document.addEventListener("DOMContentLoaded", renderDashboardSkewCharts);
 
-function getDashboardConnectionId() {
-    const el =
-        document.getElementById("connectionId") ||
-        document.getElementById("dashboardConnectionId") ||
-        document.getElementById("connection_id");
-
-    if (!el) {
-        return null;
-    }
-
-    return el.value;
-}
-
-function sessionLimitBadge(value) {
-    const percent = Number(value || 0);
-
-    if (percent >= 90) {
-        return `<span class="badge bg-danger">${percent}%</span>`;
-    }
-
-    if (percent >= 75) {
-        return `<span class="badge bg-warning text-dark">${percent}%</span>`;
-    }
-
-    return `<span class="badge bg-success">${percent}%</span>`;
-}
-
-async function loadSessionLimitsStats() {
-    const connectionId = getDashboardConnectionId();
-
-    const messageBox = document.getElementById("sessionLimitsMessage");
-    const tbody = document.getElementById("sessionLimitsTableBody");
-
-    if (!connectionId) {
-        messageBox.className = "alert alert-warning mb-3";
-        messageBox.textContent = "Выбери connection на Dashboard.";
-        return;
-    }
-
-    messageBox.className = "alert alert-info mb-3";
-    messageBox.textContent = "Загружаю статистику сессий...";
-
-    tbody.innerHTML = `
-        <tr>
-            <td colspan="13" class="text-muted">Loading...</td>
-        </tr>
-    `;
-
-    try {
-        const response = await fetch(`/api/dashboard/session-limits?connection_id=${encodeURIComponent(connectionId)}`);
-        const data = await response.json();
-
-        if (!response.ok || !data.ok) {
-            throw new Error(data.message || "Failed to load session limits");
-        }
-
-        document.getElementById("slNodes").textContent = data.summary.nodes;
-        document.getElementById("slTotal").textContent = data.summary.total_sessions;
-        document.getElementById("slActive").textContent = data.summary.active_sessions;
-        document.getElementById("slIdle").textContent = data.summary.idle_sessions;
-        document.getElementById("slIdleTxn").textContent = data.summary.idle_in_transaction_sessions;
-
-        if (!data.rows || data.rows.length === 0) {
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="13" class="text-muted">Нет данных.</td>
-                </tr>
-            `;
-        } else {
-            tbody.innerHTML = data.rows.map(row => {
-                const nodeClass =
-                    row.node_type === "MASTER/COORDINATOR"
-                        ? "table-primary"
-                        : "";
-
-                return `
-                    <tr class="${nodeClass}">
-                        <td>${row.node_type || ""}</td>
-                        <td>${row.segment_id}</td>
-                        <td>${row.hostname || ""}</td>
-                        <td>${row.address || ""}</td>
-                        <td>${row.port || ""}</td>
-                        <td><strong>${row.total_sessions}</strong></td>
-                        <td class="text-primary fw-bold">${row.active_sessions}</td>
-                        <td>${row.idle_sessions}</td>
-                        <td class="text-danger fw-bold">${row.idle_in_transaction_sessions}</td>
-                        <td>${row.max_connections}</td>
-                        <td>${row.superuser_reserved_connections}</td>
-                        <td>${row.free_connections}</td>
-                        <td>${sessionLimitBadge(row.used_percent)}</td>
-                    </tr>
-                `;
-            }).join("");
-        }
-
-        messageBox.className = "alert alert-success mb-3";
-        messageBox.textContent = "Session limits loaded.";
-
-    } catch (err) {
-        messageBox.className = "alert alert-danger mb-3";
-        messageBox.textContent = err.message;
-
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="13" class="text-danger">${err.message}</td>
-            </tr>
-        `;
-    }
-}
-
-
 function setSessionMessage(message, type = "warning") {
     const box = document.getElementById("sessionLimitsMessage");
     if (!box) return;
@@ -455,16 +345,32 @@ function renderSessionLimits(data) {
 
     const body = document.getElementById("sessionLimitsBody");
 
+    // safe cell builder — textContent only, never innerHTML with DB values
+    function cell(value, cls, bold) {
+        const td = document.createElement("td");
+        if (cls) { td.className = cls; }
+        const val = value == null ? "" : String(value);
+        if (bold) {
+            const b = document.createElement("b");
+            b.textContent = val;
+            td.appendChild(b);
+        } else {
+            td.textContent = val;
+        }
+        return td;
+    }
+
+    body.replaceChildren();
+
     if (!rows.length) {
-        body.innerHTML = `
-            <tr>
-                <td colspan="13" class="text-muted">Нет данных.</td>
-            </tr>
-        `;
+        const tr = document.createElement("tr");
+        tr.appendChild(cell("Нет данных.", "text-muted"));
+        tr.firstChild.colSpan = 13;
+        body.appendChild(tr);
         return;
     }
 
-    body.innerHTML = rows.map(row => {
+    rows.forEach(row => {
         const used = Number(row.used_percent || 0);
         let usedClass = "text-success";
 
@@ -474,24 +380,26 @@ function renderSessionLimits(data) {
             usedClass = "text-warning fw-bold";
         }
 
-        return `
-            <tr>
-                <td>${row.node_type || ""}</td>
-                <td>${row.segment_id ?? ""}</td>
-                <td>${row.hostname || ""}</td>
-                <td>${row.address || ""}</td>
-                <td>${row.port || ""}</td>
-                <td><b>${row.total_sessions || 0}</b></td>
-                <td class="text-primary"><b>${row.active_sessions || 0}</b></td>
-                <td>${row.idle_sessions || 0}</td>
-                <td class="text-danger"><b>${row.idle_in_transaction_sessions || 0}</b></td>
-                <td>${row.max_connections || 0}</td>
-                <td>${row.superuser_reserved_connections || 0}</td>
-                <td>${row.free_connections || 0}</td>
-                <td class="${usedClass}">${used.toFixed(2)}%</td>
-            </tr>
-        `;
-    }).join("");
+        const tr = document.createElement("tr");
+        tr.appendChild(cell(row.node_type || ""));
+        tr.appendChild(cell(row.segment_id ?? ""));
+        tr.appendChild(cell(row.hostname || ""));
+        tr.appendChild(cell(row.address || ""));
+        tr.appendChild(cell(row.port || ""));
+        tr.appendChild(cell(row.total_sessions || 0, null, true));
+        tr.appendChild(cell(row.active_sessions || 0, "text-primary", true));
+        tr.appendChild(cell(row.idle_sessions || 0));
+        tr.appendChild(cell(row.idle_in_transaction_sessions || 0, "text-danger", true));
+        tr.appendChild(cell(row.max_connections || 0));
+        tr.appendChild(cell(row.superuser_reserved_connections || 0));
+        tr.appendChild(cell(row.free_connections || 0));
+        tr.appendChild(cell(used.toFixed(2) + "%", usedClass));
+        body.appendChild(tr);
+    });
+
+    if (window.gpMotion) {
+        window.gpMotion.stagger(body.querySelectorAll("tr"), { step: 16, y: 6, dur: 200 });
+    }
 }
 
 async function loadSessionLimitsStats() {
@@ -540,4 +448,8 @@ document.addEventListener("DOMContentLoaded", function () {
 });
 </script>
 
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='vendor/chartjs/chart.umd.min.js') }}"></script>
 {% endblock %}

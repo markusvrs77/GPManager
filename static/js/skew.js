@@ -640,6 +640,10 @@ function renderSkewJobItems(items, resultMap = {}) {
 
         body.appendChild(tr);
     });
+
+    if (window.gpMotion) {
+        window.gpMotion.stagger(body.querySelectorAll("tr"), { step: 14, y: 6, dur: 200 });
+    }
 }
 
 

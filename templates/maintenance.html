@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 
+{% block title %}Maintenance · GPManager{% endblock %}
+
 {% block content %}
 
 <div class="container-fluid py-4">
@@ -351,6 +353,7 @@
 
 </div>
 
+<script src="{{ url_for('static', filename='vendor/chartjs/chart.umd.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/object_tree.js') }}?v=11"></script>
 <script src="{{ url_for('static', filename='js/skew.js') }}?v=11"></script>
 <script src="{{ url_for('static', filename='js/reorganize.js') }}?v=11"></script>

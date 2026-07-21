@@ -1,10 +1,14 @@
 {% extends "base.html" %}
 
+{% block title %}gpcopy · GPManager{% endblock %}
+
 {% block content %}
 <div class="gpcopy-page">
-    <h1>gpcopy</h1>
-    <div class="text-muted mb-3">
-        Greenplum gpcopy transfer tables from one database to another
+    <div class="mb-4">
+        <h2 class="mb-1">gpcopy</h2>
+        <div class="text-muted">
+            Transfer Greenplum tables from one database to another
+        </div>
     </div>
 
     <div class="gpcopy-layout">
@@ -243,6 +247,7 @@
 
                 <!--GPTEST-->
 
+                <div class="card mt-3 border-danger">
                 <div class="card-header bg-danger text-white">
                     <b>Prod → Test Sync by key</b>
                 </div>
@@ -295,6 +300,7 @@
                     <div id="gpcopySyncStatusBox" class="alert alert-info mt-3">
                         Выбери таблицы и нажми Prepare selected tables.
                     </div>
+                </div>
                 </div>
 
 

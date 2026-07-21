@@ -532,7 +532,7 @@ function loadDistributionRecommendation() {
 
     box.innerHTML = `
         <div class="alert alert-info">
-            Анализирую unique/primary key для ${selected.schema_name}.${selected.table_name}...
+            Анализирую unique/primary key для ${escapeHtml(selected.schema_name)}.${escapeHtml(selected.table_name)}...
         </div>
     `;
 
