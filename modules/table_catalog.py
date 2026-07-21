@@ -87,6 +87,114 @@ def get_catalog(connection_id, force=False):
     return tables, now
 
 
+_part_cache = {}
+
+
+def fetch_partition_pairs(connection_id):
+    """
+    Пары (child -> parent) из pg_inherits для всего кластера, с TTL-кэшем.
+    Возвращает dict {(schema, table): (parent_schema, parent_table)}.
+    """
+    key = int(connection_id)
+    now = time.time()
+
+    with _cache_lock:
+        entry = _part_cache.get(key)
+        if entry and now - entry["ts"] < CACHE_TTL_SECONDS:
+            return entry["pairs"]
+
+    cfg = get_connection_by_id(key)
+    if not cfg:
+        raise ValueError("Connection not found: {}".format(connection_id))
+
+    conn = open_psycopg2_connection_by_cfg(cfg)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT cn.nspname, cc.relname, pn.nspname, pc.relname
+                FROM pg_inherits i
+                JOIN pg_class cc ON cc.oid = i.inhrelid
+                JOIN pg_namespace cn ON cn.oid = cc.relnamespace
+                JOIN pg_class pc ON pc.oid = i.inhparent
+                JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+                WHERE cn.nspname NOT IN %s
+                """,
+                (_SYSTEM_SCHEMAS,),
+            )
+            pairs = {(r[0], r[1]): (r[2], r[3]) for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+    with _cache_lock:
+        _part_cache[key] = {"pairs": pairs, "ts": now}
+
+    return pairs
+
+
+def classify_partition_roles(tables, child_parent):
+    """
+    Роли таблиц по pg_inherits (чистая функция).
+
+    tables: [(schema, table)], child_parent: {(s,t): (parent_s, parent_t)}.
+    -> {(s,t): {"kind": "regular"|"parent"|"partition",
+                "root": (s,t)|None, "partitions": int}}
+    Субпартиции сворачиваются к корневому родителю.
+    """
+    parents = set(child_parent.values())
+
+    def find_root(key):
+        seen = set()
+        while key in child_parent and key not in seen:
+            seen.add(key)
+            key = child_parent[key]
+        return key
+
+    roles = {}
+    root_counts = {}
+
+    for key in tables:
+        if key in child_parent:
+            root = find_root(key)
+            roles[key] = {"kind": "partition", "root": root, "partitions": 0}
+            root_counts[root] = root_counts.get(root, 0) + 1
+        elif key in parents:
+            roles[key] = {"kind": "parent", "root": None, "partitions": 0}
+        else:
+            roles[key] = {"kind": "regular", "root": None, "partitions": 0}
+
+    for root, n in root_counts.items():
+        if root in roles:
+            roles[root]["partitions"] = n
+
+    return roles
+
+
+def schema_tables_with_roles(connection_id, schema):
+    """
+    Таблицы одной схемы с ролями для UI-селектора:
+    [{"table", "kind", "partitions", "parent"}], сортировка по имени.
+    """
+    tables, _ts = get_catalog(connection_id)
+    schema_tables = [(s, t) for s, t in tables if s == schema]
+
+    pairs = fetch_partition_pairs(connection_id)
+    roles = classify_partition_roles(schema_tables, pairs)
+
+    out = []
+    for s, t in schema_tables:
+        info = roles[(s, t)]
+        out.append({
+            "table": t,
+            "kind": info["kind"],
+            "partitions": info["partitions"],
+            "parent": info["root"][1] if info["root"] else None,
+        })
+
+    out.sort(key=lambda r: r["table"])
+    return out
+
+
 def catalog_summary(tables):
     """Счётчики по схемам: [{schema, total}]."""
     counts = {}

@@ -1896,6 +1896,23 @@ def api_catalog_search():
         return jsonify({"ok": False, "message": str(e)}), 500
 
 
+@app.route("/api/catalog/schema-tables")
+def api_catalog_schema_tables():
+    connection_id = request.args.get("connection_id", type=int)
+    schema = (request.args.get("schema") or "").strip()
+
+    if not connection_id or not schema:
+        return jsonify({"ok": False, "message": "connection_id и schema обязательны"}), 400
+
+    try:
+        return jsonify({
+            "ok": True,
+            "tables": table_catalog.schema_tables_with_roles(connection_id, schema),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
 @app.route("/api/catalog/expand-mask", methods=["POST"])
 def api_catalog_expand_mask():
     data = request.get_json(silent=True) or {}

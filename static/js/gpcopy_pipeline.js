@@ -42,8 +42,11 @@
         syncUnresolved: [],
         sets: [],
         expandedSchema: null,      // раскрытая схема в модалке
-        schemaTables: {},          // schema -> [table, ...] (кэш)
+        schemaTables: {},          // schema -> [{table,kind,partitions,parent}] (кэш)
         schemaFilter: "",
+        schemaView: "all",         // all | parents | plain
+        schemaLimit: 300,          // сколько строк отрендерено (infinite scroll)
+        expandedParent: null,      // родитель, чьи партиции раскрыты
     };
 
     var MODE_NAMES = {
@@ -185,46 +188,128 @@
     /* ---------------- modal: schemas ---------------- */
 
     function loadSchemaTables(schema) {
-        return api("/api/catalog/expand-mask", "POST",
-            { connection_id: srcId(), mask: schema + ".*" })
+        return api("/api/catalog/schema-tables?connection_id=" + srcId() +
+            "&schema=" + encodeURIComponent(schema))
             .then(function (d) {
-                if (!d.ok) { toast(d.message, "error"); return; }
-                state.schemaTables[schema] = d.tables
-                    .map(function (t) { return t.table; })
-                    .sort();
+                if (!d.ok) { toast(d.message, "error"); return null; }
+                state.schemaTables[schema] = d.tables;
                 renderModalSchemas();
+                return d.tables;
             });
     }
+
+    function ensureSchemaTables(schema) {
+        return state.schemaTables[schema]
+            ? Promise.resolve(state.schemaTables[schema])
+            : loadSchemaTables(schema);
+    }
+
+    // Плоский список строк для рендера: главные таблицы по фильтрам,
+    // после раскрытого родителя — его партиции.
+    function visibleRows(schema) {
+        var all = state.schemaTables[schema] || [];
+        var f = (state.schemaFilter || "").toLowerCase();
+        var view = state.schemaView;
+
+        var rows = [];
+        all.forEach(function (item) {
+            if (item.kind === "partition") { return; } // партиции — только под родителем
+            if (view === "parents" && item.kind !== "parent") { return; }
+            if (view === "plain" && item.kind !== "regular") { return; }
+            if (f && item.table.toLowerCase().indexOf(f) === -1) { return; }
+
+            rows.push({ type: "main", item: item });
+
+            if (item.kind === "parent" && state.expandedParent === item.table) {
+                all.forEach(function (p) {
+                    if (p.kind === "partition" && p.parent === item.table) {
+                        rows.push({ type: "part", item: p });
+                    }
+                });
+            }
+        });
+        return rows;
+    }
+
+    function rowHtml(schema, row) {
+        var item = row.item;
+        var key = schema + "." + item.table;
+        var indent = row.type === "part" ? ' style="margin-left: 26px;"' : "";
+        var badge = "";
+
+        if (item.kind === "parent") {
+            var open = state.expandedParent === item.table;
+            badge = ' <span class="gpp-prt-badge" data-prt="' + esc(item.table) +
+                '" title="Показать партиции">' + fmtN(item.partitions) +
+                " прт " + (open ? "▾" : "▸") + "</span>";
+        }
+
+        return '<label class="gpp-tbl-row"' + indent +
+            '><input type="checkbox" data-key="' + esc(key) + '"' +
+            (state.sel.has(key) ? " checked" : "") + "> " + esc(item.table) +
+            badge + "</label>";
+    }
+
+    function wireRows(container, schema) {
+        container.querySelectorAll('input[type="checkbox"]:not([data-wired])')
+            .forEach(function (cb) {
+                cb.setAttribute("data-wired", "1");
+                cb.onchange = function () {
+                    var key = cb.getAttribute("data-key");
+                    if (cb.checked) { state.sel.add(key); }
+                    else { state.sel.delete(key); }
+                    onSelectionChanged();
+                };
+            });
+        container.querySelectorAll(".gpp-prt-badge:not([data-wired])")
+            .forEach(function (b) {
+                b.setAttribute("data-wired", "1");
+                b.onclick = function (ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    var t = b.getAttribute("data-prt");
+                    state.expandedParent = state.expandedParent === t ? null : t;
+                    renderModalSchemas();
+                };
+            });
+    }
+
+    var CHUNK = 300;
 
     function renderSchemaPanel(schema) {
         var all = state.schemaTables[schema];
         if (!all) { return '<div class="gpp-hint" style="margin: 0;">Загружаю таблицы…</div>'; }
 
-        var f = (state.schemaFilter || "").toLowerCase();
-        var vis = f
-            ? all.filter(function (t) { return t.toLowerCase().indexOf(f) !== -1; })
-            : all;
-        var top = vis.slice(0, 200);
+        var parents = 0, plain = 0;
+        all.forEach(function (i) {
+            if (i.kind === "parent") { parents += 1; }
+            if (i.kind === "regular") { plain += 1; }
+        });
 
-        var html = '<input class="gpp-sc-filter" id="gppScFilter" ' +
-            'placeholder="Фильтр по ' + fmtN(all.length) + ' таблицам…" value="' +
-            esc(state.schemaFilter) + '">' +
-            '<div class="gpp-tbl-list">' +
-            top.map(function (t) {
-                var key = schema + "." + t;
-                return '<label class="gpp-tbl-row"><input type="checkbox" data-key="' +
-                    esc(key) + '"' + (state.sel.has(key) ? " checked" : "") + "> " +
-                    esc(t) + "</label>";
-            }).join("") +
-            "</div>";
+        var chip = function (view, label, n) {
+            return '<button class="gpp-btn sm gpp-view' +
+                (state.schemaView === view ? " primary" : "") +
+                '" data-view="' + view + '">' + label + " · " + fmtN(n) + "</button>";
+        };
 
-        if (!vis.length) {
-            html += '<div class="gpp-hint">Ничего не найдено.</div>';
-        } else if (vis.length > top.length) {
-            html += '<div class="gpp-hint">Показаны первые 200 из ' + fmtN(vis.length) +
-                " — уточни фильтр.</div>";
-        }
-        return html;
+        var rows = visibleRows(schema);
+        var top = rows.slice(0, state.schemaLimit);
+
+        return '<div class="gpp-chips" style="margin-bottom: 6px;">' +
+            chip("all", "Все", parents + plain) +
+            chip("parents", "С партициями", parents) +
+            chip("plain", "Без партиций", plain) +
+            "</div>" +
+            '<input class="gpp-sc-filter" id="gppScFilter" ' +
+            'placeholder="Фильтр…" value="' + esc(state.schemaFilter) + '">' +
+            '<div class="gpp-tbl-list" id="gppTblList">' +
+            top.map(function (r) { return rowHtml(schema, r); }).join("") +
+            "</div>" +
+            (!rows.length ? '<div class="gpp-hint">Ничего не найдено.</div>' : "") +
+            (rows.length > top.length
+                ? '<div class="gpp-hint" id="gppTblMore">Показано ' + fmtN(top.length) +
+                  " из " + fmtN(rows.length) + " — прокрути список ниже.</div>"
+                : "");
     }
 
     function renderModalSchemas() {
@@ -257,6 +342,9 @@
                 var schema = row.getAttribute("data-open");
                 state.expandedSchema = state.expandedSchema === schema ? null : schema;
                 state.schemaFilter = "";
+                state.schemaView = "all";
+                state.schemaLimit = CHUNK;
+                state.expandedParent = null;
                 if (state.expandedSchema && !state.schemaTables[schema]) {
                     loadSchemaTables(schema);
                 }
@@ -264,6 +352,7 @@
             };
         });
 
+        // «выбрать все» по схеме — без партиций (родитель уже включает их данные)
         box.querySelectorAll("button[data-schema]").forEach(function (btn) {
             btn.onclick = function (ev) {
                 ev.stopPropagation();
@@ -276,16 +365,25 @@
                     return;
                 }
                 btn.disabled = true;
-                api("/api/catalog/expand-mask", "POST",
-                    { connection_id: srcId(), mask: schema + ".*" })
-                    .then(function (d) {
-                        btn.disabled = false;
-                        if (!d.ok) { toast(d.message, "error"); return; }
-                        d.tables.forEach(function (t) {
-                            state.sel.add(t.schema + "." + t.table);
-                        });
-                        onSelectionChanged();
+                ensureSchemaTables(schema).then(function (tables) {
+                    btn.disabled = false;
+                    if (!tables) { return; }
+                    tables.forEach(function (t) {
+                        if (t.kind !== "partition") {
+                            state.sel.add(schema + "." + t.table);
+                        }
                     });
+                    onSelectionChanged();
+                });
+            };
+        });
+
+        // чипы «Все / С партициями / Без партиций»
+        box.querySelectorAll(".gpp-view").forEach(function (b) {
+            b.onclick = function () {
+                state.schemaView = b.getAttribute("data-view");
+                state.schemaLimit = CHUNK;
+                renderModalSchemas();
             };
         });
 
@@ -294,6 +392,7 @@
         if (filter) {
             filter.oninput = function () {
                 state.schemaFilter = filter.value;
+                state.schemaLimit = CHUNK;
                 renderModalSchemas();
                 var el = $("gppScFilter");
                 if (el) {
@@ -303,15 +402,32 @@
             };
         }
 
-        // чекбоксы таблиц
-        box.querySelectorAll('.gpp-tbl-row input[type="checkbox"]').forEach(function (cb) {
-            cb.onchange = function () {
-                var key = cb.getAttribute("data-key");
-                if (cb.checked) { state.sel.add(key); }
-                else { state.sel.delete(key); }
-                onSelectionChanged();
+        // строки: чекбоксы + бейджи партиций; докрутка — дорендер следующего чанка
+        var list = $("gppTblList");
+        if (list) {
+            wireRows(list, state.expandedSchema);
+            list.onscroll = function () {
+                if (list.scrollTop + list.clientHeight < list.scrollHeight - 80) { return; }
+                var rows = visibleRows(state.expandedSchema);
+                if (state.schemaLimit >= rows.length) { return; }
+
+                var nextRows = rows.slice(state.schemaLimit, state.schemaLimit + CHUNK);
+                state.schemaLimit += CHUNK;
+                list.insertAdjacentHTML("beforeend", nextRows.map(function (r) {
+                    return rowHtml(state.expandedSchema, r);
+                }).join(""));
+                wireRows(list, state.expandedSchema);
+
+                var more = $("gppTblMore");
+                if (more) {
+                    var shown = Math.min(state.schemaLimit, rows.length);
+                    more.textContent = shown >= rows.length
+                        ? ""
+                        : "Показано " + fmtN(shown) + " из " + fmtN(rows.length) +
+                          " — прокрути список ниже.";
+                }
             };
-        });
+        }
     }
 
     function renderModalCounts() {
