@@ -333,25 +333,35 @@ def run_gpcopy_partition_diff_job(job_id):
         clear_stop_flag(job_id)
         mark_job_running(job_id)
 
-        # Diff по всем таблицам сразу: stats (reltuples, мгновенно) —
-        # дефолт; count_mode="exact" пересчитывает COUNT(*) батчами.
-        exact = (config.get("count_mode") or "stats") == "exact"
-        roots = [
-            (entry.get("schema") or entry.get("schema_name"),
-             entry.get("table") or entry.get("table_name"))
-            for entry in tables
-        ]
+        explicit = config.get("partitions") or []
 
-        diff_by_root, leaves_by_root = diff_partitions_stats(
-            source_cfg, dest_cfg, roots, exact=exact,
-        )
+        if explicit:
+            # UI уже показал diff и пользователь отметил, что переливать.
+            copy_items = [
+                {"schema_name": p.get("schema") or p.get("schema_name"),
+                 "table_name": p.get("table") or p.get("table_name")}
+                for p in explicit
+            ]
+        else:
+            # Diff по всем таблицам сразу: stats (reltuples, мгновенно) —
+            # дефолт; count_mode="exact" пересчитывает COUNT(*) батчами.
+            exact = (config.get("count_mode") or "stats") == "exact"
+            roots = [
+                (entry.get("schema") or entry.get("schema_name"),
+                 entry.get("table") or entry.get("table_name"))
+                for entry in tables
+            ]
 
-        copy_items = []
-        for root, diff_rows in diff_by_root.items():
-            leaf_by_name = leaves_by_root.get(root) or {}
-            for name in partitions_to_copy(diff_rows):
-                s, t = leaf_by_name[name]
-                copy_items.append({"schema_name": s, "table_name": t})
+            diff_by_root, leaves_by_root = diff_partitions_stats(
+                source_cfg, dest_cfg, roots, exact=exact,
+            )
+
+            copy_items = []
+            for root, diff_rows in diff_by_root.items():
+                leaf_by_name = leaves_by_root.get(root) or {}
+                for name in partitions_to_copy(diff_rows):
+                    s, t = leaf_by_name[name]
+                    copy_items.append({"schema_name": s, "table_name": t})
 
         if is_stop_requested(job_id):
             from job_manager import mark_job_cancelled

@@ -2251,7 +2251,7 @@ def api_gpcopy_partition_diff_preview_bulk():
         if not tables:
             return jsonify({"ok": False, "message": "tables is empty"}), 400
 
-        diff_by_root, _leaves = diff_partitions_stats(
+        diff_by_root, leaves_by_root = diff_partitions_stats(
             source_cfg, dest_cfg, tables,
             exact=bool(data.get("exact")),
         )
@@ -2260,9 +2260,23 @@ def api_gpcopy_partition_diff_preview_bulk():
         total_copy = 0
         for (schema, table) in tables:
             rows = diff_by_root.get((schema, table)) or []
+            leaves = leaves_by_root.get((schema, table)) or {}
             missing = sum(1 for r in rows if r["action"] == "copy_missing")
             changed = sum(1 for r in rows if r["action"] == "copy_changed")
             total_copy += missing + changed
+
+            # детализация только по отстающим — их и выбирают чекбоксами
+            detail = [
+                {
+                    "partition": r["partition"],
+                    "schema": (leaves.get(r["partition"]) or (schema,))[0],
+                    "src": r["src_count"],
+                    "dest": r["dest_count"],
+                    "action": r["action"],
+                }
+                for r in rows if r["action"] != "skip"
+            ]
+
             out.append({
                 "schema": schema,
                 "table": table,
@@ -2270,6 +2284,7 @@ def api_gpcopy_partition_diff_preview_bulk():
                 "missing": missing,
                 "changed": changed,
                 "to_copy": missing + changed,
+                "detail": detail,
             })
 
         return jsonify({"ok": True, "tables": out, "total_to_copy": total_copy})

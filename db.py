@@ -65,7 +65,8 @@ def init_db():
                 started_at TEXT,
                 finished_at TEXT,
                 error_message TEXT,
-                log_file TEXT
+                log_file TEXT,
+                stop_requested INTEGER DEFAULT 0
             )
             """
         )
@@ -258,6 +259,12 @@ def init_db():
         "skew_results",
         "job_id",
         "ALTER TABLE skew_results ADD COLUMN job_id INTEGER"
+    )
+
+    ensure_column_exists(
+        "jobs",
+        "stop_requested",
+        "ALTER TABLE jobs ADD COLUMN stop_requested INTEGER DEFAULT 0"
     )
 
 

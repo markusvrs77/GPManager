@@ -47,6 +47,8 @@
         syncKeys: {},              // "schema.table" -> {columns:[], source}
         syncUnresolved: [],
         keyEditing: null,          // строка с открытым инлайн-редактором ключа
+        partDiff: null,            // результат превью diff партиций
+        partChecked: {},           // "schema.partition" -> true (грузить)
         sets: [],
         expandedSchema: null,      // раскрытая схема в модалке
         schemaTables: {},          // schema -> [{table,kind,partitions,parent}] (кэш)
@@ -117,10 +119,14 @@
         state.syncKeys = {};
         state.syncUnresolved = [];
         state.keyEditing = null;
+        state.partDiff = null;
+        state.partChecked = {};
         var incList = $("gppIncList");
         if (incList) { incList.innerHTML = ""; }
         var keyList = $("gppKeyList");
         if (keyList) { keyList.innerHTML = ""; }
+        var partList = $("gppPartPreview");
+        if (partList) { partList.innerHTML = ""; }
     }
 
     /* ---------------- persistence ---------------- */
@@ -1065,6 +1071,8 @@
 
     /* ---------------- partition diff preview ---------------- */
 
+    function partKey(p) { return p.schema + "." + p.partition; }
+
     function partPreview() {
         var tables = selTables();
         var box = $("gppPartPreview");
@@ -1089,33 +1097,104 @@
                 box.innerHTML = '<div class="gpp-hint bad">' + esc(d.message) + "</div>";
                 return;
             }
-            // сначала те, где есть что переливать
             d.tables.sort(function (a, b) { return b.to_copy - a.to_copy; });
-
-            var top = d.tables.slice(0, 200);
-            box.innerHTML =
-                '<div class="gpp-hint" style="margin-top: 0;">Итого перелить: <span class="' +
-                (d.total_to_copy ? "warn" : "good") + '">' + fmtN(d.total_to_copy) +
-                " партиций</span>" + (exact ? " (точный COUNT)" : " (по статистике)") +
-                "</div>" +
-                top.map(function (t) {
-                    var right = t.to_copy
-                        ? '<span class="gpp-key-badge comp">перелить ' + fmtN(t.to_copy) +
-                          (t.missing ? " · нет " + fmtN(t.missing) : "") +
-                          (t.changed ? " · разл. " + fmtN(t.changed) : "") + "</span>"
-                        : '<span class="gpp-key-badge pk">совпадает</span>';
-                    return '<div class="gpp-key-row"><span>' +
-                        esc(t.schema + "." + t.table) +
-                        ' <span class="cols">· партиций ' + fmtN(t.partitions) +
-                        "</span></span>" + right + "</div>";
-                }).join("") +
-                (d.tables.length > top.length
-                    ? '<div class="gpp-hint">…и ещё ' + fmtN(d.tables.length - top.length) + "</div>"
-                    : "");
+            state.partDiff = d.tables;
+            // автовычисление: все отстающие отмечены сразу
+            state.partChecked = {};
+            d.tables.forEach(function (t) {
+                (t.detail || []).forEach(function (p) {
+                    state.partChecked[partKey(p)] = true;
+                });
+            });
+            renderPartList();
         }).catch(function (e) {
             btn.disabled = false;
             box.innerHTML = '<div class="gpp-hint bad">' + esc(String(e)) + "</div>";
         });
+    }
+
+    function partCheckedList() {
+        var out = [];
+        (state.partDiff || []).forEach(function (t) {
+            (t.detail || []).forEach(function (p) {
+                if (state.partChecked[partKey(p)]) {
+                    out.push({ schema: p.schema, table: p.partition });
+                }
+            });
+        });
+        return out;
+    }
+
+    function renderPartList() {
+        var box = $("gppPartPreview");
+        var tables = state.partDiff || [];
+        if (!tables.length) { box.innerHTML = ""; return; }
+
+        var totalLag = 0, checked = 0;
+        tables.forEach(function (t) {
+            (t.detail || []).forEach(function (p) {
+                totalLag += 1;
+                if (state.partChecked[partKey(p)]) { checked += 1; }
+            });
+        });
+
+        var html = '<div class="gpp-hint" style="margin-top: 0;">Отстаёт от источника: ' +
+            '<span class="' + (totalLag ? "warn" : "good") + '">' + fmtN(totalLag) +
+            ' партиций</span> · отмечено к загрузке: <b>' + fmtN(checked) + "</b> " +
+            '<button class="gpp-btn sm" id="gppPartAll">Отметить отстающие</button> ' +
+            '<button class="gpp-btn sm" id="gppPartNone">Снять все</button></div>';
+
+        tables.forEach(function (t) {
+            var skipN = t.partitions - (t.detail || []).length;
+            html += '<div class="gpp-key-row" style="background: var(--surface-2); font-weight: 650;">' +
+                "<span>" + esc(t.schema + "." + t.table) +
+                ' <span class="cols" style="font-weight: 400;">· партиций ' + fmtN(t.partitions) +
+                (skipN > 0 ? " · совпадают " + fmtN(skipN) : "") + "</span></span>" +
+                (t.to_copy
+                    ? '<span class="gpp-key-badge comp">отстают ' + fmtN(t.to_copy) + "</span>"
+                    : '<span class="gpp-key-badge pk">совпадает</span>') +
+                "</div>";
+
+            (t.detail || []).slice(0, 300).forEach(function (p) {
+                var k = partKey(p);
+                var counts = fmtN(p.src) + " → " +
+                    (p.dest === null ? "нет" : fmtN(p.dest));
+                html += '<div class="gpp-key-row" style="margin-left: 14px;"><span>' +
+                    '<input type="checkbox" data-part="' + esc(k) + '"' +
+                    (state.partChecked[k] ? " checked" : "") + "> " +
+                    esc(p.partition) +
+                    ' <span class="cols">· ' + counts + "</span></span>" +
+                    (p.action === "copy_missing"
+                        ? '<span class="gpp-key-badge none">нет в dest</span>'
+                        : '<span class="gpp-key-badge comp">разл.</span>') +
+                    "</div>";
+            });
+            if ((t.detail || []).length > 300) {
+                html += '<div class="gpp-hint" style="margin-left: 14px;">…и ещё ' +
+                    fmtN(t.detail.length - 300) + " отстающих (все отмечены)</div>";
+            }
+        });
+
+        box.innerHTML = html;
+
+        box.querySelectorAll("input[data-part]").forEach(function (cb) {
+            cb.onchange = function () {
+                state.partChecked[cb.getAttribute("data-part")] = cb.checked;
+                renderPartList();
+            };
+        });
+        $("gppPartAll").onclick = function () {
+            tables.forEach(function (t) {
+                (t.detail || []).forEach(function (p) {
+                    state.partChecked[partKey(p)] = true;
+                });
+            });
+            renderPartList();
+        };
+        $("gppPartNone").onclick = function () {
+            state.partChecked = {};
+            renderPartList();
+        };
     }
 
     /* ---------------- date window ---------------- */
@@ -1312,12 +1391,23 @@
             });
         }
 
-        // part
-        return api("/api/gpcopy/partition-diff/start", "POST", {
+        // part: если превью смотрели — грузим ровно отмеченные партиции
+        var body = {
             source_connection_id: srcId(), dest_connection_id: dstId(),
             tables: tables, gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
             count_mode: $("gppPartExact").checked ? "exact" : "stats",
-        });
+        };
+        if (state.partDiff) {
+            var checkedParts = partCheckedList();
+            if (!checkedParts.length) {
+                return Promise.resolve({
+                    ok: false,
+                    message: "Не отмечена ни одна партиция — отметь в списке diff",
+                });
+            }
+            body.partitions = checkedParts;
+        }
+        return api("/api/gpcopy/partition-diff/start", "POST", body);
     }
 
     function buildScheduleConfig() {
