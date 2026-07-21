@@ -32,3 +32,12 @@ def test_legacy_route_redirects_to_maintenance(client, path):
 def test_bootstrap_loaded_exactly_once(client):
     html = client.get("/").get_data(as_text=True)
     assert html.count("bootstrap.bundle.min.js") == 1
+
+
+def test_chartjs_only_on_charting_pages(client):
+    dash = client.get("/dashboard").get_data(as_text=True)
+    maint = client.get("/maintenance").get_data(as_text=True)
+    conns = client.get("/connections").get_data(as_text=True)
+    assert "chart.js" in dash
+    assert "chart.js" in maint
+    assert "chart.js" not in conns

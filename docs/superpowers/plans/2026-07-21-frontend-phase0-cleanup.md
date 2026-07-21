@@ -214,7 +214,7 @@ Expected: FAIL (`"chart.js" in dash` is False — dashboard no longer pulls the 
 
 - [ ] **Step 3: Add Chart.js to dashboard.html**
 
-In `templates/dashboard.html`, before the existing inline `<script>` at line 232, add a scripts block that loads Chart.js:
+The dashboard's inline chart `<script>` lives inside `{% block content %}` and only registers a `DOMContentLoaded` handler, so add a **sibling** `{% block scripts %}` right after the content block's `{% endblock %}` (end of file). Chart.js parses before `DOMContentLoaded` fires:
 
 ```html
 {% block scripts %}
@@ -222,14 +222,13 @@ In `templates/dashboard.html`, before the existing inline `<script>` at line 232
 {% endblock %}
 ```
 
-(The existing inline chart `<script>` stays where it is; it runs on `DOMContentLoaded` after the block-scripts Chart.js is parsed.)
-
 - [ ] **Step 4: Add Chart.js to maintenance.html**
 
-`templates/maintenance.html` already defines a `{% block scripts %}` that loads `skew.js` + `reorganize.js` (lines 355–356). Add the Chart.js `<script>` line at the **top** of that existing block, before `skew.js`:
+`templates/maintenance.html` loads its page scripts **inline at the end of `{% block content %}`** (not in a `{% block scripts %}`): `object_tree.js`, then `skew.js`, then `reorganize.js` (lines 354–356). Since `skew.js` calls `new Chart` and scripts execute in order, insert Chart.js **before** the first of them:
 
 ```html
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="{{ url_for('static', filename='js/object_tree.js') }}?v=11"></script>
 ```
 
 - [ ] **Step 5: Run the smoke suite — expect PASS**
