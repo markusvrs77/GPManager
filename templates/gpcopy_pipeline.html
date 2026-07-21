@@ -13,14 +13,42 @@
   background: var(--surface); border: 1px solid var(--hairline);
   border-radius: var(--radius); padding: 14px 18px; margin-bottom: 14px; }
 .gpp-db { flex: 1; background: var(--surface-2); border: 1px solid var(--hairline);
-  border-radius: var(--radius-sm); padding: 10px 14px; }
+  border-radius: var(--radius-sm); padding: 10px 14px; position: relative;
+  transition: border-color var(--dur-fast) var(--ease); }
+.gpp-db:hover { border-color: var(--a1); }
 .gpp-db .lbl { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
   color: var(--text-muted); margin-bottom: 4px; }
-.gpp-db select { width: 100%; background: transparent; border: none;
-  color: var(--text); font-weight: 600; font-size: 14.5px; padding: 0; }
-.gpp-db select:focus { outline: none; }
+.gpp-db select { display: none; }
 .gpp-db .meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 .gpp-db .meta .ok { color: var(--ok); }
+
+/* стильный дропдаун подключений */
+.gpp-dbbtn { display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; width: 100%; background: transparent; border: none; color: var(--text);
+  font-weight: 600; font-size: 14.5px; padding: 0; cursor: pointer; text-align: left;
+  font-family: inherit; }
+.gpp-dbbtn .chev { color: var(--text-muted); font-size: 11px;
+  transition: transform var(--dur-fast) var(--ease); }
+.gpp-dbbtn.open .chev { transform: rotate(180deg); color: var(--a1); }
+.gpp-dd { position: absolute; left: 8px; right: 8px; top: calc(100% + 6px);
+  z-index: 100; background: var(--solid); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow); padding: 6px;
+  display: none; }
+.gpp-dd.show { display: block; animation: gppDdIn var(--dur-fast) var(--ease); }
+@keyframes gppDdIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .gpp-dd.show { animation: none; } }
+.gpp-dd .opt { display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 9px 12px; border-radius: 8px; font-size: 13.5px;
+  cursor: pointer; color: var(--text); }
+.gpp-dd .opt:hover { background: rgba(99, 102, 241, .14); }
+.gpp-dd .opt .sub { color: var(--text-muted); font-size: 12px; }
+.gpp-dd .opt.cur { font-weight: 650; }
+.gpp-dd .opt.cur .name { background: var(--accent-grad);
+  -webkit-background-clip: text; background-clip: text; color: transparent; }
+.gpp-dd .opt .ck { color: var(--a1); }
 .gpp-arrow { align-self: center; font-size: 22px; color: var(--a1); flex: none; }
 
 .gpp-step { background: var(--surface); border: 1px solid var(--hairline);
@@ -172,7 +200,10 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
             <div class="lbl">Источник</div>
             <select id="gppSrc">
                 {% for c in connections %}
-                <option value="{{ c.id }}">{{ c.name }} · {{ c.database or c.dbname }}</option>
+                <option value="{{ c.id }}"
+                        data-name="{{ c.name }}"
+                        data-db="{{ c.database or c.dbname or '' }}"
+                        data-host="{{ c.host or '' }}">{{ c.name }}{% if c.database or c.dbname %} · {{ c.database or c.dbname }}{% endif %}</option>
                 {% endfor %}
             </select>
             <div class="meta" id="gppSrcMeta">каталог не загружен</div>
@@ -182,7 +213,10 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
             <div class="lbl">Назначение</div>
             <select id="gppDst">
                 {% for c in connections %}
-                <option value="{{ c.id }}">{{ c.name }} · {{ c.database or c.dbname }}</option>
+                <option value="{{ c.id }}"
+                        data-name="{{ c.name }}"
+                        data-db="{{ c.database or c.dbname or '' }}"
+                        data-host="{{ c.host or '' }}">{{ c.name }}{% if c.database or c.dbname %} · {{ c.database or c.dbname }}{% endif %}</option>
                 {% endfor %}
             </select>
             <div class="meta" id="gppDstMeta">&nbsp;</div>

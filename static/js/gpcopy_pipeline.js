@@ -1157,6 +1157,82 @@
         });
     }
 
+    /* ---------------- fancy connection dropdown ---------------- */
+
+    function fancySelect(sel) {
+        var wrap = sel.parentElement; // .gpp-db
+
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "gpp-dbbtn";
+
+        var dd = document.createElement("div");
+        dd.className = "gpp-dd";
+
+        function optLabel(o) {
+            var name = o.getAttribute("data-name") || o.textContent.trim();
+            var db = o.getAttribute("data-db") || "";
+            return { name: name, db: db };
+        }
+
+        function renderBtn() {
+            var o = sel.selectedOptions[0];
+            var l = o ? optLabel(o) : { name: "—", db: "" };
+            btn.innerHTML = "<span>" + esc(l.name) +
+                (l.db ? ' <span style="color: var(--text-muted); font-weight: 400;">· ' +
+                    esc(l.db) + "</span>" : "") +
+                '</span><span class="chev">▾</span>';
+        }
+
+        function close() {
+            dd.classList.remove("show");
+            btn.classList.remove("open");
+        }
+
+        function open() {
+            dd.innerHTML = Array.from(sel.options).map(function (o) {
+                var l = optLabel(o);
+                var cur = o.value === sel.value;
+                var host = o.getAttribute("data-host") || "";
+                return '<div class="opt' + (cur ? " cur" : "") + '" data-v="' +
+                    esc(o.value) + '"><span><span class="name">' + esc(l.name) +
+                    "</span>" +
+                    ((l.db || host) ? ' <span class="sub">' +
+                        esc(l.db + (host ? " @ " + host : "")) + "</span>" : "") +
+                    "</span>" + (cur ? '<span class="ck">✓</span>' : "") + "</div>";
+            }).join("");
+
+            dd.querySelectorAll(".opt").forEach(function (el) {
+                el.onclick = function (ev) {
+                    ev.stopPropagation();
+                    if (sel.value !== el.getAttribute("data-v")) {
+                        sel.value = el.getAttribute("data-v");
+                        sel.dispatchEvent(new Event("change"));
+                    }
+                    close();
+                    renderBtn();
+                };
+            });
+
+            dd.classList.add("show");
+            btn.classList.add("open");
+        }
+
+        btn.onclick = function (ev) {
+            ev.stopPropagation();
+            if (dd.classList.contains("show")) { close(); } else { open(); }
+        };
+        document.addEventListener("click", close);
+        document.addEventListener("keydown", function (e) {
+            if (e.key === "Escape") { close(); }
+        });
+        sel.addEventListener("change", renderBtn);
+
+        sel.insertAdjacentElement("afterend", btn);
+        wrap.appendChild(dd);
+        renderBtn();
+    }
+
     /* ---------------- wiring ---------------- */
 
     function init() {
@@ -1278,6 +1354,9 @@
 
         // если подключений ≥ 2 — по умолчанию назначение второе
         if ($("gppDst").options.length > 1) { $("gppDst").selectedIndex = 1; }
+
+        fancySelect($("gppSrc"));
+        fancySelect($("gppDst"));
 
         $("gppGo").onclick = go;
 
