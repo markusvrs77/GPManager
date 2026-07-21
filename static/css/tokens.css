@@ -1,0 +1,97 @@
+/* ============================================================
+   GPManager design tokens — Phase 1
+   Accent: Indigo -> Violet. Themes: light + dark, default = OS
+   (prefers-color-scheme), overridable via [data-theme] on <html>.
+   ============================================================ */
+
+:root {
+  /* accent (signature gradient) */
+  --a1: #6366f1;
+  --a2: #8b5cf6;
+  --accent-grad: linear-gradient(135deg, var(--a1), var(--a2));
+
+  /* status scale (theme-independent) */
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --crit: #ef4444;
+  --idle: #64748b;
+
+  /* radius / spacing / elevation */
+  --radius: 16px;
+  --radius-sm: 10px;
+  --radius-pill: 999px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+
+  /* motion tokens */
+  --dur-fast: 150ms;
+  --dur: 220ms;
+  --dur-slow: 300ms;
+  --ease: cubic-bezier(.22, .61, .36, 1);
+  --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
+
+  /* typography */
+  --font-ui: "Fira Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Fira Code", ui-monospace, "Cascadia Code", Consolas, monospace;
+
+  /* ---- LIGHT theme (default) ---- */
+  --bg: #eef1f8;
+  --text: #0f172a;
+  --text-muted: #55617a;
+  --surface: rgba(255, 255, 255, .62);
+  --surface-2: rgba(255, 255, 255, .82);
+  --solid: #ffffff;
+  --glass-blur: 16px;
+  --glass-border: rgba(255, 255, 255, .75);
+  --hairline: rgba(15, 23, 42, .10);
+  --shadow: 0 10px 30px rgba(15, 23, 42, .12);
+  --mesh-a: .38;
+  --mesh-b: .30;
+  --table-head: rgba(255, 255, 255, .70);
+  --row-hover: rgba(99, 102, 241, .06);
+  --ring: rgba(99, 102, 241, .45);
+}
+
+/* ---- DARK theme values (shared block) ---- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b1020;
+    --text: #eef2ff;
+    --text-muted: #9aa6c7;
+    --surface: rgba(255, 255, 255, .055);
+    --surface-2: rgba(255, 255, 255, .09);
+    --solid: #131a30;
+    --glass-border: rgba(255, 255, 255, .14);
+    --hairline: rgba(255, 255, 255, .10);
+    --shadow: 0 16px 40px rgba(0, 0, 0, .45);
+    --mesh-a: .55;
+    --mesh-b: .40;
+    --table-head: rgba(255, 255, 255, .05);
+    --row-hover: rgba(255, 255, 255, .05);
+    --ring: rgba(139, 92, 246, .55);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b1020;
+  --text: #eef2ff;
+  --text-muted: #9aa6c7;
+  --surface: rgba(255, 255, 255, .055);
+  --surface-2: rgba(255, 255, 255, .09);
+  --solid: #131a30;
+  --glass-border: rgba(255, 255, 255, .14);
+  --hairline: rgba(255, 255, 255, .10);
+  --shadow: 0 16px 40px rgba(0, 0, 0, .45);
+  --mesh-a: .55;
+  --mesh-b: .40;
+  --table-head: rgba(255, 255, 255, .05);
+  --row-hover: rgba(255, 255, 255, .05);
+  --ring: rgba(139, 92, 246, .55);
+}
+
+/* Accessibility: honor reduced transparency by dropping blur + raising opacity */
+@media (prefers-reduced-transparency: reduce) {
+  :root { --glass-blur: 0px; --surface: var(--solid); --surface-2: var(--solid); }
+}

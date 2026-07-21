@@ -1,0 +1,199 @@
+/* ============================================================
+   GPManager glass design layer — Phase 1
+   Loaded AFTER Bootstrap + style.css so it wins. Restyles the
+   shared chrome (nav, cards, buttons, tables, forms) on tokens,
+   in both light and dark themes. Per-page polish lands in Phase 3.
+   ============================================================ */
+
+html, body { min-height: 100%; }
+
+body {
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: var(--bg);
+  position: relative;
+  overflow-x: hidden;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+/* gradient mesh backdrop */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(60% 55% at 12% 8%, color-mix(in srgb, var(--a1) calc(var(--mesh-a) * 100%), transparent), transparent 70%),
+    radial-gradient(55% 55% at 92% 20%, color-mix(in srgb, var(--a2) calc(var(--mesh-b) * 100%), transparent), transparent 70%),
+    radial-gradient(70% 60% at 70% 100%, color-mix(in srgb, var(--a1) calc(var(--mesh-b) * 100%), transparent), transparent 75%);
+}
+
+main, .gp-nav { position: relative; z-index: 1; }
+
+.mono, .font-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* ---------------- NAV ---------------- */
+.gp-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  position: sticky;
+  top: 12px;
+  z-index: 30;
+  margin: 12px clamp(10px, 2vw, 20px) 4px;
+  padding: 10px 14px;
+  background: var(--surface);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.gp-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 800;
+  letter-spacing: .2px;
+  color: var(--text);
+  text-decoration: none;
+  padding-right: 6px;
+}
+.gp-logo {
+  width: 30px; height: 30px;
+  border-radius: 9px;
+  display: grid; place-items: center;
+  color: #fff; font-weight: 900; font-size: 13px;
+  background: var(--accent-grad);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--a1) 45%, transparent);
+}
+.gp-links { display: flex; gap: 2px; flex-wrap: wrap; align-items: center; }
+.gp-links a {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 14px; font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 10px;
+  transition: color var(--dur), background var(--dur);
+}
+.gp-links a:hover { color: var(--text); background: var(--surface-2); }
+.gp-links a.active {
+  color: #fff;
+  background: var(--accent-grad);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--a1) 40%, transparent);
+}
+.gp-links a.disabled { opacity: .45; pointer-events: none; }
+.gp-spacer { flex: 1 1 auto; }
+.gp-theme {
+  width: 38px; height: 38px;
+  border-radius: 11px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 16px;
+  display: grid; place-items: center;
+  transition: transform var(--dur) var(--ease), background var(--dur);
+}
+.gp-theme:hover { transform: translateY(-1px); }
+.gp-theme:active { transform: scale(.94); }
+
+/* ---------------- BOOTSTRAP OVERRIDES ---------------- */
+
+/* text */
+.text-muted { color: var(--text-muted) !important; }
+h1, h2, h3, h4, h5, h6 { color: var(--text); }
+
+/* cards -> glass */
+.card {
+  background: var(--surface);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  color: var(--text);
+}
+.card-header {
+  background: transparent;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text);
+  font-weight: 700;
+  border-top-left-radius: var(--radius) !important;
+  border-top-right-radius: var(--radius) !important;
+}
+.card.bg-light, .card .bg-light, .bg-white { background: var(--surface-2) !important; color: var(--text) !important; }
+.card.border-0 { border: 1px solid var(--glass-border) !important; }
+
+/* buttons */
+.btn { border-radius: var(--radius-sm); font-weight: 600; transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease), background var(--dur); }
+.btn:active { transform: scale(.97); }
+.btn-primary {
+  border: 0;
+  background: var(--accent-grad);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--a1) 38%, transparent);
+}
+.btn-primary:hover, .btn-primary:focus {
+  background: var(--accent-grad);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--a1) 46%, transparent);
+}
+.btn-outline-primary { color: var(--a1); border-color: color-mix(in srgb, var(--a1) 55%, transparent); }
+.btn-outline-primary:hover { background: var(--accent-grad); border-color: transparent; color: #fff; }
+
+/* tables */
+.table { color: var(--text); border-color: var(--hairline); vertical-align: middle; }
+.table > :not(caption) > * > * { border-bottom-color: var(--hairline); background: transparent; }
+.table thead th, .sticky-table-head th {
+  background: var(--table-head);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--hairline);
+  font-weight: 600;
+}
+.table-bordered, .table-bordered > :not(caption) > * > * { border-color: var(--hairline); }
+.table-hover > tbody > tr:hover > * { background: var(--row-hover); color: var(--text); }
+.table-primary, .table-primary > * { background: color-mix(in srgb, var(--a1) 14%, transparent) !important; color: var(--text) !important; }
+
+/* forms */
+.form-control, .form-select {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+}
+.form-control:focus, .form-select:focus {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--a1) 55%, transparent);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+.form-control::placeholder { color: color-mix(in srgb, var(--text-muted) 85%, transparent); }
+.form-label { color: var(--text); font-weight: 600; }
+
+/* badges: keep semantic Bootstrap colors, just round + weight */
+.badge { border-radius: var(--radius-pill); font-weight: 700; letter-spacing: .3px; }
+
+/* focus visibility */
+a:focus-visible, button:focus-visible, .btn:focus-visible,
+.form-control:focus-visible, .form-select:focus-visible {
+  outline: 2px solid var(--a2);
+  outline-offset: 2px;
+}
+
+/* legacy custom surfaces -> token-aware so dark theme is legible */
+.object-tree, .scroll-table-box, .object-tree-box, .skew-problem-box, .problem-skew-box {
+  background: var(--solid);
+  border-color: var(--hairline);
+  color: var(--text);
+}
+.tree-line:hover, .skew-problem-row:hover { background: var(--row-hover); }
+.gpcopy-section { background: var(--surface); border-color: var(--glass-border); color: var(--text); }
+
+/* reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

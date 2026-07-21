@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-accent="indigo">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPManager — Design Mockup</title>
+<style>
+/* ---------- TOKENS ---------- */
+:root {
+  --radius: 16px;
+  --radius-sm: 10px;
+  --dur: 220ms;
+  --ease: cubic-bezier(.22,.61,.36,1);
+
+  /* accent variants (overridden by [data-accent]) */
+  --a1: #6366f1; --a2: #8b5cf6;
+}
+:root[data-accent="indigo"] { --a1:#6366f1; --a2:#8b5cf6; }
+:root[data-accent="rose"]   { --a1:#e11d48; --a2:#2563eb; }
+:root[data-accent="teal"]   { --a1:#0d9488; --a2:#06b6d4; }
+
+/* LIGHT theme */
+:root[data-theme="light"] {
+  --bg: #eef1f8;
+  --text: #0f172a;
+  --text-muted: #55617a;
+  --surface: rgba(255,255,255,.62);
+  --surface-2: rgba(255,255,255,.82);
+  --solid: #ffffff;
+  --glass-border: rgba(255,255,255,.75);
+  --hairline: rgba(15,23,42,.10);
+  --shadow: 0 10px 30px rgba(15,23,42,.12);
+  --mesh-a: .38; --mesh-b: .30;
+  --table-head: rgba(255,255,255,.7);
+  --row-hover: rgba(99,102,241,.06);
+}
+/* DARK theme */
+:root[data-theme="dark"] {
+  --bg: #0b1020;
+  --text: #eef2ff;
+  --text-muted: #9aa6c7;
+  --surface: rgba(255,255,255,.055);
+  --surface-2: rgba(255,255,255,.09);
+  --solid: #131a30;
+  --glass-border: rgba(255,255,255,.14);
+  --hairline: rgba(255,255,255,.10);
+  --shadow: 0 16px 40px rgba(0,0,0,.45);
+  --mesh-a: .55; --mesh-b: .40;
+  --table-head: rgba(255,255,255,.05);
+  --row-hover: rgba(255,255,255,.05);
+}
+
+* { box-sizing: border-box; }
+html, body { margin:0; min-height:100%; }
+body {
+  font-family: "Fira Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  position: relative;
+  overflow-x: hidden;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+/* gradient mesh background */
+body::before {
+  content:""; position: fixed; inset:0; z-index:0; pointer-events:none;
+  background:
+    radial-gradient(60% 55% at 12% 8%, color-mix(in srgb, var(--a1) calc(var(--mesh-a)*100%), transparent), transparent 70%),
+    radial-gradient(55% 55% at 92% 20%, color-mix(in srgb, var(--a2) calc(var(--mesh-b)*100%), transparent), transparent 70%),
+    radial-gradient(70% 60% at 70% 100%, color-mix(in srgb, var(--a1) calc(var(--mesh-b)*100%), transparent), transparent 75%);
+  transition: opacity var(--dur) var(--ease);
+}
+.mono { font-family: "Fira Code", ui-monospace, "Cascadia Code", Consolas, monospace; font-variant-numeric: tabular-nums; }
+
+/* ---------- LAYOUT ---------- */
+.wrap { position: relative; z-index:1; max-width: 1240px; margin:0 auto; padding: 20px clamp(14px,3vw,28px) 60px; }
+
+/* nav */
+.nav {
+  position: sticky; top: 14px; z-index: 20;
+  display:flex; align-items:center; gap: 10px;
+  padding: 10px 14px; margin-bottom: 26px;
+  background: var(--surface);
+  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.brand { display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:.2px; padding-right:8px; }
+.logo {
+  width:30px; height:30px; border-radius:9px; display:grid; place-items:center; color:#fff; font-weight:900;
+  background: linear-gradient(135deg, var(--a1), var(--a2));
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--a1) 45%, transparent);
+}
+.nav .links { display:flex; gap:2px; flex-wrap:wrap; margin-left: 6px; }
+.nav a {
+  color: var(--text-muted); text-decoration:none; font-size:14px; font-weight:600;
+  padding:8px 12px; border-radius:10px; transition: color var(--dur), background var(--dur);
+}
+.nav a:hover { color: var(--text); background: var(--surface-2); }
+.nav a.active {
+  color:#fff; background: linear-gradient(135deg, var(--a1), var(--a2));
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--a1) 40%, transparent);
+}
+.nav .spacer { flex:1; }
+
+.controls { display:flex; align-items:center; gap:8px; }
+.seg { display:flex; padding:3px; gap:2px; background: var(--surface-2); border:1px solid var(--hairline); border-radius:11px; }
+.seg button {
+  border:0; background:transparent; color:var(--text-muted); cursor:pointer;
+  font:600 12px/1 "Fira Sans",system-ui,sans-serif; padding:7px 9px; border-radius:8px; transition: all var(--dur);
+}
+.seg button.on { color:#fff; background: linear-gradient(135deg,var(--a1),var(--a2)); box-shadow:0 4px 12px color-mix(in srgb,var(--a1) 40%,transparent); }
+.iconbtn {
+  width:38px; height:38px; border-radius:11px; border:1px solid var(--hairline);
+  background: var(--surface-2); color:var(--text); cursor:pointer; font-size:16px;
+  display:grid; place-items:center; transition: transform var(--dur) var(--ease), background var(--dur);
+}
+.iconbtn:hover { transform: translateY(-1px); }
+.iconbtn:active { transform: scale(.94); }
+
+/* headings */
+h1 { font-size: clamp(22px,3vw,30px); margin:0 0 4px; letter-spacing:-.5px; }
+.sub { color: var(--text-muted); font-size:14px; margin-bottom:22px; }
+h2 { font-size:15px; margin:0 0 14px; font-weight:700; letter-spacing:.2px; }
+
+/* cards */
+.grid { display:grid; gap:16px; }
+.g4 { grid-template-columns: repeat(4, 1fr); }
+.g3 { grid-template-columns: 1.05fr 1.55fr 1.2fr; }
+.card {
+  background: var(--surface);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+  transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.stat:hover { transform: translateY(-3px); box-shadow: 0 20px 44px color-mix(in srgb, var(--a1) 22%, rgba(0,0,0,.25)); }
+.stat .k { color: var(--text-muted); font-size:12.5px; font-weight:600; text-transform:uppercase; letter-spacing:.5px; }
+.stat .v { font-size:34px; font-weight:800; margin-top:6px; letter-spacing:-1px; }
+.stat .d { margin-top:8px; font-size:12.5px; display:inline-flex; align-items:center; gap:6px; }
+.accentText { background: linear-gradient(135deg,var(--a1),var(--a2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+
+/* bar chart */
+.bars { display:flex; flex-direction:column; gap:11px; margin-top:4px; }
+.bar { display:grid; grid-template-columns: 128px 1fr 44px; align-items:center; gap:10px; font-size:12.5px; }
+.bar .lbl { color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.track { height:9px; border-radius:99px; background: var(--surface-2); overflow:hidden; }
+.fill { height:100%; border-radius:99px; background: linear-gradient(90deg,var(--a1),var(--a2)); }
+
+/* donut */
+.donut-wrap { display:flex; align-items:center; gap:18px; }
+.donut {
+  --ok:#22c55e; --warn:#f59e0b; --crit:#ef4444; --empty:#64748b;
+  width:150px; height:150px; border-radius:50%; flex:none;
+  background: conic-gradient(var(--ok) 0 55%, var(--warn) 55% 72%, var(--crit) 72% 88%, var(--empty) 88% 100%);
+  -webkit-mask: radial-gradient(circle 44px at center, transparent 98%, #000 100%);
+          mask: radial-gradient(circle 44px at center, transparent 98%, #000 100%);
+}
+.legend { display:flex; flex-direction:column; gap:9px; font-size:13px; }
+.legend div { display:flex; align-items:center; gap:8px; }
+.dot { width:10px; height:10px; border-radius:3px; }
+
+/* table */
+.tablecard { margin-top:16px; padding:0; overflow:hidden; }
+.tablecard .head { display:flex; align-items:center; justify-content:space-between; padding:16px 18px; border-bottom:1px solid var(--hairline); }
+.table-scroll { overflow:auto; max-height: 360px; }
+table { width:100%; border-collapse: collapse; font-size:13px; }
+thead th {
+  position: sticky; top:0; text-align:left; font-weight:600; color:var(--text-muted);
+  padding:11px 14px; background: var(--table-head); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  border-bottom:1px solid var(--hairline); white-space:nowrap;
+}
+tbody td { padding:11px 14px; border-bottom:1px solid var(--hairline); white-space:nowrap; }
+tbody tr:last-child td { border-bottom:0; }
+tbody tr { transition: background var(--dur); }
+tbody tr:hover { background: var(--row-hover); }
+
+/* badges */
+.badge { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:700; padding:3px 9px; border-radius:99px; letter-spacing:.3px; }
+.badge::before { content:""; width:6px; height:6px; border-radius:50%; background: currentColor; }
+.b-ok { color:#16a34a; background: color-mix(in srgb,#22c55e 16%, transparent); }
+.b-warn { color:#d97706; background: color-mix(in srgb,#f59e0b 18%, transparent); }
+.b-crit { color:#dc2626; background: color-mix(in srgb,#ef4444 16%, transparent); }
+.b-idle { color:#64748b; background: color-mix(in srgb,#64748b 18%, transparent); }
+
+/* buttons */
+.btn { border:0; cursor:pointer; font:700 13px/1 "Fira Sans",system-ui,sans-serif; padding:11px 16px; border-radius:11px; transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease), background var(--dur); }
+.btn:active { transform: scale(.97); }
+.btn-primary { color:#fff; background: linear-gradient(135deg,var(--a1),var(--a2)); box-shadow: 0 8px 20px color-mix(in srgb,var(--a1) 40%, transparent); }
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 12px 26px color-mix(in srgb,var(--a1) 48%, transparent); }
+.btn-ghost { color:var(--text); background: var(--surface-2); border:1px solid var(--hairline); }
+.btn-ghost:hover { transform: translateY(-1px); }
+
+.section-title { display:flex; align-items:center; gap:10px; margin:34px 0 14px; }
+.section-title h2 { margin:0; font-size:17px; }
+.section-title .rule { flex:1; height:1px; background: var(--hairline); }
+
+.footnote { color:var(--text-muted); font-size:12px; margin-top:26px; text-align:center; }
+.pill { font-size:11px; font-weight:700; padding:4px 10px; border-radius:99px; background:var(--surface-2); border:1px solid var(--hairline); color:var(--text-muted); }
+
+@media (max-width: 1000px){ .g4{grid-template-columns:repeat(2,1fr);} .g3{grid-template-columns:1fr;} }
+@media (max-width: 560px){ .g4{grid-template-columns:1fr;} .nav .links{display:none;} }
+
+@media (prefers-reduced-motion: reduce){ * { transition:none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- NAV -->
+  <nav class="nav">
+    <div class="brand"><span class="logo">GP</span> GPManager</div>
+    <div class="links">
+      <a class="active" href="#">Dashboard</a>
+      <a href="#">Connections</a>
+      <a href="#">Objects</a>
+      <a href="#">Maintenance</a>
+      <a href="#">Vacuum</a>
+      <a href="#">gpcopy</a>
+    </div>
+    <div class="spacer"></div>
+    <div class="controls">
+      <div class="seg" id="accentSeg">
+        <button data-accent="indigo" class="on">Indigo</button>
+        <button data-accent="rose">Rose</button>
+        <button data-accent="teal">Teal</button>
+      </div>
+      <button class="iconbtn" id="themeBtn" title="Toggle light / dark">🌙</button>
+    </div>
+  </nav>
+
+  <h1>Dashboard</h1>
+  <div class="sub">Greenplum cluster overview · <span class="pill" id="modeLabel">dark · indigo</span></div>
+
+  <!-- STAT CARDS -->
+  <div class="grid g4">
+    <div class="card stat"><div class="k">Total skew tables</div><div class="v mono">128</div><div class="d"><span class="badge b-ok">healthy 71%</span></div></div>
+    <div class="card stat"><div class="k">Max skew</div><div class="v mono accentText">4.82</div><div class="d"><span class="badge b-crit">critical</span></div></div>
+    <div class="card stat"><div class="k">Avg skew</div><div class="v mono">1.14</div><div class="d"><span class="badge b-warn">watch</span></div></div>
+    <div class="card stat"><div class="k">Last skew job</div><div class="v">#341</div><div class="d"><span class="badge b-ok">done</span></div></div>
+  </div>
+
+  <!-- CHARTS ROW -->
+  <div class="grid g3" style="margin-top:16px;">
+    <div class="card">
+      <h2>Status distribution</h2>
+      <div class="donut-wrap">
+        <div class="donut"></div>
+        <div class="legend">
+          <div><span class="dot" style="background:#22c55e"></span> OK · 70</div>
+          <div><span class="dot" style="background:#f59e0b"></span> Warning · 22</div>
+          <div><span class="dot" style="background:#ef4444"></span> Critical · 20</div>
+          <div><span class="dot" style="background:#64748b"></span> Empty · 16</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Skew ratio by table — top 6</h2>
+      <div class="bars">
+        <div class="bar"><span class="lbl mono">public.orders</span><span class="track"><span class="fill" style="width:96%"></span></span><b class="mono">4.82</b></div>
+        <div class="bar"><span class="lbl mono">public.events</span><span class="track"><span class="fill" style="width:78%"></span></span><b class="mono">3.91</b></div>
+        <div class="bar"><span class="lbl mono">sales.invoices</span><span class="track"><span class="fill" style="width:61%"></span></span><b class="mono">3.05</b></div>
+        <div class="bar"><span class="lbl mono">public.sessions</span><span class="track"><span class="fill" style="width:44%"></span></span><b class="mono">2.20</b></div>
+        <div class="bar"><span class="lbl mono">core.audit_log</span><span class="track"><span class="fill" style="width:29%"></span></span><b class="mono">1.45</b></div>
+        <div class="bar"><span class="lbl mono">core.dim_date</span><span class="track"><span class="fill" style="width:14%"></span></span><b class="mono">0.70</b></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Session usage</h2>
+      <div class="bars">
+        <div class="bar"><span class="lbl">Active</span><span class="track"><span class="fill" style="width:64%"></span></span><b class="mono">41</b></div>
+        <div class="bar"><span class="lbl">Idle</span><span class="track"><span class="fill" style="width:38%"></span></span><b class="mono">24</b></div>
+        <div class="bar"><span class="lbl">Idle txn</span><span class="track"><span class="fill" style="width:11%"></span></span><b class="mono">7</b></div>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:18px;">
+        <button class="btn btn-primary">Run analysis</button>
+        <button class="btn btn-ghost">Refresh</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DENSE TABLE -->
+  <div class="section-title"><h2>Session limits — per segment</h2><span class="rule"></span></div>
+  <div class="card tablecard">
+    <div class="head">
+      <b style="font-size:14px;">Connections usage</b>
+      <button class="btn btn-ghost" style="padding:8px 12px;">Export</button>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>Node</th><th>Segment</th><th>Host</th><th>Total</th><th>Active</th><th>Idle</th><th>Idle txn</th><th>Max</th><th>Used %</th><th>Status</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="footnote">
+    Мокап Phase 1 · переключай <b>Indigo / Rose / Teal</b> и <b>🌙 тему</b> вверху справа. Шрифты финально будут Fira Sans/Code (self-hosted). Данные — демонстрационные.
+  </div>
+</div>
+
+<script>
+const root = document.documentElement;
+const modeLabel = document.getElementById('modeLabel');
+const themeBtn = document.getElementById('themeBtn');
+
+function syncLabel(){
+  const t = root.dataset.theme, a = root.dataset.accent;
+  modeLabel.textContent = t + ' · ' + a;
+  themeBtn.textContent = t === 'dark' ? '🌙' : '☀️';
+}
+themeBtn.addEventListener('click', ()=>{
+  root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+  syncLabel();
+});
+document.getElementById('accentSeg').addEventListener('click', e=>{
+  const b = e.target.closest('button'); if(!b) return;
+  root.dataset.accent = b.dataset.accent;
+  [...e.currentTarget.children].forEach(x=>x.classList.toggle('on', x===b));
+  syncLabel();
+});
+
+// demo rows
+const data = [
+  ['MASTER','−1','mdw',52,41,9,2,250,'16'],
+  ['segment','0','sdw1',88,61,24,3,250,'35'],
+  ['segment','1','sdw1',201,150,44,7,250,'80'],
+  ['segment','2','sdw2',119,72,40,7,250,'48'],
+  ['segment','3','sdw2',233,180,45,8,250,'93'],
+  ['segment','4','sdw3',64,30,31,3,250,'26'],
+  ['segment','5','sdw3',97,55,38,4,250,'39'],
+];
+function badgeFor(p){ p=+p; if(p>=90) return '<span class="badge b-crit">critical</span>'; if(p>=75) return '<span class="badge b-warn">high</span>'; if(p>=40) return '<span class="badge b-idle">moderate</span>'; return '<span class="badge b-ok">ok</span>'; }
+document.getElementById('rows').innerHTML = data.map(r=>`
+  <tr>
+    <td>${r[0]}</td><td class="mono">${r[1]}</td><td class="mono">${r[2]}</td>
+    <td class="mono">${r[3]}</td><td class="mono">${r[4]}</td><td class="mono">${r[5]}</td>
+    <td class="mono">${r[6]}</td><td class="mono">${r[7]}</td><td class="mono">${r[8]}%</td>
+    <td>${badgeFor(r[8])}</td>
+  </tr>`).join('');
+
+syncLabel();
+</script>
+</body>
+</html>
