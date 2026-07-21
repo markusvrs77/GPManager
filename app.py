@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 import threading
+import config
 from config import APP_HOST, APP_PORT, APP_DEBUG
 from db import init_db
 from modules.connections import (
@@ -71,6 +72,19 @@ gpm_scheduler.register_runner("gpcopy_date", run_gpcopy_job)
 gpm_scheduler.register_runner("vacuum", run_vacuum_analyze_job)
 gpm_scheduler.register_runner("skew", run_skew_job)
 gpm_scheduler.register_runner("reorganize", run_reorganize_job)
+
+from modules.gpcopy_increment import (
+    run_gpcopy_increment_job,
+    get_dest_watermark,
+    build_increment_items,
+)
+from modules.gpcopy_partition import (
+    run_gpcopy_partition_diff_job,
+    diff_partitions,
+)
+
+gpm_scheduler.register_runner("gpcopy_increment", run_gpcopy_increment_job)
+gpm_scheduler.register_runner("gpcopy_partition_diff", run_gpcopy_partition_diff_job)
 
 
 app = Flask(__name__)
@@ -1380,16 +1394,8 @@ def api_gpcopy_start_date():
         }), 500
 
 def get_app_sqlite_path():
-    db_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "instance",
-        "gp_reorganize_center.sqlite3"
-    )
-
-    if not os.path.exists(db_path):
-        db_path = os.path.join("instance", "gp_reorganize_center.sqlite3")
-
-    return db_path
+    # Единый источник пути к БД (config.SQLITE_DB_PATH), подменяемый в тестах.
+    return config.SQLITE_DB_PATH
 
 
 def sqlite_rows(query, params=None):
@@ -1824,6 +1830,145 @@ def api_notification_channel_item(channel_id):
 
     scheduler_store.update_channel(channel_id, update)
     return jsonify({"ok": True})
+
+
+# ============================================================
+# gpcopy v2: increment + partition-diff
+# ============================================================
+
+@app.route("/api/gpcopy/increment/preview", methods=["POST"])
+def api_gpcopy_increment_preview():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        from db import get_connection_by_id as _get_conn
+
+        dest_cfg = _get_conn(int(data["dest_connection_id"]))
+        source_cfg = _get_conn(int(data["source_connection_id"]))
+        tables = data.get("tables") or []
+
+        if not tables:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        watermarks = {}
+        preview = []
+
+        for entry in tables:
+            schema = entry.get("schema")
+            table = entry.get("table")
+            column = entry.get("watermark_column")
+
+            if not (schema and table and column):
+                return jsonify({
+                    "ok": False,
+                    "message": "schema/table/watermark_column обязательны",
+                }), 400
+
+            wm = get_dest_watermark(dest_cfg, schema, table, column)
+            watermarks[(schema, table)] = wm
+            preview.append({
+                "schema": schema,
+                "table": table,
+                "watermark_column": column,
+                "watermark": str(wm) if wm is not None else None,
+            })
+
+        items = build_increment_items(
+            tables, watermarks,
+            data.get("source_db") or "src", data.get("dest_db") or "dst",
+        )
+
+        for row, item in zip(preview, items):
+            row["sql"] = item["sql"]
+
+        return jsonify({"ok": True, "tables": preview})
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/gpcopy/increment/start", methods=["POST"])
+def api_gpcopy_increment_start():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables = data.get("tables") or []
+
+        if not tables:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        job_id = create_job(
+            job_type="gpcopy_increment",
+            connection_id=int(data["source_connection_id"]),
+            config=data,
+        )
+
+        threading.Thread(
+            target=run_gpcopy_increment_job, args=(job_id,), daemon=True
+        ).start()
+
+        return jsonify({"ok": True, "job_id": job_id})
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+
+@app.route("/api/gpcopy/partition-diff/preview", methods=["POST"])
+def api_gpcopy_partition_diff_preview():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        from db import get_connection_by_id as _get_conn
+
+        source_cfg = _get_conn(int(data["source_connection_id"]))
+        dest_cfg = _get_conn(int(data["dest_connection_id"]))
+
+        schema = data.get("schema")
+        table = data.get("table")
+
+        if not (schema and table):
+            return jsonify({"ok": False, "message": "schema/table обязательны"}), 400
+
+        diff_rows, _leaves = diff_partitions(source_cfg, dest_cfg, schema, table)
+
+        return jsonify({
+            "ok": True,
+            "partitions": diff_rows,
+            "to_copy": [r for r in diff_rows if r["action"] != "skip"],
+        })
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/gpcopy/partition-diff/start", methods=["POST"])
+def api_gpcopy_partition_diff_start():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables = data.get("tables") or []
+
+        if not tables:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        job_id = create_job(
+            job_type="gpcopy_partition_diff",
+            connection_id=int(data["source_connection_id"]),
+            config=data,
+        )
+
+        threading.Thread(
+            target=run_gpcopy_partition_diff_job, args=(job_id,), daemon=True
+        ).start()
+
+        return jsonify({"ok": True, "job_id": job_id})
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
 
 
 @app.route("/api/notification-channels/<int:channel_id>/test", methods=["POST"])
