@@ -46,6 +46,7 @@
         dateResolved: null,
         syncKeys: {},              // "schema.table" -> {columns:[], source}
         syncUnresolved: [],
+        keyEditing: null,          // строка с открытым инлайн-редактором ключа
         sets: [],
         expandedSchema: null,      // раскрытая схема в модалке
         schemaTables: {},          // schema -> [{table,kind,partitions,parent}] (кэш)
@@ -115,8 +116,11 @@
         state.dateResolved = null;
         state.syncKeys = {};
         state.syncUnresolved = [];
+        state.keyEditing = null;
         var incList = $("gppIncList");
         if (incList) { incList.innerHTML = ""; }
+        var keyList = $("gppKeyList");
+        if (keyList) { keyList.innerHTML = ""; }
     }
 
     /* ---------------- persistence ---------------- */
@@ -863,28 +867,48 @@
         pk: ["pk", "PK"],
         unique_index: ["uniq", "уник. индекс"],
         computed: ["comp", "вычислен"],
+        manual: ["man", "вручную"],
     };
+
+    function keyRowHtml(key, info) {
+        var mid;
+        if (state.keyEditing === key) {
+            mid = ' <input class="colinput" id="gppKeyColEdit" style="width: 240px;" value="' +
+                esc(info ? info.columns.join(", ") : "") +
+                '" placeholder="col1, col2">';
+        } else {
+            mid = info
+                ? ' <span class="cols">→ ' + esc(info.columns.join(", ")) + "</span>"
+                : "";
+            mid += ' <span class="edit" data-key-e="' + esc(key) +
+                '" title="Задать ключевые колонки вручную (через запятую)">✎</span>';
+        }
+
+        var badge = info
+            ? (function () {
+                var b = KEY_BADGES[info.source] || ["", info.source];
+                return '<span class="gpp-key-badge ' + b[0] + '">' + esc(b[1]) + "</span>";
+            })()
+            : '<span class="gpp-key-badge none">нет ключа</span>';
+
+        return '<div class="gpp-key-row"><span>' + esc(key) + mid +
+            "</span>" + badge + "</div>";
+    }
 
     function renderKeyList() {
         var box = $("gppKeyList");
         if (!box) { return; }
 
         var rows = [];
-        var keys = Object.keys(state.syncKeys).sort();
 
-        keys.slice(0, 100).forEach(function (k) {
-            var info = state.syncKeys[k];
-            var b = KEY_BADGES[info.source] || ["", info.source];
-            rows.push('<div class="gpp-key-row"><span>' + esc(k) +
-                ' <span class="cols">→ ' + esc(info.columns.join(", ")) +
-                '</span></span><span class="gpp-key-badge ' + b[0] + '">' +
-                esc(b[1]) + "</span></div>");
+        // проблемные — наверх
+        (state.syncUnresolved || []).slice(0, 100).forEach(function (t) {
+            rows.push(keyRowHtml(t.schema + "." + t.table, null));
         });
 
-        (state.syncUnresolved || []).slice(0, 100).forEach(function (t) {
-            rows.push('<div class="gpp-key-row"><span>' +
-                esc(t.schema + "." + t.table) +
-                '</span><span class="gpp-key-badge none">нет ключа</span></div>');
+        var keys = Object.keys(state.syncKeys).sort();
+        keys.slice(0, 100).forEach(function (k) {
+            rows.push(keyRowHtml(k, state.syncKeys[k]));
         });
 
         var extra = keys.length + (state.syncUnresolved || []).length - rows.length;
@@ -892,6 +916,58 @@
             rows.push('<div class="gpp-hint">…и ещё ' + fmtN(extra) + "</div>");
         }
         box.innerHTML = rows.join("");
+
+        box.querySelectorAll(".edit[data-key-e]").forEach(function (el) {
+            el.onclick = function () {
+                state.keyEditing = el.getAttribute("data-key-e");
+                renderKeyList();
+                var inp = $("gppKeyColEdit");
+                if (inp) { inp.focus(); inp.select(); }
+            };
+        });
+
+        var inp = $("gppKeyColEdit");
+        if (inp) {
+            var apply = function () {
+                var key = state.keyEditing;
+                if (!key) { return; }
+                state.keyEditing = null;
+                var cols = inp.value.split(",")
+                    .map(function (s) { return s.trim(); })
+                    .filter(Boolean);
+                if (!cols.length) { renderKeyList(); return; }
+
+                var dot = key.indexOf(".");
+                var tbl = { schema: key.slice(0, dot), table: key.slice(dot + 1) };
+
+                // каждая колонка должна существовать в таблице
+                Promise.all(cols.map(function (c) {
+                    return api("/api/catalog/resolve-columns", "POST", {
+                        connection_id: srcId(), tables: [tbl], priority: [c],
+                    });
+                })).then(function (results) {
+                    var missing = cols.filter(function (_c, i) {
+                        var d = results[i];
+                        return !(d.ok && d.resolved && d.resolved.length);
+                    });
+                    if (missing.length) {
+                        toast("Нет колонок в " + key + ": " + missing.join(", "), "error");
+                    } else {
+                        state.syncKeys[key] = { columns: cols, source: "manual" };
+                        state.syncUnresolved = (state.syncUnresolved || [])
+                            .filter(function (t) {
+                                return t.schema + "." + t.table !== key;
+                            });
+                    }
+                    renderKeyList();
+                });
+            };
+            inp.onkeydown = function (e) {
+                if (e.key === "Enter") { apply(); }
+                if (e.key === "Escape") { state.keyEditing = null; renderKeyList(); }
+            };
+            inp.onblur = apply;
+        }
     }
 
     function resolveSyncKeys() {
