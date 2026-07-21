@@ -356,6 +356,32 @@ input[type="radio"] { accent-color: var(--a1); width: 16px; height: 16px; cursor
   word-break: break-word;
 }
 
+/* ---- gpcopy page: on-brand chrome (Phase 3) ---- */
+.gpcopy-page .gpcopy-section-title {
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: .01em;
+  margin-bottom: var(--space-3);
+  padding-left: 10px;
+  border-left: 3px solid transparent;
+  border-image: var(--accent-grad) 1;
+}
+
+/* replace solid Bootstrap header fills with tinted glass + colored accent */
+.gpcopy-page .card-header.bg-primary,
+.gpcopy-page .card-header.bg-danger {
+  background: var(--surface-2) !important;
+  color: var(--text) !important;
+  border-bottom: 1px solid var(--hairline);
+  border-left: 3px solid var(--a1);
+}
+.gpcopy-page .card-header.bg-danger { border-left-color: var(--crit); }
+.gpcopy-page .card-header.bg-primary b { color: var(--a1); }
+.gpcopy-page .card-header.bg-danger b  { color: var(--crit); }
+
+.gpcopy-page .card.border-primary { border-color: color-mix(in srgb, var(--a1) 45%, transparent) !important; }
+.gpcopy-page .card.border-danger  { border-color: color-mix(in srgb, var(--crit) 45%, transparent) !important; }
+
 /* reduced motion */
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
