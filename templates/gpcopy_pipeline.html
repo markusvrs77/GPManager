@@ -77,7 +77,7 @@
 .gpp-btn.big { padding: 12px 28px; font-size: 15px; }
 .gpp-btn.sm { padding: 4px 12px; font-size: 12.5px; }
 
-.gpp-modes { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.gpp-modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 @media (max-width: 900px) { .gpp-modes { grid-template-columns: repeat(2, 1fr); } }
 .gpp-mode { background: var(--surface-2); border: 1.5px solid var(--hairline);
   border-radius: 12px; padding: 12px; cursor: pointer;
@@ -170,6 +170,21 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
   border-radius: var(--radius-pill); padding: 1px 8px; margin-left: 6px;
   cursor: pointer; white-space: nowrap; }
 .gpp-prt-badge:hover { border-color: var(--a1); }
+
+/* список найденных ключей (инкремент по ключу) */
+.gpp-key-list { margin-top: 8px; max-height: 220px; overflow-y: auto; }
+.gpp-key-row { display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; font-family: var(--font-mono); font-size: 12.5px; padding: 3px 8px;
+  border-radius: 6px; }
+.gpp-key-row:nth-child(odd) { background: var(--surface); }
+.gpp-key-row .cols { color: var(--text-muted); }
+.gpp-key-badge { font-size: 10.5px; border-radius: var(--radius-pill);
+  padding: 1px 8px; border: 1px solid var(--hairline); color: var(--text-muted);
+  white-space: nowrap; }
+.gpp-key-badge.pk { color: var(--ok); border-color: var(--ok); }
+.gpp-key-badge.uniq { color: var(--a2); border-color: var(--a2); }
+.gpp-key-badge.comp { color: var(--warn); border-color: var(--warn); }
+.gpp-key-badge.none { color: var(--crit); border-color: var(--crit); }
 .gpp-sidebl { background: var(--surface-2); border: 1px solid var(--hairline);
   border-radius: var(--radius-sm); padding: 12px; margin-bottom: 10px; }
 .gpp-sidebl .t { font-size: 11.5px; letter-spacing: .07em; text-transform: uppercase;
@@ -246,16 +261,13 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
                 <div class="d">Вся таблица целиком. Первая загрузка.</div></div>
             <div class="gpp-mode" data-m="inc"><div class="ic">⚡</div>
                 <div class="t">Инкремент</div>
-                <div class="d">Только новые строки по watermark. Для логов.</div></div>
+                <div class="d">Догрузка разницы: по watermark или точно по ключу.</div></div>
             <div class="gpp-mode" data-m="date"><div class="ic">📅</div>
                 <div class="t">По датам</div>
                 <div class="d">Срез за период. Колонки подберутся сами.</div></div>
             <div class="gpp-mode" data-m="part"><div class="ic">🧩</div>
                 <div class="t">Партиции</div>
                 <div class="d">Только партиции, отличающиеся от источника.</div></div>
-            <div class="gpp-mode" data-m="sync"><div class="ic">🔁</div>
-                <div class="t">Sync по ключу</div>
-                <div class="d">INSERT/UPDATE/DELETE. Точная копия.</div></div>
         </div>
 
         <div class="gpp-params show" id="gppP-full">
@@ -271,13 +283,30 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
         </div>
 
         <div class="gpp-params" id="gppP-inc">
-            <div class="gpp-row">
-                <div class="gpp-f" style="flex: 1;"><label>Watermark-колонки (приоритет, через запятую)</label>
-                    <input id="gppIncPriority" value="id, date_change$, updated_at" style="min-width: 300px;"></div>
-                <button class="gpp-btn" id="gppIncCheck">Проверить колонки</button>
+            <div class="gpp-when" id="gppIncStrategy" style="margin-bottom: 12px;">
+                <div class="opt sel" data-s="watermark">⚡ По watermark (append, для логов)</div>
+                <div class="opt" data-s="key">🔁 По ключу (INSERT/UPDATE/DELETE)</div>
             </div>
-            <div class="gpp-hint" id="gppIncHint">Не у всех таблиц колонка называется одинаково —
-                перечисли варианты, для остальных возьмём первую date/timestamp-колонку.</div>
+
+            <div id="gppIncWm">
+                <div class="gpp-row">
+                    <div class="gpp-f" style="flex: 1;"><label>Watermark-колонки (приоритет, через запятую)</label>
+                        <input id="gppIncPriority" value="id, date_change$, updated_at" style="min-width: 300px;"></div>
+                    <button class="gpp-btn" id="gppIncCheck">Проверить колонки</button>
+                </div>
+                <div class="gpp-hint" id="gppIncHint">Не у всех таблиц колонка называется одинаково —
+                    перечисли варианты, для остальных возьмём первую date/timestamp-колонку.</div>
+            </div>
+
+            <div id="gppIncKey" style="display: none;">
+                <div class="gpp-row">
+                    <button class="gpp-btn" id="gppSyncKeys">Ключи: PK + уник. индексы</button>
+                    <button class="gpp-btn" id="gppSyncCompute">Найти уникальную колонку (по данным)</button>
+                </div>
+                <div class="gpp-hint" id="gppSyncHint">Ключ ищем по иерархии: PK → кратчайший
+                    уникальный индекс → вычисление по данным (для таблиц без индексов).</div>
+                <div class="gpp-key-list" id="gppKeyList"></div>
+            </div>
         </div>
 
         <div class="gpp-params" id="gppP-date">
@@ -311,15 +340,6 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
                 <button class="gpp-btn" id="gppPartPreviewBtn">Показать diff (до 5 таблиц)</button>
             </div>
             <div class="gpp-hint" id="gppPartPreview"></div>
-        </div>
-
-        <div class="gpp-params" id="gppP-sync">
-            <div class="gpp-row">
-                <button class="gpp-btn" id="gppSyncKeys">Ключи: PK + уник. индексы</button>
-                <button class="gpp-btn" id="gppSyncCompute">Вычислить ключ (по данным)</button>
-            </div>
-            <div class="gpp-hint" id="gppSyncHint">Ключ ищем по иерархии: PK → кратчайший
-                уникальный индекс → вычисление по данным (для таблиц без индексов).</div>
         </div>
 
         <details class="gpp-exp">

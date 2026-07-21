@@ -33,6 +33,7 @@
 
     var state = {
         mode: "full",
+        incStrategy: "watermark",  // watermark | key
         when: "now",
         sel: new Set(),            // "schema.table"
         catalog: null,             // {total, schemas:[{schema,count}], cached_at}
@@ -49,21 +50,29 @@
         expandedParent: null,      // родитель, чьи партиции раскрыты
     };
 
-    var MODE_NAMES = {
-        full: "полное копирование",
-        inc: "инкремент по watermark",
-        date: "срез по датам",
-        part: "только отличающиеся партиции",
-        sync: "sync по ключу",
-    };
+    function modeName() {
+        if (state.mode === "inc") {
+            return state.incStrategy === "key"
+                ? "инкремент по ключу (sync)"
+                : "инкремент по watermark";
+        }
+        return {
+            full: "полное копирование",
+            date: "срез по датам",
+            part: "только отличающиеся партиции",
+        }[state.mode];
+    }
 
-    var JOB_TYPE_BY_MODE = {
-        full: "gpcopy",
-        inc: "gpcopy_increment",
-        date: "gpcopy_date",
-        part: "gpcopy_partition_diff",
-        sync: "gpcopy_sync",
-    };
+    function jobType() {
+        if (state.mode === "inc") {
+            return state.incStrategy === "key" ? "gpcopy_sync" : "gpcopy_increment";
+        }
+        return {
+            full: "gpcopy",
+            date: "gpcopy_date",
+            part: "gpcopy_partition_diff",
+        }[state.mode];
+    }
 
     var RUN_LABELS = {
         gpcopy: "полное",
@@ -650,6 +659,41 @@
 
     /* ---------------- smart resolution: sync keys ---------------- */
 
+    var KEY_BADGES = {
+        pk: ["pk", "PK"],
+        unique_index: ["uniq", "уник. индекс"],
+        computed: ["comp", "вычислен"],
+    };
+
+    function renderKeyList() {
+        var box = $("gppKeyList");
+        if (!box) { return; }
+
+        var rows = [];
+        var keys = Object.keys(state.syncKeys).sort();
+
+        keys.slice(0, 100).forEach(function (k) {
+            var info = state.syncKeys[k];
+            var b = KEY_BADGES[info.source] || ["", info.source];
+            rows.push('<div class="gpp-key-row"><span>' + esc(k) +
+                ' <span class="cols">→ ' + esc(info.columns.join(", ")) +
+                '</span></span><span class="gpp-key-badge ' + b[0] + '">' +
+                esc(b[1]) + "</span></div>");
+        });
+
+        (state.syncUnresolved || []).slice(0, 100).forEach(function (t) {
+            rows.push('<div class="gpp-key-row"><span>' +
+                esc(t.schema + "." + t.table) +
+                '</span><span class="gpp-key-badge none">нет ключа</span></div>');
+        });
+
+        var extra = keys.length + (state.syncUnresolved || []).length - rows.length;
+        if (extra > 0) {
+            rows.push('<div class="gpp-hint">…и ещё ' + fmtN(extra) + "</div>");
+        }
+        box.innerHTML = rows.join("");
+    }
+
     function resolveSyncKeys() {
         var tables = selTables();
         var hint = $("gppSyncHint");
@@ -683,9 +727,10 @@
                 ", уник. индекс: " + fmtN(viaUniq) + ")";
             if (d.unresolved.length) {
                 msg += ' · <span class="warn">' + fmtN(d.unresolved.length) +
-                    " без ключа</span> — нажми «Вычислить ключ (по данным)»";
+                    " без ключа</span> — нажми «Найти уникальную колонку (по данным)»";
             }
             hint.innerHTML = msg;
+            renderKeyList();
             return d;
         });
     }
@@ -721,6 +766,7 @@
                     msg += " · за раз проверяем до " + CAP + " таблиц — запросы тяжёлые";
                 }
                 hint.innerHTML = msg;
+                renderKeyList();
                 return;
             }
             var t = todo[i];
@@ -848,7 +894,7 @@
             (schemas.length ? " (" + schemas.slice(0, 4).map(esc).join(", ") +
                 (schemas.length > 4 ? "…" : "") + ")" : "") +
             " из <b>" + esc(srcName.trim()) + "</b> в <b>" + esc(dstName.trim()) +
-            "</b> — <b>" + MODE_NAMES[state.mode] + "</b>, " + whenTxt + ".";
+            "</b> — <b>" + modeName() + "</b>, " + whenTxt + ".";
 
         $("gppGo").textContent =
             state.when === "sched" ? "🗓 Создать расписание" : "▶ Запустить";
@@ -925,7 +971,7 @@
             return api("/api/gpcopy/start", "POST", body);
         }
 
-        if (state.mode === "inc") {
+        if (state.mode === "inc" && state.incStrategy === "watermark") {
             var pre = state.incResolved
                 ? Promise.resolve(true)
                 : checkColumns("gppIncPriority", "gppIncHint", "incResolved");
@@ -937,6 +983,22 @@
                 return api("/api/gpcopy/increment/start", "POST", {
                     source_connection_id: srcId(), dest_connection_id: dstId(),
                     tables: incTables, gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
+                });
+            });
+        }
+
+        if (state.mode === "inc") { // по ключу (sync)
+            var preS = Object.keys(state.syncKeys).length
+                ? Promise.resolve(true)
+                : resolveSyncKeys();
+            return preS.then(function () {
+                var cfgs = buildSyncConfigs();
+                if (!cfgs.length) {
+                    return { ok: false, message: "Ни у одной таблицы нет ключа" };
+                }
+                return api("/api/gpcopy/sync/apply", "POST", {
+                    source_connection_id: srcId(), dest_connection_id: dstId(),
+                    table_configs: cfgs, gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
                 });
             });
         }
@@ -963,26 +1025,10 @@
             });
         }
 
-        if (state.mode === "part") {
-            return api("/api/gpcopy/partition-diff/start", "POST", {
-                source_connection_id: srcId(), dest_connection_id: dstId(),
-                tables: tables, gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
-            });
-        }
-
-        // sync
-        var preS = Object.keys(state.syncKeys).length
-            ? Promise.resolve(true)
-            : resolveSyncKeys();
-        return preS.then(function () {
-            var cfgs = buildSyncConfigs();
-            if (!cfgs.length) {
-                return { ok: false, message: "Ни у одной таблицы нет ключа" };
-            }
-            return api("/api/gpcopy/sync/apply", "POST", {
-                source_connection_id: srcId(), dest_connection_id: dstId(),
-                table_configs: cfgs, gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
-            });
+        // part
+        return api("/api/gpcopy/partition-diff/start", "POST", {
+            source_connection_id: srcId(), dest_connection_id: dstId(),
+            tables: tables, gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
         });
     }
 
@@ -1003,7 +1049,7 @@
             return Promise.resolve(base);
         }
 
-        if (state.mode === "inc") {
+        if (state.mode === "inc" && state.incStrategy === "watermark") {
             var pre = state.incResolved
                 ? Promise.resolve(true)
                 : checkColumns("gppIncPriority", "gppIncHint", "incResolved");
@@ -1011,6 +1057,21 @@
                 var incTables = buildIncTables();
                 if (!incTables.length) { return null; }
                 base.tables = incTables;
+                return base;
+            });
+        }
+
+        if (state.mode === "inc") { // по ключу (sync)
+            var preS = Object.keys(state.syncKeys).length
+                ? Promise.resolve(true)
+                : resolveSyncKeys();
+            return preS.then(function () {
+                var cfgs = buildSyncConfigs();
+                if (!cfgs.length) { return null; }
+                base.tables = cfgs.map(function (c) {
+                    return { schema: c.schema, table: c.table };
+                });
+                base.table_configs = cfgs;
                 return base;
             });
         }
@@ -1025,24 +1086,9 @@
             return Promise.resolve(base);
         }
 
-        if (state.mode === "part") {
-            base.tables = tables;
-            return Promise.resolve(base);
-        }
-
-        // sync
-        var preS = Object.keys(state.syncKeys).length
-            ? Promise.resolve(true)
-            : resolveSyncKeys();
-        return preS.then(function () {
-            var cfgs = buildSyncConfigs();
-            if (!cfgs.length) { return null; }
-            base.tables = cfgs.map(function (c) {
-                return { schema: c.schema, table: c.table };
-            });
-            base.table_configs = cfgs;
-            return base;
-        });
+        // part
+        base.tables = tables;
+        return Promise.resolve(base);
     }
 
     function createSchedule() {
@@ -1057,10 +1103,10 @@
                 return null;
             }
             var name = $("gppSchedName").value.trim() ||
-                (JOB_TYPE_BY_MODE[state.mode] + "-" + state.sel.size);
+                (jobType() + "-" + state.sel.size);
             return api("/api/schedules", "POST", {
                 name: name,
-                job_type: JOB_TYPE_BY_MODE[state.mode],
+                job_type: jobType(),
                 cron_expr: cronExpr(),
                 config: config,
             });
@@ -1244,9 +1290,25 @@
                 });
                 card.classList.add("sel");
                 state.mode = card.getAttribute("data-m");
-                ["full", "inc", "date", "part", "sync"].forEach(function (m) {
+                ["full", "inc", "date", "part"].forEach(function (m) {
                     $("gppP-" + m).classList.toggle("show", m === state.mode);
                 });
+                renderSummary();
+            };
+        });
+
+        // стратегия инкремента: watermark | key
+        document.querySelectorAll("#gppIncStrategy .opt").forEach(function (opt) {
+            opt.onclick = function () {
+                document.querySelectorAll("#gppIncStrategy .opt").forEach(function (o) {
+                    o.classList.remove("sel");
+                });
+                opt.classList.add("sel");
+                state.incStrategy = opt.getAttribute("data-s");
+                $("gppIncWm").style.display =
+                    state.incStrategy === "watermark" ? "" : "none";
+                $("gppIncKey").style.display =
+                    state.incStrategy === "key" ? "" : "none";
                 renderSummary();
             };
         });
