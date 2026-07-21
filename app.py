@@ -1833,6 +1833,179 @@ def api_notification_channel_item(channel_id):
 
 
 # ============================================================
+# Table catalog: массовый выбор/настройка (10k+ таблиц)
+# ============================================================
+
+import modules.table_catalog as table_catalog
+
+
+@app.route("/api/catalog")
+def api_catalog():
+    connection_id = request.args.get("connection_id", type=int)
+    force = request.args.get("force", 0, type=int)
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    try:
+        tables, cached_at = table_catalog.get_catalog(connection_id, force=bool(force))
+        return jsonify({
+            "ok": True,
+            "total": len(tables),
+            "cached_at": cached_at,
+            "schemas": table_catalog.catalog_summary(tables),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/search")
+def api_catalog_search():
+    connection_id = request.args.get("connection_id", type=int)
+    query = request.args.get("q", "")
+
+    try:
+        tables, _ts = table_catalog.get_catalog(connection_id)
+        found = table_catalog.search_tables(tables, query)
+        return jsonify({
+            "ok": True,
+            "tables": [{"schema": s, "table": t} for s, t in found],
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/expand-mask", methods=["POST"])
+def api_catalog_expand_mask():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables, _ts = table_catalog.get_catalog(int(data["connection_id"]))
+        matched = table_catalog.match_mask(tables, data.get("mask"))
+        return jsonify({
+            "ok": True,
+            "count": len(matched),
+            "tables": [{"schema": s, "table": t} for s, t in matched],
+        })
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/resolve-list", methods=["POST"])
+def api_catalog_resolve_list():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables, _ts = table_catalog.get_catalog(int(data["connection_id"]))
+        valid, invalid = table_catalog.parse_table_list(data.get("text"), tables)
+        return jsonify({
+            "ok": True,
+            "valid": [{"schema": s, "table": t} for s, t in valid],
+            "invalid": invalid,
+        })
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/resolve-columns", methods=["POST"])
+def api_catalog_resolve_columns():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables = [
+            (t["schema"], t["table"])
+            for t in (data.get("tables") or [])
+        ]
+        priority = [
+            c.strip() for c in (data.get("priority") or []) if str(c).strip()
+        ]
+
+        if not tables or not priority:
+            return jsonify({
+                "ok": False, "message": "tables и priority обязательны",
+            }), 400
+
+        columns_by_table = table_catalog.fetch_columns_for_candidates(
+            int(data["connection_id"]), tables, priority,
+        )
+        resolved, missing = table_catalog.pick_columns(columns_by_table, priority)
+
+        return jsonify({
+            "ok": True,
+            "resolved": [
+                {"schema": s, "table": t, "column": c}
+                for (s, t), c in sorted(resolved.items())
+            ],
+            "missing": [{"schema": s, "table": t} for s, t in missing],
+        })
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/primary-keys", methods=["POST"])
+def api_catalog_primary_keys():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables = [(t["schema"], t["table"]) for t in (data.get("tables") or [])]
+        keys = table_catalog.fetch_primary_keys(int(data["connection_id"]), tables)
+
+        return jsonify({
+            "ok": True,
+            "keys": [
+                {"schema": s, "table": t, "columns": cols}
+                for (s, t), cols in sorted(keys.items())
+            ],
+            "missing": [
+                {"schema": s, "table": t}
+                for s, t in tables if (s, t) not in keys
+            ],
+        })
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/table-sets", methods=["GET", "POST"])
+def api_table_sets():
+    if request.method == "GET":
+        connection_id = request.args.get("connection_id", type=int)
+        return jsonify({
+            "ok": True,
+            "sets": table_catalog.list_table_sets(connection_id),
+        })
+
+    data = request.get_json(silent=True) or {}
+
+    if not data.get("tables"):
+        return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+    set_id = table_catalog.create_table_set(data)
+    return jsonify({"ok": True, "id": set_id})
+
+
+@app.route("/api/table-sets/<int:set_id>", methods=["GET", "DELETE"])
+def api_table_set_item(set_id):
+    if request.method == "DELETE":
+        table_catalog.delete_table_set(set_id)
+        return jsonify({"ok": True})
+
+    ts = table_catalog.get_table_set(set_id)
+
+    if not ts:
+        return jsonify({"ok": False, "message": "Set not found"}), 404
+
+    return jsonify({"ok": True, "set": ts})
+
+
+# ============================================================
 # gpcopy v2: increment + partition-diff
 # ============================================================
 

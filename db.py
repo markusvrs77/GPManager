@@ -240,6 +240,20 @@ def init_db():
             """
         )
 
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS table_sets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                connection_id INTEGER,
+                tables_json TEXT,
+                rules_json TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT
+            )
+            """
+        )
+
     ensure_column_exists(
         "skew_results",
         "job_id",
