@@ -38,9 +38,21 @@ def test_chartjs_only_on_charting_pages(client):
     dash = client.get("/dashboard").get_data(as_text=True)
     maint = client.get("/maintenance").get_data(as_text=True)
     conns = client.get("/connections").get_data(as_text=True)
-    assert "chart.js" in dash
-    assert "chart.js" in maint
-    assert "chart.js" not in conns
+    assert "chart.umd.min.js" in dash
+    assert "chart.umd.min.js" in maint
+    assert "chart.umd.min.js" not in conns
+
+
+CDN_HOSTS = ["cdn.jsdelivr.net", "fonts.googleapis.com", "fonts.gstatic.com",
+             "unpkg.com", "cdnjs.cloudflare.com"]
+
+
+@pytest.mark.parametrize("path", GET_ROUTES)
+def test_no_external_cdn_references(client, path):
+    """Offline / RHEL target: all assets must be self-hosted."""
+    html = client.get(path).get_data(as_text=True)
+    for host in CDN_HOSTS:
+        assert host not in html, f"{host} referenced on {path}"
 
 
 def test_single_session_limits_function(client):
