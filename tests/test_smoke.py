@@ -46,3 +46,8 @@ def test_chartjs_only_on_charting_pages(client):
 def test_single_session_limits_function(client):
     html = client.get("/dashboard").get_data(as_text=True)
     assert html.count("async function loadSessionLimitsStats(") == 1
+
+
+def test_openpyxl_is_declared():
+    reqs = open("requirements.txt", encoding="utf-8").read().lower()
+    assert "openpyxl" in reqs
