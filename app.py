@@ -1826,6 +1826,27 @@ def api_notification_channel_item(channel_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/notification-channels/<int:channel_id>/test", methods=["POST"])
+def api_notification_channel_test(channel_id):
+    channel = scheduler_store.get_channel(channel_id)
+
+    if not channel:
+        return jsonify({"ok": False, "message": "Channel not found"}), 404
+
+    import notifiers as _notifiers
+
+    ok, error = _notifiers.send(channel, {
+        "schedule": "test-event",
+        "job_type": "test",
+        "status": "test",
+        "fired_at": _datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "error": None,
+        "job_id": None,
+    })
+
+    return jsonify({"ok": ok, "message": error})
+
+
 if __name__ == "__main__":
     init_db()
     

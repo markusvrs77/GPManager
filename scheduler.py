@@ -56,8 +56,39 @@ def materialize_config(config, run_date):
 
 
 def _notify(schedule, status, error, job_id):
-    """Фаза 3 подключит реальные каналы (notifiers.py) к этому событию."""
-    return None
+    """Шлёт событие в каналы расписания по политике notify_on (spec §6)."""
+    notify_on = schedule.get("notify_on") or "failure"
+
+    if notify_on == "never":
+        return
+
+    if notify_on == "failure" and status != "failed":
+        return
+
+    try:
+        channel_ids = json.loads(schedule.get("notify_channel_ids") or "[]")
+    except (ValueError, TypeError):
+        channel_ids = []
+
+    if not channel_ids:
+        return
+
+    event = {
+        "schedule": schedule.get("name"),
+        "job_type": schedule.get("job_type"),
+        "status": status,
+        "fired_at": store.fmt(datetime.now()),
+        "error": error,
+        "job_id": job_id,
+    }
+
+    try:
+        import notifiers
+
+        notifiers.notify_channels(channel_ids, event)
+    except Exception:
+        # Уведомления best-effort: канал не должен ронять планировщик.
+        traceback.print_exc()
 
 
 def _maybe_queue_retry(schedule, failed_run, now):
