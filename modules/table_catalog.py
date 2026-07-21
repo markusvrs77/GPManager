@@ -335,3 +335,272 @@ def list_table_sets(connection_id=None):
 def delete_table_set(set_id):
     with sqlite_cursor(commit=True) as cur:
         cur.execute("DELETE FROM table_sets WHERE id = ?", (set_id,))
+
+
+# ------------------------------------------------------------
+# Умный подбор ключей и колонок:
+# PK -> уникальный индекс -> вычисление уникальности по данным;
+# приоритетный список дат -> фолбэк на любую date/timestamp колонку.
+# ------------------------------------------------------------
+
+def resolve_keys_hierarchy(tables, pk_map, unique_map):
+    """
+    Чистая функция. Для каждой таблицы: PK, иначе кратчайший уникальный
+    индекс, иначе — в unresolved (кандидат на вычисление по данным).
+    """
+    resolved = {}
+    unresolved = []
+
+    for key in tables:
+        if key in pk_map and pk_map[key]:
+            resolved[key] = {"columns": pk_map[key], "source": "pk"}
+        elif key in unique_map and unique_map[key]:
+            shortest = sorted(unique_map[key], key=len)[0]
+            resolved[key] = {"columns": shortest, "source": "unique_index"}
+        else:
+            unresolved.append(key)
+
+    return resolved, unresolved
+
+
+_METRIC_TYPES = ("numeric", "decimal", "double", "real", "float", "money")
+
+
+def _candidate_score(name, data_type):
+    lowered = name.lower()
+    type_lowered = (data_type or "").lower()
+
+    for metric in _METRIC_TYPES:
+        if metric in type_lowered:
+            return None  # метрики не бывают ключами
+
+    if lowered == "id":
+        name_score = 100
+    elif "guid" in lowered or "uuid" in lowered:
+        name_score = 80
+    elif lowered.endswith("_id") or lowered.startswith("id_"):
+        name_score = 60
+    elif any(p in lowered for p in ("code", "key", "hash", "num")):
+        name_score = 50
+    else:
+        name_score = 10
+
+    if "uuid" in type_lowered:
+        type_score = 30
+    elif "int" in type_lowered:
+        type_score = 20
+    elif "char" in type_lowered or "text" in type_lowered:
+        type_score = 10
+    else:
+        type_score = 0
+
+    return name_score + type_score
+
+
+def choose_candidate_columns(columns_with_types, limit=5):
+    """Ранжирует колонки-кандидаты на уникальность (id/uuid/code раньше)."""
+    scored = []
+
+    for name, data_type in columns_with_types:
+        score = _candidate_score(name, data_type)
+
+        if score is not None:
+            scored.append((score, name))
+
+    scored.sort(key=lambda x: -x[0])
+    return [name for _score, name in scored[:int(limit)]]
+
+
+def pick_columns_with_fallback(columns_by_table, priority, date_cols_by_table):
+    """
+    Приоритетный список -> фолбэк: первая date/timestamp колонка таблицы.
+    Возвращает (resolved: {key: {column, via}}, missing: [key]).
+    """
+    base_resolved, base_missing = pick_columns(columns_by_table, priority)
+
+    resolved = {
+        key: {"column": column, "via": "priority"}
+        for key, column in base_resolved.items()
+    }
+    missing = []
+
+    for key in base_missing:
+        fallback = (date_cols_by_table or {}).get(key) or []
+
+        if fallback:
+            resolved[key] = {"column": fallback[0], "via": "fallback_date"}
+        else:
+            missing.append(key)
+
+    return resolved, sorted(missing)
+
+
+def fetch_unique_indexes(connection_id, tables):
+    """
+    (pk_map, unique_map) одним запросом: pk_map={key: [cols]},
+    unique_map={key: [[cols], ...]} — уникальные индексы без PK.
+    """
+    if not tables:
+        return {}, {}
+
+    cfg = get_connection_by_id(int(connection_id))
+    conn = open_psycopg2_connection_by_cfg(cfg)
+
+    wanted = {(s, t) for s, t in tables}
+    schemas = sorted({s for s, _t in wanted})
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT n.nspname, c.relname, i.indexrelid::bigint,
+                       i.indisprimary, a.attname
+                FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_attribute a
+                  ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey)
+                WHERE i.indisunique
+                  AND n.nspname = ANY(%s)
+                ORDER BY n.nspname, c.relname, i.indexrelid, a.attnum
+                """,
+                (schemas,),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    by_index = {}
+
+    for schema, table, index_oid, is_primary, column in rows:
+        key = (schema, table)
+
+        if key not in wanted:
+            continue
+
+        by_index.setdefault((key, index_oid, bool(is_primary)), []).append(column)
+
+    pk_map = {}
+    unique_map = {}
+
+    for (key, _oid, is_primary), columns in by_index.items():
+        if is_primary:
+            pk_map[key] = columns
+        else:
+            unique_map.setdefault(key, []).append(columns)
+
+    return pk_map, unique_map
+
+
+_DATE_TYPES = (
+    "date", "timestamp without time zone", "timestamp with time zone",
+)
+
+
+def fetch_date_columns_bulk(connection_id, tables):
+    """{key: [date/timestamp колонки по ordinal]} одним запросом."""
+    if not tables:
+        return {}
+
+    cfg = get_connection_by_id(int(connection_id))
+    conn = open_psycopg2_connection_by_cfg(cfg)
+
+    wanted = {(s, t) for s, t in tables}
+    schemas = sorted({s for s, _t in wanted})
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT table_schema, table_name, column_name
+                FROM information_schema.columns
+                WHERE table_schema = ANY(%s)
+                  AND data_type = ANY(%s)
+                ORDER BY table_schema, table_name, ordinal_position
+                """,
+                (schemas, list(_DATE_TYPES)),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    out = {}
+
+    for schema, table, column in rows:
+        key = (schema, table)
+
+        if key in wanted:
+            out.setdefault(key, []).append(column)
+
+    return out
+
+
+def fetch_columns_with_types(connection_id, schema, table):
+    cfg = get_connection_by_id(int(connection_id))
+    conn = open_psycopg2_connection_by_cfg(cfg)
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = %s
+                ORDER BY ordinal_position
+                """,
+                (schema, table),
+            )
+            return [(r[0], r[1]) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _qident(name):
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def probe_unique_column(connection_id, schema, table, limit_candidates=5):
+    """
+    Вычисление уникальной колонки по данным (когда нет ни PK, ни индексов):
+    кандидаты по эвристике, для каждого count(*) == count(col) ==
+    count(distinct col). Останавливается на первом уникальном.
+    """
+    columns = fetch_columns_with_types(connection_id, schema, table)
+    candidates = choose_candidate_columns(columns, limit=limit_candidates)
+
+    if not candidates:
+        return {"column": None, "checked": []}
+
+    cfg = get_connection_by_id(int(connection_id))
+    conn = open_psycopg2_connection_by_cfg(cfg)
+
+    checked = []
+
+    try:
+        for candidate in candidates:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*), count({c}), count(DISTINCT {c}) FROM {s}.{t}".format(
+                        c=_qident(candidate),
+                        s=_qident(schema),
+                        t=_qident(table),
+                    )
+                )
+                total, non_null, distinct = cur.fetchone()
+
+            is_unique = bool(total) and total == non_null == distinct
+            checked.append({
+                "column": candidate,
+                "rows": int(total),
+                "nulls": int(total - non_null),
+                "distinct": int(distinct),
+                "unique": is_unique,
+            })
+
+            if is_unique:
+                return {"column": candidate, "checked": checked}
+
+        return {"column": None, "checked": checked}
+
+    finally:
+        conn.close()

@@ -1932,12 +1932,36 @@ def api_catalog_resolve_columns():
         columns_by_table = table_catalog.fetch_columns_for_candidates(
             int(data["connection_id"]), tables, priority,
         )
+
+        if data.get("fallback_any_date"):
+            # Фолбэк: у таблиц без колонок из приоритета берём первую
+            # date/timestamp колонку (не у всех таблиц колонки зовутся одинаково).
+            _base_resolved, base_missing = table_catalog.pick_columns(
+                columns_by_table, priority,
+            )
+            date_cols = table_catalog.fetch_date_columns_bulk(
+                int(data["connection_id"]), base_missing,
+            )
+            resolved, missing = table_catalog.pick_columns_with_fallback(
+                columns_by_table, priority, date_cols,
+            )
+
+            return jsonify({
+                "ok": True,
+                "resolved": [
+                    {"schema": s, "table": t,
+                     "column": info["column"], "via": info["via"]}
+                    for (s, t), info in sorted(resolved.items())
+                ],
+                "missing": [{"schema": s, "table": t} for s, t in missing],
+            })
+
         resolved, missing = table_catalog.pick_columns(columns_by_table, priority)
 
         return jsonify({
             "ok": True,
             "resolved": [
-                {"schema": s, "table": t, "column": c}
+                {"schema": s, "table": t, "column": c, "via": "priority"}
                 for (s, t), c in sorted(resolved.items())
             ],
             "missing": [{"schema": s, "table": t} for s, t in missing],
@@ -1967,6 +1991,58 @@ def api_catalog_primary_keys():
                 for s, t in tables if (s, t) not in keys
             ],
         })
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/resolve-keys", methods=["POST"])
+def api_catalog_resolve_keys():
+    """Ключи для sync: PK -> уникальный индекс -> unresolved (на вычисление)."""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables = [(t["schema"], t["table"]) for t in (data.get("tables") or [])]
+
+        if not tables:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        pk_map, unique_map = table_catalog.fetch_unique_indexes(
+            int(data["connection_id"]), tables,
+        )
+        resolved, unresolved = table_catalog.resolve_keys_hierarchy(
+            tables, pk_map, unique_map,
+        )
+
+        return jsonify({
+            "ok": True,
+            "resolved": [
+                {"schema": s, "table": t,
+                 "columns": info["columns"], "source": info["source"]}
+                for (s, t), info in sorted(resolved.items())
+            ],
+            "unresolved": [{"schema": s, "table": t} for s, t in unresolved],
+        })
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/compute-unique", methods=["POST"])
+def api_catalog_compute_unique():
+    """Вычисление уникальной колонки по данным (нет ни PK, ни индексов)."""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        result = table_catalog.probe_unique_column(
+            int(data["connection_id"]),
+            data["schema"],
+            data["table"],
+            limit_candidates=int(data.get("limit_candidates") or 5),
+        )
+        return jsonify({"ok": True, **result})
     except (KeyError, ValueError) as e:
         return jsonify({"ok": False, "message": str(e)}), 400
     except Exception as e:

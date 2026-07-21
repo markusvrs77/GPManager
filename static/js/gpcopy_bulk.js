@@ -297,11 +297,14 @@ async function bulkRunByDateRule() {
 
     const res = await bulkApi("/api/catalog/resolve-columns", "POST", {
         connection_id: bulkConnId(), tables: tables, priority: priority,
+        fallback_any_date: true,
     });
 
     if (!res.ok) { box.textContent = "Ошибка: " + res.message; return; }
 
-    let msg = "Колонка найдена у " + res.resolved.length + " таблиц";
+    const viaFallback = res.resolved.filter(r => r.via === "fallback_date").length;
+    let msg = "Колонка найдена у " + res.resolved.length + " таблиц" +
+        (viaFallback ? " (из них " + viaFallback + " — по фолбэку на любую date-колонку)" : "");
     if (res.missing.length) {
         msg += "; НЕ найдена у " + res.missing.length + ": " +
             res.missing.slice(0, 5).map(m => m.schema + "." + m.table).join(", ") +
@@ -347,29 +350,68 @@ async function bulkFillSyncKeys() {
 
     const tables = [...rows].map(r => ({schema: r.dataset.schema, table: r.dataset.table}));
 
-    const data = await bulkApi("/api/catalog/primary-keys", "POST", {
+    // Иерархия: PK -> уникальный индекс -> (кнопкой) вычисление по данным.
+    const data = await bulkApi("/api/catalog/resolve-keys", "POST", {
         connection_id: bulkConnId(), tables: tables,
     });
 
-    if (!data.ok) { setGpcopySyncStatus("PK: " + data.message, "danger"); return; }
+    if (!data.ok) { setGpcopySyncStatus("Ключи: " + data.message, "danger"); return; }
 
-    const pkMap = {};
-    data.keys.forEach(k => { pkMap[k.schema + "." + k.table] = k.columns; });
+    const keyMap = {};
+    data.resolved.forEach(k => { keyMap[k.schema + "." + k.table] = k; });
 
-    let filled = 0;
+    let viaPk = 0, viaUnique = 0;
     rows.forEach(function (row) {
         const input = document.getElementById("gpcopySyncKeys_" + row.dataset.index);
-        const pk = pkMap[row.dataset.schema + "." + row.dataset.table];
-        if (input && pk && !input.value.trim()) {
-            input.value = pk.join(",");
-            filled++;
+        const info = keyMap[row.dataset.schema + "." + row.dataset.table];
+        if (input && info && !input.value.trim()) {
+            input.value = info.columns.join(",");
+            if (info.source === "pk") viaPk++; else viaUnique++;
         }
     });
 
     setGpcopySyncStatus(
-        "PK автозаполнены: " + filled + " из " + rows.length +
-        (data.missing.length ? " (без PK: " + data.missing.length + ")" : ""),
+        "Ключи: PK — " + viaPk + ", уникальный индекс — " + viaUnique +
+        (data.unresolved.length
+            ? ". Без индексов: " + data.unresolved.length +
+              " — нажми «Вычислить ключ (по данным)»."
+            : "."),
         "info"
+    );
+}
+
+async function bulkComputeMissingKeys() {
+    const rows = [...document.querySelectorAll("#gpcopySyncTablesBody tr[data-index]")]
+        .filter(r => {
+            const input = document.getElementById("gpcopySyncKeys_" + r.dataset.index);
+            return input && !input.value.trim();
+        });
+
+    if (!rows.length) { setGpcopySyncStatus("Нет строк без ключа.", "info"); return; }
+
+    const batch = rows.slice(0, 5); // тяжёлые запросы — считаем по 5 за раз
+    let found = 0;
+
+    for (const row of batch) {
+        const full = row.dataset.schema + "." + row.dataset.table;
+        setGpcopySyncStatus("Вычисляю уникальность: " + full + "…", "info");
+
+        const data = await bulkApi("/api/catalog/compute-unique", "POST", {
+            connection_id: bulkConnId(),
+            schema: row.dataset.schema,
+            table: row.dataset.table,
+        });
+
+        if (data.ok && data.column) {
+            document.getElementById("gpcopySyncKeys_" + row.dataset.index).value = data.column;
+            found++;
+        }
+    }
+
+    setGpcopySyncStatus(
+        "Вычислено по данным: " + found + " из " + batch.length +
+        (rows.length > batch.length ? " (осталось " + (rows.length - batch.length) + " — нажми ещё раз)" : ""),
+        found ? "info" : "warning"
     );
 }
 
