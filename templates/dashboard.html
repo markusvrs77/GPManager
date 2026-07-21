@@ -14,43 +14,42 @@
     <div class="row g-3 mb-4">
 
         <div class="col-md-3">
-            <div class="card shadow-sm h-100">
+            <div class="card gp-stat shadow-sm h-100">
                 <div class="card-body">
-                    <div class="text-muted small">Total skew tables</div>
-                    <h3 class="mb-0">{{ skew_summary.total }}</h3>
+                    <div class="gp-k">Total skew tables</div>
+                    <div class="gp-v">{{ skew_summary.total }}</div>
                 </div>
             </div>
         </div>
 
         <div class="col-md-3">
-            <div class="card shadow-sm h-100">
+            <div class="card gp-stat shadow-sm h-100">
                 <div class="card-body">
-                    <div class="text-muted small">Max skew</div>
-                    <h3 class="mb-0 text-danger">{{ skew_summary.max_skew }}</h3>
+                    <div class="gp-k">Max skew</div>
+                    <div class="gp-v gp-accent">{{ skew_summary.max_skew }}</div>
                 </div>
             </div>
         </div>
 
         <div class="col-md-3">
-            <div class="card shadow-sm h-100">
+            <div class="card gp-stat shadow-sm h-100">
                 <div class="card-body">
-                    <div class="text-muted small">Avg skew</div>
-                    <h3 class="mb-0 text-primary">{{ skew_summary.avg_skew }}</h3>
+                    <div class="gp-k">Avg skew</div>
+                    <div class="gp-v">{{ skew_summary.avg_skew }}</div>
                 </div>
             </div>
         </div>
 
         <div class="col-md-3">
-            <div class="card shadow-sm h-100">
+            <div class="card gp-stat shadow-sm h-100">
                 <div class="card-body">
-                    <div class="text-muted small">Last skew job</div>
+                    <div class="gp-k">Last skew job</div>
 
                     {% if latest_skew_job %}
-                        <h5 class="mb-0">
-                            #{{ latest_skew_job.id }} {{ latest_skew_job.status }}
-                        </h5>
+                        <div class="gp-v" style="font-size: 22px;">#{{ latest_skew_job.id }}</div>
+                        <span class="badge bg-secondary mt-1">{{ latest_skew_job.status }}</span>
                     {% else %}
-                        <h5 class="mb-0 text-muted">No job</h5>
+                        <div class="gp-v" style="font-size: 22px; color: var(--text-muted);">No job</div>
                     {% endif %}
                 </div>
             </div>
