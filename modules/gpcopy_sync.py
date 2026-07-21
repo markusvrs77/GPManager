@@ -9,6 +9,8 @@ from psycopg2.extras import RealDictCursor
 import sqlite3
 from datetime import datetime
 
+import config
+
 from job_manager import (
     get_job,
     get_job_items,
@@ -662,16 +664,8 @@ def preview_gpcopy_sync(data):
 
 
 def gpmanager_sqlite_path():
-    db_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "instance",
-        "gp_reorganize_center.sqlite3"
-    )
-
-    if not os.path.exists(db_path):
-        db_path = os.path.join("instance", "gp_reorganize_center.sqlite3")
-
-    return db_path
+    # Единый источник пути к БД (config.SQLITE_DB_PATH), подменяемый в тестах.
+    return config.SQLITE_DB_PATH
 
 
 def gpmanager_sqlite_conn():

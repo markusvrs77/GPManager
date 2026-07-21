@@ -3,7 +3,7 @@ import threading
 from datetime import datetime
 import os
 import sqlite3
-from db import sqlite_cursor
+from db import sqlite_cursor, get_sqlite_connection
 
 
 STOP_FLAGS = {}
@@ -12,22 +12,11 @@ RUNNING_THREADS = {}
 def get_job_manager_db_connection():
     """
     SQLite connection для job_manager.
-    Используем стандартный путь instance/gp_reorganize_center.sqlite3.
+    Единый источник пути к БД — db.get_sqlite_connection() (config.SQLITE_DB_PATH),
+    чтобы тесты могли подменить путь на временный файл.
     """
 
-    db_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "instance",
-        "gp_reorganize_center.sqlite3"
-    )
-
-    if not os.path.exists(db_path):
-        db_path = os.path.join("instance", "gp_reorganize_center.sqlite3")
-
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-
-    return conn
+    return get_sqlite_connection()
 
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

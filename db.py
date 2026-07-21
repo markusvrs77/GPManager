@@ -1,11 +1,12 @@
 import sqlite3
 from contextlib import contextmanager
 
-from config import SQLITE_DB_PATH
+import config
 
 
 def get_sqlite_connection():
-    conn = sqlite3.connect(SQLITE_DB_PATH)
+    # Resolve config.SQLITE_DB_PATH at call time so tests can redirect it.
+    conn = sqlite3.connect(config.SQLITE_DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -252,23 +253,10 @@ def get_connection_by_id(connection_id):
     Не зависит от list_connections().
     """
 
-    import sqlite3
-    import os
-
     connection_id = int(connection_id)
 
-    db_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "instance",
-        "gp_reorganize_center.sqlite3"
-    )
-
-    if not os.path.exists(db_path):
-        # Если app.py запускается из корня проекта, пробуем второй вариант
-        db_path = os.path.join("instance", "gp_reorganize_center.sqlite3")
-
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    # Единый источник пути к БД (config.SQLITE_DB_PATH), чтобы тесты могли его подменить.
+    conn = get_sqlite_connection()
 
     try:
         cur = conn.cursor()
