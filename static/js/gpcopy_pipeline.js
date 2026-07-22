@@ -1630,6 +1630,17 @@
 
     var RUN_TYPES = "gpcopy,gpcopy_date,gpcopy_increment,gpcopy_partition_diff,gpcopy_sync";
 
+    function progressRing(pct) {
+        var r = 19;
+        var c = 2 * Math.PI * r;
+        var filled = (c * pct / 100).toFixed(1);
+        return '<div class="gpp-ring"><svg viewBox="0 0 46 46">' +
+            '<circle class="bg" cx="23" cy="23" r="' + r + '"></circle>' +
+            '<circle class="fg" cx="23" cy="23" r="' + r +
+            '" stroke-dasharray="' + filled + " " + c.toFixed(1) + '"></circle>' +
+            '</svg><span class="pct">' + pct + "%</span></div>";
+    }
+
     function renderActiveJobs(jobs) {
         var box = $("gppActiveJobs");
         if (!box) { return; }
@@ -1641,22 +1652,49 @@
 
         if (!active.length) { box.innerHTML = ""; return; }
 
-        box.innerHTML = active.map(function (j) {
-            var pct = Math.max(0, Math.min(100, Math.round(j.progress_percent || 0)));
-            var label = RUN_LABELS[j.job_type] || j.job_type;
-            var stopping = j.status === "stopping";
-            return '<div class="gpp-active"><span class="gpp-dot b"></span>' +
-                "<span>#" + j.id + " · " + esc(label) + " · " +
-                fmtN(j.done_items) + "/" + fmtN(j.total_items) +
-                (j.failed_items ? ' · <span style="color: var(--crit);">fail ' +
-                    fmtN(j.failed_items) + "</span>" : "") + "</span>" +
-                '<div class="gpp-bar"><i style="width: ' + pct + '%;"></i></div>' +
-                "<span>" + pct + "%</span>" +
-                '<button class="gpp-btn sm stop" data-stop="' + j.id + '"' +
-                (stopping ? " disabled" : "") + ">" +
-                (stopping ? "останавливаю…" : "⏹ Стоп") + "</button></div>";
-        }).join("");
+        // подтягиваем items, чтобы показать, что именно сейчас копируется
+        Promise.all(active.map(function (j) {
+            return api("/api/jobs/" + j.id + "/status")
+                .catch(function () { return null; });
+        })).then(function (details) {
+            box.innerHTML = active.map(function (j, i) {
+                var pct = Math.max(0, Math.min(100, Math.round(j.progress_percent || 0)));
+                var label = RUN_LABELS[j.job_type] || j.job_type;
+                var stopping = j.status === "stopping";
 
+                var what = "";
+                var items = (details[i] && details[i].ok && details[i].items) || [];
+                var current = items.find(function (it) {
+                    return it.status === "running";
+                });
+                if (!current) {
+                    current = items.find(function (it) {
+                        return it.status === "pending" || it.status === "queued";
+                    });
+                }
+                if (current) {
+                    what = (current.schema_name || "") + "." + (current.table_name || "");
+                } else if (items.length) {
+                    what = items[0].schema_name + "." + items[0].table_name +
+                        (items.length > 1 ? " +" + fmtN(items.length - 1) : "");
+                }
+
+                return '<div class="gpp-active">' + progressRing(pct) +
+                    "<span>#" + j.id + " · " + esc(label) +
+                    (what ? ' <span class="what">' + esc(what) + "</span>" : "") +
+                    " · " + fmtN(j.done_items) + "/" + fmtN(j.total_items) +
+                    (j.failed_items ? ' · <span style="color: var(--crit);">fail ' +
+                        fmtN(j.failed_items) + "</span>" : "") + "</span>" +
+                    '<div class="gpp-bar"><i style="width: ' + pct + '%;"></i></div>' +
+                    '<button class="gpp-btn sm stop" data-stop="' + j.id + '"' +
+                    (stopping ? " disabled" : "") + ">" +
+                    (stopping ? "останавливаю…" : "⏹ Стоп") + "</button></div>";
+            }).join("");
+            wireStopButtons(box);
+        });
+    }
+
+    function wireStopButtons(box) {
         box.querySelectorAll("button[data-stop]").forEach(function (btn) {
             btn.onclick = function () {
                 var id = btn.getAttribute("data-stop");
