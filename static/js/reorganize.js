@@ -1,4 +1,4 @@
-let currentReorganizeJobId = null;
+﻿let currentReorganizeJobId = null;
 let currentReorganizePollTimer = null;
 
 let applyDistributionTimer = null;
@@ -101,15 +101,15 @@ function handleReorganizeActionButton() {
 function setReorganizeButtonRunMode() {
     const button = document.getElementById("reorganizeActionButton");
     button.dataset.mode = "run";
-    button.textContent = "Run Reorganize";
-    button.className = "btn btn-warning w-100 mb-3";
+    button.textContent = "Запустить реорганизацию";
+    button.className = "btn btn-primary w-100 mb-3";
     button.disabled = false;
 }
 
 function setReorganizeButtonStopMode() {
     const button = document.getElementById("reorganizeActionButton");
     button.dataset.mode = "stop";
-    button.textContent = "Stop current job";
+    button.textContent = "Остановить задачу";
     button.className = "btn btn-danger w-100 mb-3";
     button.disabled = false;
 }
@@ -117,7 +117,7 @@ function setReorganizeButtonStopMode() {
 function setReorganizeButtonStoppingMode() {
     const button = document.getElementById("reorganizeActionButton");
     button.dataset.mode = "stopping";
-    button.textContent = "Stopping...";
+    button.textContent = "Останавливаю…";
     button.className = "btn btn-secondary w-100 mb-3";
     button.disabled = true;
 }
