@@ -814,15 +814,23 @@ def probe_unique_column(connection_id, schema, table, limit_candidates=8,
         if not q("SELECT 1 FROM {}.{} LIMIT 1".format(_qident(schema), _qident(table))):
             return {"column": None, "checked": [{"reason": "empty_table"}]}
 
-        # 1) статистика ANALYZE
-        stats = {
-            r[0]: {"n_distinct": float(r[1]), "null_frac": float(r[2])}
-            for r in q(
-                "SELECT attname, n_distinct, null_frac FROM pg_stats "
-                "WHERE schemaname = %s AND tablename = %s",
-                (schema, table),
-            )
-        }
+        # 1) статистика ANALYZE. Для иерархий наследования pg_stats держит
+        # ДВЕ строки на колонку: inherited=t (вся иерархия партиций) и
+        # inherited=f (только сама таблица). У партиционированного родителя
+        # собственная строка пуста/бессмысленна — предпочитаем inherited=t.
+        stats = {}
+        for attname, nd, nf, inherited in q(
+            "SELECT attname, n_distinct, null_frac, inherited FROM pg_stats "
+            "WHERE schemaname = %s AND tablename = %s",
+            (schema, table),
+        ):
+            cur = stats.get(attname)
+            if cur is None or (inherited and not cur.get("inherited")):
+                stats[attname] = {
+                    "n_distinct": float(nd),
+                    "null_frac": float(nf),
+                    "inherited": bool(inherited),
+                }
         # Размер: у партиционированного родителя reltuples = 0, поэтому
         # суммируем по всему дереву pg_inherits (root + все партиции).
         rel = q(
