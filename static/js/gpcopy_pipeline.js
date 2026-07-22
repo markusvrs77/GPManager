@@ -1630,12 +1630,63 @@
 
     var RUN_TYPES = "gpcopy,gpcopy_date,gpcopy_increment,gpcopy_partition_diff,gpcopy_sync";
 
+    function renderActiveJobs(jobs) {
+        var box = $("gppActiveJobs");
+        if (!box) { return; }
+
+        var active = jobs.filter(function (j) {
+            return j.status === "running" || j.status === "queued" ||
+                j.status === "stopping";
+        });
+
+        if (!active.length) { box.innerHTML = ""; return; }
+
+        box.innerHTML = active.map(function (j) {
+            var pct = Math.max(0, Math.min(100, Math.round(j.progress_percent || 0)));
+            var label = RUN_LABELS[j.job_type] || j.job_type;
+            var stopping = j.status === "stopping";
+            return '<div class="gpp-active"><span class="gpp-dot b"></span>' +
+                "<span>#" + j.id + " · " + esc(label) + " · " +
+                fmtN(j.done_items) + "/" + fmtN(j.total_items) +
+                (j.failed_items ? ' · <span style="color: var(--crit);">fail ' +
+                    fmtN(j.failed_items) + "</span>" : "") + "</span>" +
+                '<div class="gpp-bar"><i style="width: ' + pct + '%;"></i></div>' +
+                "<span>" + pct + "%</span>" +
+                '<button class="gpp-btn sm stop" data-stop="' + j.id + '"' +
+                (stopping ? " disabled" : "") + ">" +
+                (stopping ? "останавливаю…" : "⏹ Стоп") + "</button></div>";
+        }).join("");
+
+        box.querySelectorAll("button[data-stop]").forEach(function (btn) {
+            btn.onclick = function () {
+                var id = btn.getAttribute("data-stop");
+                var doStop = function () {
+                    btn.disabled = true;
+                    api("/api/jobs/" + id + "/stop", "POST").then(function (d) {
+                        if (!d.ok) {
+                            btn.disabled = false;
+                            toast(d.message || "Не удалось остановить", "error");
+                            return;
+                        }
+                        toast("Задача #" + id + " останавливается", "info");
+                        loadRuns();
+                    });
+                };
+                if (window.gpConfirm) {
+                    window.gpConfirm("Остановить задачу #" + id + "?")
+                        .then(function (yes) { if (yes) { doStop(); } });
+                } else if (confirm("Остановить задачу #" + id + "?")) { doStop(); }
+            };
+        });
+    }
+
     function loadRuns() {
         api("/api/jobs/recent?types=" + RUN_TYPES + "&limit=8").then(function (d) {
             if (!d.ok) { return; }
             var box = $("gppRuns");
             if (!d.jobs.length) {
                 box.innerHTML = '<div class="gpp-hint">Пока нет запусков.</div>';
+                renderActiveJobs([]);
                 return;
             }
             box.innerHTML = d.jobs.map(function (j) {
@@ -1667,6 +1718,8 @@
                     openRunModal(parseInt(row.getAttribute("data-job"), 10));
                 };
             });
+
+            renderActiveJobs(d.jobs);
 
             var anyActive = d.jobs.some(function (j) {
                 return j.status === "running" || j.status === "queued" ||

@@ -30,6 +30,7 @@ from job_manager import (
     get_latest_job,
     list_recent_jobs,
     mark_interrupted_jobs_on_startup,
+    request_stop_job,
     set_stop_flag,
 )
 from modules.skew_analyzer import (
