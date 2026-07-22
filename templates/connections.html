@@ -1,176 +1,174 @@
 {% extends "base.html" %}
 
-{% block title %}Connections · GPManager{% endblock %}
+{% block title %}Подключения · GPManager{% endblock %}
 
 {% block content %}
 
+<style>
+/* ============ подключения: карточки кластеров ============ */
+.cx { max-width: 1100px; }
 
-{% if error %}
-<div class="alert alert-danger">
-    {{ error }}
-</div>
-{% endif %}
+.cx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px; margin-bottom: 16px; }
 
-<div class="row g-3">
+.cx-card { position: relative; background: var(--surface);
+  border: 1px solid var(--glass-border); border-radius: var(--radius);
+  padding: 18px; overflow: hidden;
+  transition: transform var(--dur-fast), box-shadow var(--dur-fast); }
+.cx-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.cx-card::before { content: ""; position: absolute; inset: 0 0 auto 0;
+  height: 3px; background: var(--accent-grad); opacity: .85; }
 
-    <div class="col-lg-4">
-        <div class="card shadow-sm border-0">
-            <div class="card-header bg-white fw-bold">
-                Add Greenplum Connection
+.cx-top { display: flex; align-items: center; gap: 11px; margin-bottom: 12px; }
+.cx-logo { width: 40px; height: 40px; border-radius: 12px; flex: none;
+  background: var(--accent-grad); color: #fff; font-weight: 800;
+  font-size: 13px; display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--a1) 40%, transparent); }
+.cx-nm { font-weight: 800; font-size: 15.5px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-id { margin-left: auto; color: var(--text-muted); font-size: 11.5px;
+  font-weight: 700; background: var(--surface-2);
+  border: 1px solid var(--hairline); border-radius: var(--radius-pill);
+  padding: 2px 9px; flex: none; }
+
+.cx-meta { display: flex; flex-direction: column; gap: 5px;
+  margin-bottom: 14px; }
+.cx-meta .r { display: flex; align-items: baseline; gap: 8px;
+  font-size: 12.5px; min-width: 0; }
+.cx-meta .k { color: var(--text-muted); font-size: 10.5px; font-weight: 800;
+  letter-spacing: .09em; text-transform: uppercase; width: 52px; flex: none; }
+.cx-meta .v { font-family: var(--font-mono); font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.cx-actions { display: flex; gap: 8px; }
+
+.cx-add { display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 8px; min-height: 170px; cursor: pointer;
+  background: transparent; border: 1.5px dashed var(--hairline);
+  border-radius: var(--radius); color: var(--text-muted); font-weight: 600;
+  font-size: 13.5px; transition: border-color var(--dur-fast),
+    color var(--dur-fast), background var(--dur-fast); }
+.cx-add:hover { border-color: color-mix(in srgb, var(--a1) 55%, transparent);
+  color: var(--a2); background: color-mix(in srgb, var(--a1) 6%, transparent); }
+.cx-add .plus { width: 40px; height: 40px; border-radius: 50%;
+  border: 1.5px dashed currentColor; display: flex; align-items: center;
+  justify-content: center; font-size: 20px; font-weight: 400; }
+
+.cx-form { background: var(--surface); border: 1px solid var(--glass-border);
+  border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+.cx-form h6 { font-size: 11.5px; font-weight: 800; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-muted); margin: 0 0 14px;
+  display: flex; align-items: center; gap: 9px; }
+.cx-form h6::before { content: ""; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent-grad); }
+.cx-form .fgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 14px; margin-bottom: 14px; }
+@media (max-width: 900px) { .cx-form .fgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+</style>
+
+<div class="cx">
+
+    {% if error %}
+    <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+
+    <!-- форма добавления (раскрывается по карточке «+») -->
+    <div class="cx-form" id="cxForm" {% if not error %}hidden{% endif %}>
+        <h6>Новое подключение Greenplum</h6>
+        <form method="post" action="/connections/add">
+            <div class="fgrid">
+                <div>
+                    <label class="form-label">Название</label>
+                    <input type="text" name="name" class="form-control"
+                           placeholder="Greenplum PROD" required>
+                </div>
+                <div>
+                    <label class="form-label">Host</label>
+                    <input type="text" name="host" class="form-control"
+                           placeholder="172.17.138.23" required>
+                </div>
+                <div>
+                    <label class="form-label">Port</label>
+                    <input type="number" name="port" class="form-control"
+                           value="5432" required>
+                </div>
+                <div>
+                    <label class="form-label">База данных</label>
+                    <input type="text" name="database_name" class="form-control"
+                           placeholder="adb" required>
+                </div>
+                <div>
+                    <label class="form-label">Пользователь</label>
+                    <input type="text" name="username" class="form-control"
+                           placeholder="gpadmin" required>
+                </div>
+                <div>
+                    <label class="form-label">Пароль</label>
+                    <input type="password" name="password" class="form-control"
+                           placeholder="••••••••">
+                </div>
             </div>
+            <button type="submit" class="btn btn-primary">Сохранить подключение</button>
+            <button type="button" class="btn btn-outline-primary"
+                    onclick="document.getElementById('cxForm').hidden = true;">
+                Отмена
+            </button>
+        </form>
+    </div>
 
-            <div class="card-body">
-                <form method="post" action="/connections/add">
-
-                    <div class="mb-3">
-                        <label class="form-label">Connection name</label>
-                        <input
-                            type="text"
-                            name="name"
-                            class="form-control"
-                            placeholder="Greenplum PROD"
-                            required
-                        >
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">Host</label>
-                        <input
-                            type="text"
-                            name="host"
-                            class="form-control"
-                            placeholder="172.17.138.23"
-                            required
-                        >
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">Port</label>
-                        <input
-                            type="number"
-                            name="port"
-                            class="form-control"
-                            value="5432"
-                            required
-                        >
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">Database</label>
-                        <input
-                            type="text"
-                            name="database_name"
-                            class="form-control"
-                            placeholder="adb"
-                            required
-                        >
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">Username</label>
-                        <input
-                            type="text"
-                            name="username"
-                            class="form-control"
-                            placeholder="gpadmin"
-                            required
-                        >
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">Password</label>
-                        <input
-                            type="password"
-                            name="password"
-                            class="form-control"
-                            placeholder="password"
-                        >
-                    </div>
-
-                    <button type="submit" class="btn btn-primary">
-                        Save connection
+    <!-- карточки кластеров -->
+    <div class="cx-grid">
+        {% for c in connections %}
+        <div class="cx-card">
+            <div class="cx-top">
+                <span class="cx-logo">GP</span>
+                <span class="cx-nm">{{ c.name }}</span>
+                <span class="cx-id">#{{ c.id }}</span>
+            </div>
+            <div class="cx-meta">
+                <div class="r"><span class="k">Host</span>
+                    <span class="v">{{ c.host }}:{{ c.port }}</span></div>
+                <div class="r"><span class="k">База</span>
+                    <span class="v">{{ c.database_name }}</span></div>
+                <div class="r"><span class="k">Логин</span>
+                    <span class="v">{{ c.username }} · {{ c.password_masked }}</span></div>
+            </div>
+            <div class="cx-actions">
+                <button class="btn btn-sm btn-outline-primary"
+                        onclick="testConnection({{ c.id }})">
+                    Проверить
+                </button>
+                <form method="post" action="/connections/delete/{{ c.id }}"
+                      style="display: inline;"
+                      data-gp-confirm="Удалить подключение «{{ c.name }}»? Действие необратимо.">
+                    <button class="btn btn-sm btn-outline-danger" type="submit">
+                        Удалить
                     </button>
-
                 </form>
             </div>
         </div>
+        {% endfor %}
+
+        <button type="button" class="cx-add" id="cxAddBtn">
+            <span class="plus">+</span>
+            Новое подключение
+        </button>
     </div>
 
-    <div class="col-lg-8">
-        <div class="card shadow-sm border-0">
-            <div class="card-header bg-white fw-bold">
-                Saved connections
-            </div>
-
-            <div class="card-body">
-
-                {% if connections %}
-                <div class="table-responsive">
-                    <table class="table table-sm align-middle">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Name</th>
-                                <th>Host</th>
-                                <th>Port</th>
-                                <th>Database</th>
-                                <th>User</th>
-                                <th>Password</th>
-                                <th style="width: 220px;">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for c in connections %}
-                            <tr>
-                                <td>{{ c.id }}</td>
-                                <td>{{ c.name }}</td>
-                                <td>{{ c.host }}</td>
-                                <td>{{ c.port }}</td>
-                                <td>{{ c.database_name }}</td>
-                                <td>{{ c.username }}</td>
-                                <td>{{ c.password_masked }}</td>
-                                <td>
-                                    <button
-                                        class="btn btn-sm btn-success"
-                                        onclick="testConnection({{ c.id }})"
-                                    >
-                                        Test
-                                    </button>
-
-                                    <form
-                                        method="post"
-                                        action="/connections/delete/{{ c.id }}"
-                                        style="display:inline"
-                                        data-gp-confirm="Удалить подключение «{{ c.name }}»? Действие необратимо."
-                                    >
-                                        <button class="btn btn-sm btn-danger" type="submit">
-                                            Delete
-                                        </button>
-                                    </form>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-
-                {% else %}
-                <div class="alert alert-info">
-                    Пока нет сохранённых подключений.
-                </div>
-                {% endif %}
-
-                <div id="testResult" class="gp-test-result mt-3" hidden></div>
-
-            </div>
-        </div>
-    </div>
+    <div id="testResult" class="gp-test-result mt-3" hidden></div>
 
 </div>
 
 <script>
 (function () {
     "use strict";
+
+    document.getElementById("cxAddBtn").addEventListener("click", function () {
+        var f = document.getElementById("cxForm");
+        f.hidden = false;
+        f.querySelector("input[name='name']").focus();
+        if (window.gpMotion) { window.gpMotion.enter(f, { y: 8, dur: 220 }); }
+    });
 
     var box = document.getElementById("testResult");
 
@@ -213,7 +211,7 @@
     }
 
     window.testConnection = async function (connectionId) {
-        render("wait", "Testing connection…");
+        render("wait", "Проверяю подключение…");
 
         try {
             var response = await fetch("/api/connections/" + encodeURIComponent(connectionId) + "/test", {
@@ -222,12 +220,12 @@
             var data = await response.json();
 
             if (data.ok) {
-                render("ok", data.message || "Connection successful", null, data.info || null);
+                render("ok", data.message || "Подключение работает", null, data.info || null);
             } else {
-                render("err", "Connection failed", data.message || "Unknown error");
+                render("err", "Подключение не удалось", data.message || "Unknown error");
             }
         } catch (e) {
-            render("err", "Request error", e && e.message ? e.message : String(e));
+            render("err", "Ошибка запроса", e && e.message ? e.message : String(e));
         }
     };
 })();
