@@ -1064,15 +1064,18 @@
         var found = 0, checked = 0;
 
         $("gppSyncCompute").disabled = true;
-        var op = opStart("Вычисляю уникальные колонки", null);
+
+        // Отмена срабатывает сразу: обрываем текущий запрос и возвращаем UI,
+        // не дожидаясь ответа сервера.
+        var op = opStart("Вычисляю уникальные колонки", function () {
+            if (op._ac) { try { op._ac.abort(); } catch (e) { /* ok */ } }
+            $("gppSyncCompute").disabled = false;
+            hint.innerHTML = "Вычисление отменено (проверено " + fmtN(checked) + ").";
+            renderKeyList();
+        });
 
         function next(i) {
-            if (op.cancelled) {
-                $("gppSyncCompute").disabled = false;
-                hint.innerHTML = "Вычисление отменено (проверено " + fmtN(checked) + ").";
-                renderKeyList();
-                return;
-            }
+            if (op.cancelled) { return; }
             if (i >= todo.length) {
                 opEnd(op);
                 $("gppSyncCompute").disabled = false;
@@ -1097,9 +1100,12 @@
                 " (" + (i + 1) + "/" + todo.length + ")…";
             opProgress(op, Math.round(i * 100 / todo.length),
                 t.schema + "." + t.table + " (" + (i + 1) + "/" + todo.length + ")");
+            var ac = new AbortController();
+            op._ac = ac;
             api("/api/catalog/compute-unique", "POST", {
                 connection_id: srcId(), schema: t.schema, table: t.table,
-            }).then(function (d) {
+            }, ac.signal).then(function (d) {
+                if (op.cancelled) { return; }
                 checked += 1;
                 if (d.ok && d.column) {
                     state.syncKeys[t.schema + "." + t.table] =
@@ -1107,7 +1113,11 @@
                     found += 1;
                 }
                 next(i + 1);
-            }).catch(function () { checked += 1; next(i + 1); });
+            }).catch(function () {
+                if (op.cancelled) { return; }
+                checked += 1;
+                next(i + 1);
+            });
         }
         next(0);
     }

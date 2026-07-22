@@ -667,11 +667,16 @@ def _qident(name):
     return '"' + str(name).replace('"', '""') + '"'
 
 
-def probe_unique_column(connection_id, schema, table, limit_candidates=5):
+def probe_unique_column(connection_id, schema, table, limit_candidates=5,
+                        statement_timeout_ms=120000):
     """
     Вычисление уникальной колонки по данным (когда нет ни PK, ни индексов):
     кандидаты по эвристике, для каждого count(*) == count(col) ==
     count(distinct col). Останавливается на первом уникальном.
+
+    statement_timeout_ms ограничивает каждый пробный запрос на кластере —
+    гигантская таблица не повиснет навсегда; кандидат с таймаутом
+    помечается timeout=True и пропускается.
     """
     columns = fetch_columns_with_types(connection_id, schema, table)
     candidates = choose_candidate_columns(columns, limit=limit_candidates)
@@ -685,16 +690,27 @@ def probe_unique_column(connection_id, schema, table, limit_candidates=5):
     checked = []
 
     try:
-        for candidate in candidates:
+        if statement_timeout_ms:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT count(*), count({c}), count(DISTINCT {c}) FROM {s}.{t}".format(
-                        c=_qident(candidate),
-                        s=_qident(schema),
-                        t=_qident(table),
+                cur.execute("SET statement_timeout = {}".format(
+                    int(statement_timeout_ms)))
+
+        for candidate in candidates:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT count(*), count({c}), count(DISTINCT {c}) FROM {s}.{t}".format(
+                            c=_qident(candidate),
+                            s=_qident(schema),
+                            t=_qident(table),
+                        )
                     )
-                )
-                total, non_null, distinct = cur.fetchone()
+                    total, non_null, distinct = cur.fetchone()
+            except Exception:
+                # statement_timeout или другая ошибка — честно пропускаем кандидата
+                conn.rollback()
+                checked.append({"column": candidate, "timeout": True, "unique": False})
+                continue
 
             is_unique = bool(total) and total == non_null == distinct
             checked.append({
