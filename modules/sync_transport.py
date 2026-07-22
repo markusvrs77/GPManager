@@ -86,6 +86,76 @@ def qident(name):
     return '"' + str(name).replace('"', '""') + '"'
 
 
+# ------------------------------------------------------------------
+# DDL: авто-создание таблицы на приёмнике по структуре источника
+# ------------------------------------------------------------------
+
+def table_exists(conn, schema, table):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT 1
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = %s AND c.relname = %s
+        LIMIT 1
+        """,
+        (schema, table),
+    )
+    return cur.fetchone() is not None
+
+
+def fetch_table_columns(conn, schema, table):
+    """Колонки таблицы с типами в каноническом виде (format_type)."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT a.attname,
+               pg_catalog.format_type(a.atttypid, a.atttypmod) AS coltype
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = %s AND c.relname = %s
+          AND a.attnum > 0 AND NOT a.attisdropped
+        ORDER BY a.attnum
+        """,
+        (schema, table),
+    )
+    return [{"name": r[0], "type": r[1]} for r in cur.fetchall()]
+
+
+def build_create_table_sql(schema, table, columns, distributed_randomly=False):
+    """Чистый генератор CREATE TABLE — тестируется без БД."""
+    if not columns:
+        raise ValueError("Нет колонок для создания таблицы %s.%s" % (schema, table))
+
+    cols = ",\n    ".join(
+        qident(c["name"]) + " " + c["type"] for c in columns
+    )
+    sql = "CREATE TABLE %s.%s (\n    %s\n)" % (qident(schema), qident(table), cols)
+    if distributed_randomly:
+        sql += "\nDISTRIBUTED RANDOMLY"
+    return sql
+
+
+def ensure_dest_table(src_conn, dst_conn, schema, table, dest_is_greenplum):
+    """
+    Если таблицы нет на приёмнике — создаёт её по структуре источника.
+    Возвращает True, если таблица была создана.
+    """
+    if table_exists(dst_conn, schema, table):
+        return False
+
+    columns = fetch_table_columns(src_conn, schema, table)
+    cur = dst_conn.cursor()
+    cur.execute("CREATE SCHEMA IF NOT EXISTS %s" % qident(schema))
+    cur.execute(build_create_table_sql(
+        schema, table, columns, distributed_randomly=dest_is_greenplum
+    ))
+    dst_conn.commit()
+    return True
+
+
 def copy_table_pipe(src_conn, dst_conn, src_schema, src_table,
                     dst_schema, dst_table, truncate=False):
     """
@@ -179,6 +249,8 @@ def run_copy_pipe_job(job_id):
         if not truncate and not append:
             truncate = True  # безопасный дефолт полного переноса
 
+        dest_is_gp = normalize_db_type(dst_cfg.get("db_type")) == "greenplum"
+
         src_conn = open_psycopg2_connection_by_cfg(src_cfg)
         dst_conn = open_psycopg2_connection_by_cfg(dst_cfg)
 
@@ -198,6 +270,11 @@ def run_copy_pipe_job(job_id):
             refresh_job_progress(job_id)
 
             try:
+                ensure_dest_table(
+                    src_conn, dst_conn,
+                    item["schema_name"], item["table_name"],
+                    dest_is_greenplum=dest_is_gp,
+                )
                 copy_table_pipe(
                     src_conn, dst_conn,
                     item["schema_name"], item["table_name"],

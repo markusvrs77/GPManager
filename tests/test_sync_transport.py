@@ -3,7 +3,12 @@
 
 import pytest
 
-from modules.sync_transport import normalize_db_type, pick_transport, qident
+from modules.sync_transport import (
+    build_create_table_sql,
+    normalize_db_type,
+    pick_transport,
+    qident,
+)
 
 
 def test_normalize_db_type():
@@ -34,3 +39,21 @@ def test_pick_transport_unsupported():
 def test_qident_escapes_quotes():
     assert qident("plain") == '"plain"'
     assert qident('we"ird') == '"we""ird"'
+
+
+def test_build_create_table_sql():
+    cols = [
+        {"name": "id", "type": "bigint"},
+        {"name": "name", "type": "character varying(100)"},
+    ]
+    sql = build_create_table_sql("dwh", "orders", cols)
+    assert '"dwh"."orders"' in sql
+    assert '"id" bigint' in sql
+    assert '"name" character varying(100)' in sql
+    assert "DISTRIBUTED" not in sql
+
+    gp_sql = build_create_table_sql("dwh", "orders", cols, distributed_randomly=True)
+    assert gp_sql.endswith("DISTRIBUTED RANDOMLY")
+
+    with pytest.raises(ValueError):
+        build_create_table_sql("dwh", "empty", [])
