@@ -52,6 +52,7 @@
         partChecked: {},           // "schema.partition" -> true (грузить)
         partView: "all",           // all | diff | same
         partLimit: 300,            // строк отрендерено (дорендер при прокрутке)
+        openRun: null,             // id запуска с раскрытой шторкой деталей
         sets: [],
         expandedSchema: null,      // раскрытая схема в модалке
         schemaTables: {},          // schema -> [{table,kind,partitions,parent}] (кэш)
@@ -1760,6 +1761,10 @@
         }
     }
 
+    function isActiveStatus(s) {
+        return s === "running" || s === "queued" || s === "stopping";
+    }
+
     function loadRuns() {
         api("/api/jobs/recent?types=" + RUN_TYPES + "&limit=8").then(function (d) {
             if (!d.ok) { return; }
@@ -1768,42 +1773,100 @@
                 box.innerHTML = '<div class="gpp-hint">Пока нет запусков.</div>';
                 return;
             }
-            box.innerHTML = d.jobs.map(function (j) {
-                var running = j.status === "running" || j.status === "queued" ||
-                    j.status === "stopping";
-                var failed = j.status === "failed" || j.status === "error" ||
-                    j.status === "cancelled";
-                var dot = running ? "b" : (failed ? "r" : (j.status === "done" ? "g" : "i"));
-                var pct = Math.max(0, Math.min(100, Math.round(j.progress_percent || 0)));
-                if (j.status === "done") { pct = 100; }
-                var barCls = j.status === "done" ? "done" : (failed ? "fail" : "");
-                var label = RUN_LABELS[j.job_type] || j.job_type;
-                var statusTxt = running ? (pct + "%") : esc(j.status);
-                var meta = esc(j.started_at || "");
-                if (failed && j.error_message) {
-                    meta += " · " + esc(String(j.error_message).slice(0, 60));
+
+            // детали нужны активным (текущая таблица) и раскрытой шторке
+            var need = d.jobs.filter(function (j) {
+                return isActiveStatus(j.status) || j.id === state.openRun;
+            });
+
+            Promise.all(need.map(function (j) {
+                return api("/api/jobs/" + j.id + "/status")
+                    .catch(function () { return null; });
+            })).then(function (sts) {
+                var stById = {};
+                need.forEach(function (j, i) {
+                    if (sts[i] && sts[i].ok) { stById[j.id] = sts[i]; }
+                });
+                renderRuns(box, d.jobs, stById);
+
+                var anyActive = d.jobs.some(function (j) {
+                    return isActiveStatus(j.status);
+                });
+                clearTimeout(loadRuns._t);
+                loadRuns._t = setTimeout(loadRuns, anyActive ? 5000 : 20000);
+            });
+        });
+    }
+
+    function renderRuns(box, jobs, stById) {
+        box.innerHTML = jobs.map(function (j) {
+            var running = isActiveStatus(j.status);
+            var failed = j.status === "failed" || j.status === "error" ||
+                j.status === "cancelled" || j.status === "interrupted";
+            var dot = running ? "b" : (failed ? "r" : (j.status === "done" ? "g" : "i"));
+            var pct = Math.max(0, Math.min(100, Math.round(j.progress_percent || 0)));
+            if (j.status === "done") { pct = 100; }
+            var barCls = j.status === "done" ? "done" : (failed ? "fail" : "");
+            var label = RUN_LABELS[j.job_type] || j.job_type;
+            var open = state.openRun === j.id;
+
+            // что сейчас копируется
+            var what = "";
+            var st = stById[j.id];
+            if (running && st && st.items) {
+                var cur = st.items.find(function (it) { return it.status === "running"; });
+                if (cur) {
+                    what = (cur.schema_name || "") + "." + (cur.table_name || "");
                 }
-                return '<div class="run" data-job="' + j.id +
-                    '" title="Подробности запуска"><span class="gpp-dot ' + dot + '"></span>' +
-                    "<span>#" + j.id + " · " + esc(label) + " · " +
-                    fmtN(j.total_items) + " объектов</span>" +
-                    '<div class="gpp-bar"><i class="' + barCls + '" style="width: ' + pct +
-                    '%;"></i></div><span>' + statusTxt + "</span>" +
-                    '<span class="meta">' + meta + "</span></div>";
-            }).join("");
+            }
 
-            box.querySelectorAll(".run[data-job]").forEach(function (row) {
-                row.onclick = function () {
-                    openRunModal(parseInt(row.getAttribute("data-job"), 10));
+            var statusTxt = running ? (pct + "%") : esc(j.status);
+            var meta = esc(j.started_at || "");
+            if (failed && j.error_message) {
+                meta += " · " + esc(String(j.error_message).slice(0, 60));
+            }
+
+            return '<div class="run" data-job="' + j.id + '" title="Подробности">' +
+                '<span class="chev">' + (open ? "▾" : "▸") + "</span>" +
+                '<span class="gpp-dot ' + dot + '"></span>' +
+                "<span>#" + j.id + " · " + esc(label) +
+                (what ? ' <span class="what">' + esc(what) + "</span>" : "") +
+                " · " + fmtN(j.done_items) + "/" + fmtN(j.total_items) + "</span>" +
+                '<div class="gpp-bar"><i class="' + barCls + '" style="width: ' + pct +
+                '%;"></i></div><span>' + statusTxt + "</span>" +
+                '<span class="meta">' + meta + "</span></div>" +
+                (open ? drawerHtml(j, st) : "");
+        }).join("");
+
+        box.querySelectorAll(".run[data-job]").forEach(function (row) {
+            row.onclick = function () {
+                var id = parseInt(row.getAttribute("data-job"), 10);
+                state.openRun = state.openRun === id ? null : id;
+                loadRuns();
+            };
+        });
+
+        box.querySelectorAll("button[data-run-stop]").forEach(function (btn) {
+            btn.onclick = function (ev) {
+                ev.stopPropagation();
+                var id = btn.getAttribute("data-run-stop");
+                var doStop = function () {
+                    btn.disabled = true;
+                    api("/api/jobs/" + id + "/stop", "POST").then(function (r) {
+                        if (!r.ok) {
+                            btn.disabled = false;
+                            toast(r.message || "Не удалось остановить", "error");
+                            return;
+                        }
+                        toast("Задача #" + id + " останавливается", "info");
+                        loadRuns();
+                    });
                 };
-            });
-
-            var anyActive = d.jobs.some(function (j) {
-                return j.status === "running" || j.status === "queued" ||
-                    j.status === "stopping";
-            });
-            clearTimeout(loadRuns._t);
-            loadRuns._t = setTimeout(loadRuns, anyActive ? 5000 : 20000);
+                if (window.gpConfirm) {
+                    window.gpConfirm("Остановить задачу #" + id + "?")
+                        .then(function (yes) { if (yes) { doStop(); } });
+                } else if (confirm("Остановить задачу #" + id + "?")) { doStop(); }
+            };
         });
     }
 
@@ -1824,103 +1887,60 @@
         return '<span class="gpp-key-badge ' + b[0] + '">' + esc(b[1]) + "</span>";
     }
 
-    function openRunModal(jobId) {
-        $("gppRunTitle").textContent = "Запуск #" + jobId;
-        $("gppRunBody").innerHTML = '<div class="gpp-hint">Загружаю…</div>';
-        $("gppRunModal").classList.add("show");
+    function drawerHtml(j, st) {
+        var s = (st && st.summary) || {};
+        var items = ((st && st.items) || []).slice();
 
-        api("/api/jobs/" + jobId + "/status").then(function (d) {
-            if (!d.ok) {
-                $("gppRunBody").innerHTML =
-                    '<div class="gpp-hint bad">' + esc(d.message) + "</div>";
-                return;
-            }
-            var j = d.job;
-            var s = d.summary || {};
-            var label = RUN_LABELS[j.job_type] || j.job_type;
+        var html = '<div class="meta-line">' + runBadge(j.status) + " " +
+            esc(j.started_at || "") +
+            (j.finished_at ? " → " + esc(j.finished_at) : "") +
+            " · объектов: " + fmtN(s.total || j.total_items) +
+            (s.done ? ' · <span class="good">done: ' + fmtN(s.done) + "</span>" : "") +
+            (s.failed ? ' · <span style="color: var(--crit);">failed: ' +
+                fmtN(s.failed) + "</span>" : "") +
+            (s.skipped ? " · skipped: " + fmtN(s.skipped) : "") +
+            "</div>";
 
-            $("gppRunTitle").innerHTML = "Запуск #" + j.id +
-                ' <span style="color: var(--text-muted); font-weight: 400;">· ' +
-                esc(label) + "</span> " + runBadge(j.status);
+        if (isActiveStatus(j.status)) {
+            html += '<div style="margin: 6px 0 10px;">' +
+                '<button class="gpp-btn sm stop" data-run-stop="' + j.id + '"' +
+                (j.status === "stopping" ? " disabled" : "") + ">" +
+                (j.status === "stopping" ? "останавливаю…" : "⏹ Остановить") +
+                "</button></div>";
+        }
 
-            var html = '<div class="meta-line">' +
-                esc(j.started_at || "") +
-                (j.finished_at ? " → " + esc(j.finished_at) : "") +
-                " · объектов: " + fmtN(s.total || j.total_items) +
-                (s.done ? ' · <span class="good">done: ' + fmtN(s.done) + "</span>" : "") +
-                (s.failed ? ' · <span class="bad" style="color: var(--crit);">failed: ' +
-                    fmtN(s.failed) + "</span>" : "") +
-                (s.skipped ? " · skipped: " + fmtN(s.skipped) : "") +
-                "</div>";
+        if (j.error_message) {
+            html += '<div class="gpp-err"><pre>' + esc(j.error_message) + "</pre></div>";
+        }
 
-            var isActive = j.status === "running" || j.status === "queued" ||
-                j.status === "stopping";
-            if (isActive) {
-                html += '<div style="margin: 6px 0 10px;">' +
-                    '<button class="gpp-btn sm stop" id="gppRunStop"' +
-                    (j.status === "stopping" ? " disabled" : "") + ">" +
-                    (j.status === "stopping" ? "останавливаю…" : "⏹ Остановить") +
-                    "</button></div>";
-            }
-
-            if (j.error_message) {
-                html += '<div class="gpp-err"><pre>' +
-                    esc(j.error_message) + "</pre></div>";
-            }
-
-            var items = d.items || [];
-            // проблемные — наверх
+        if (items.length) {
+            // порядок: сейчас копируется -> упавшие -> в очереди -> готовые
+            var order = { running: 0, failed: 1, pending: 2, queued: 2, done: 3, skipped: 4 };
             items.sort(function (a, b) {
-                var af = a.status === "failed" ? 0 : 1;
-                var bf = b.status === "failed" ? 0 : 1;
-                return af - bf;
+                var ao = order[a.status] !== undefined ? order[a.status] : 2;
+                var bo = order[b.status] !== undefined ? order[b.status] : 2;
+                return ao - bo;
             });
 
-            if (items.length) {
-                html += '<div class="gpp-key-list" style="max-height: 280px;">' +
-                    items.slice(0, 300).map(function (it) {
-                        var name = (it.schema_name || "") + "." + (it.table_name || "");
-                        var msg = it.message || it.error_message || "";
-                        return '<div class="gpp-key-row"><span>' + esc(name) +
-                            (msg ? ' <span class="cols">· ' +
-                                esc(String(msg).slice(0, 200)) + "</span>" : "") +
-                            "</span>" + runBadge(it.status) + "</div>";
-                    }).join("") +
-                    (items.length > 300
-                        ? '<div class="gpp-hint">…и ещё ' +
-                          fmtN(items.length - 300) + "</div>"
-                        : "") +
-                    "</div>";
-            }
+            html += '<div class="gpp-key-list" style="max-height: 260px;">' +
+                items.slice(0, 300).map(function (it) {
+                    var name = (it.schema_name || "") + "." + (it.table_name || "");
+                    var msg = it.message || it.error_message || "";
+                    return '<div class="gpp-key-row"><span>' + esc(name) +
+                        (msg ? ' <span class="cols">· ' +
+                            esc(String(msg).slice(0, 200)) + "</span>" : "") +
+                        "</span>" + runBadge(it.status) + "</div>";
+                }).join("") +
+                (items.length > 300
+                    ? '<div class="gpp-hint">…и ещё ' + fmtN(items.length - 300) + "</div>"
+                    : "") +
+                "</div>";
+        } else if (!j.error_message) {
+            html += '<div class="gpp-hint">Деталей по таблицам нет.</div>';
+        }
 
-            $("gppRunBody").innerHTML = html;
-
-            var stopBtn = $("gppRunStop");
-            if (stopBtn) {
-                stopBtn.onclick = function () {
-                    var doStop = function () {
-                        stopBtn.disabled = true;
-                        api("/api/jobs/" + j.id + "/stop", "POST").then(function (r) {
-                            if (!r.ok) {
-                                stopBtn.disabled = false;
-                                toast(r.message || "Не удалось остановить", "error");
-                                return;
-                            }
-                            toast("Задача #" + j.id + " останавливается", "info");
-                            loadRuns();
-                            openRunModal(j.id);
-                        });
-                    };
-                    if (window.gpConfirm) {
-                        window.gpConfirm("Остановить задачу #" + j.id + "?")
-                            .then(function (yes) { if (yes) { doStop(); } });
-                    } else if (confirm("Остановить задачу #" + j.id + "?")) { doStop(); }
-                };
-            }
-        }).catch(function (e) {
-            $("gppRunBody").innerHTML =
-                '<div class="gpp-hint bad">' + esc(String(e)) + "</div>";
-        });
+        return '<div class="gpp-run-drawer" onclick="event.stopPropagation()">' +
+            html + "</div>";
     }
 
     /* ---------------- fancy connection dropdown ---------------- */
@@ -2100,17 +2120,6 @@
         document.addEventListener("keydown", function (ev) {
             if (ev.key === "Escape") {
                 $("gppSelModal").classList.remove("show");
-                $("gppRunModal").classList.remove("show");
-            }
-        });
-
-        // модалка деталей запуска
-        $("gppRunClose").onclick = function () {
-            $("gppRunModal").classList.remove("show");
-        };
-        $("gppRunModal").addEventListener("click", function (ev) {
-            if (ev.target === $("gppRunModal")) {
-                $("gppRunModal").classList.remove("show");
             }
         });
 
