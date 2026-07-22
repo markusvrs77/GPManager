@@ -90,21 +90,23 @@ except ImportError:
 
 from db import get_connection_by_id
 
+# Алиасы: ниже в этом файле есть свои get_conn_*(connection_id) по id,
+# а gpcopy-версии принимают cfg-словарь — имена не должны пересекаться.
 try:
     from modules.gpcopy import (
         build_gpcopy_command,
-        get_conn_host,
-        get_conn_port,
-        get_conn_user,
-        get_conn_dbname,
+        get_conn_host as cfg_conn_host,
+        get_conn_port as cfg_conn_port,
+        get_conn_user as cfg_conn_user,
+        get_conn_dbname as cfg_conn_dbname,
     )
 except ImportError:
     from gpcopy import (
         build_gpcopy_command,
-        get_conn_host,
-        get_conn_port,
-        get_conn_user,
-        get_conn_dbname,
+        get_conn_host as cfg_conn_host,
+        get_conn_port as cfg_conn_port,
+        get_conn_user as cfg_conn_user,
+        get_conn_dbname as cfg_conn_dbname,
     )
 
 
@@ -124,15 +126,15 @@ def copy_source_to_stage_via_gpcopy(source_connection_id, dest_connection_id,
 
     cmd = build_gpcopy_command(
         gpcopy_path=gpcopy_path or DEFAULT_GPCOPY_PATH,
-        source_host=get_conn_host(source_cfg),
-        dest_host=get_conn_host(dest_cfg),
-        source_port=get_conn_port(source_cfg),
-        dest_port=get_conn_port(dest_cfg),
-        dest_user=get_conn_user(dest_cfg),
+        source_host=cfg_conn_host(source_cfg),
+        dest_host=cfg_conn_host(dest_cfg),
+        source_port=cfg_conn_port(source_cfg),
+        dest_port=cfg_conn_port(dest_cfg),
+        dest_user=cfg_conn_user(dest_cfg),
         include_tables="{}.{}.{}".format(
-            get_conn_dbname(source_cfg), source_schema, source_table),
+            cfg_conn_dbname(source_cfg), source_schema, source_table),
         dest_tables="{}.{}.{}".format(
-            get_conn_dbname(dest_cfg), stage_schema, stage_table),
+            cfg_conn_dbname(dest_cfg), stage_schema, stage_table),
         jobs=int(jobs or 4),
         truncate=True,  # staging создан пустым, --truncate идемпотентен
     )
