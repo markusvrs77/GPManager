@@ -1704,7 +1704,25 @@ def api_gpcopy_sync_apply():
 
 @app.route("/health")
 def health_page():
-    return render_template("health.html")
+    return render_template(
+        "health.html",
+        connections=list_connections(),
+    )
+
+
+@app.route("/api/health/overview")
+def api_health_overview():
+    connection_id = request.args.get("connection_id", type=int)
+    force = request.args.get("force") == "1"
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    try:
+        from modules.db_health import collect_health
+        return jsonify(collect_health(connection_id, force=force))
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
 
 
 # ============================================================

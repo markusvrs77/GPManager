@@ -3,22 +3,333 @@
 {% block title %}Здоровье БД · GPManager{% endblock %}
 
 {% block content %}
-<div style="max-width: 720px;">
-    <div class="card">
-        <div class="card-body">
-            <h5 class="mb-2">♥ Здоровье БД — скоро</h5>
-            <p class="text-muted mb-3">
-                Аналитика кластера без нагрузки: все метрики — из системных
-                каталогов и статистических вьюх, без сканов пользовательских таблиц.
-            </p>
-            <ul class="text-muted mb-0" style="line-height: 2;">
-                <li>Давность ANALYZE / VACUUM и мёртвые строки (pg_stat_all_tables)</li>
-                <li>Долгие запросы и idle in transaction (pg_stat_activity)</li>
-                <li>Цепочки блокировок (pg_locks)</li>
-                <li>Spill-файлы и IO-проблемы (gp_toolkit.gp_workfile_usage_per_query)</li>
-                <li>Состояние сегментов (gp_segment_configuration)</li>
-            </ul>
+
+<style>
+/* ============ здоровье БД (zero-load аналитика) ============ */
+.gph { max-width: 1240px; }
+
+.gph-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 16px; }
+.gph-bar select { min-width: 280px; }
+.gph-note { color: var(--text-muted); font-size: 12.5px; }
+
+.gph-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .gph-grid { grid-template-columns: minmax(0, 1fr); } }
+.gph-span2 { grid-column: 1 / -1; }
+
+.gph-panel { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 16px 18px; min-width: 0; }
+.gph-panel h6 { font-weight: 700; font-size: 14px; margin: 0 0 12px;
+  display: flex; align-items: center; gap: 10px; }
+
+.gph-v { font-size: 10.5px; font-weight: 800; letter-spacing: .05em;
+  border-radius: var(--radius-pill); padding: 2px 9px; text-transform: uppercase;
+  flex: none; }
+.gph-v.ok { background: rgba(34, 197, 94, .14); color: var(--ok);
+  border: 1px solid rgba(34, 197, 94, .4); }
+.gph-v.warn { background: rgba(245, 158, 11, .14); color: var(--warn);
+  border: 1px solid rgba(245, 158, 11, .4); }
+.gph-v.crit { background: rgba(239, 68, 68, .14); color: var(--crit);
+  border: 1px solid rgba(239, 68, 68, .4); }
+.gph-v.err { background: var(--surface-2); color: var(--text-muted);
+  border: 1px solid var(--hairline); }
+
+.gph-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.gph-chip { font-size: 12px; border-radius: var(--radius-pill); padding: 3px 10px;
+  background: var(--surface-2); border: 1px solid var(--hairline); }
+.gph-chip b { font-variant-numeric: tabular-nums; }
+
+.gph-row { display: flex; align-items: baseline; gap: 10px; padding: 7px 2px;
+  border-bottom: 1px solid var(--hairline); font-size: 13px; min-width: 0; }
+.gph-row:last-child { border-bottom: none; }
+.gph-row .nm { font-family: var(--font-mono); font-size: 12px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+.gph-row .mut { color: var(--text-muted); font-size: 12px; white-space: nowrap;
+  flex: none; }
+
+.gph-q { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gph-empty { color: var(--text-muted); font-size: 13px; padding: 4px 0; }
+.gph-err-txt { color: var(--crit); font-size: 12.5px; }
+</style>
+
+<div class="gph">
+
+    <div class="gph-bar">
+        <select id="gphConn" class="form-select form-select-sm">
+            <option value="">Выбери кластер</option>
+            {% for c in connections %}
+                <option value="{{ c.id }}">
+                    {{ c.name }} / {{ c.host }} / {{ c.database_name or c.database or c.dbname or '' }}
+                </option>
+            {% endfor %}
+        </select>
+        <button class="btn btn-sm btn-outline-primary" id="gphRefresh" type="button">
+            Обновить
+        </button>
+        <span class="gph-note" id="gphNote">
+            Метрики читаются только из системных каталогов — без нагрузки на данные.
+        </span>
+    </div>
+
+    <div id="gphBody">
+        <div class="gph-panel">
+            <div class="gph-empty">
+                Выбери кластер — покажу сегменты, давность ANALYZE/VACUUM,
+                долгие запросы, блокировки и spill-файлы.
+            </div>
         </div>
     </div>
+
 </div>
+
+<script>
+(function () {
+    "use strict";
+
+    function esc(s) {
+        return String(s == null ? "" : s)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    function fmtBytes(b) {
+        b = Number(b || 0);
+        if (b >= 1024 * 1024 * 1024) { return (b / (1024 * 1024 * 1024)).toFixed(1) + " GB"; }
+        if (b >= 1024 * 1024) { return (b / (1024 * 1024)).toFixed(1) + " MB"; }
+        if (b >= 1024) { return (b / 1024).toFixed(0) + " KB"; }
+        return b + " B";
+    }
+
+    function fmtSec(s) {
+        s = Number(s || 0);
+        if (s >= 3600) { return Math.floor(s / 3600) + " ч " + Math.floor(s % 3600 / 60) + " м"; }
+        if (s >= 60) { return Math.floor(s / 60) + " м " + (s % 60) + " с"; }
+        return s + " с";
+    }
+
+    function fmtN(n) {
+        return Number(n || 0).toLocaleString("ru-RU");
+    }
+
+    function vbadge(v) {
+        var t = { ok: "ok", warn: "внимание", crit: "проблема", err: "нет данных" };
+        return "<span class='gph-v " + esc(v) + "'>" + (t[v] || esc(v)) + "</span>";
+    }
+
+    function ageTxt(days) {
+        if (days == null) { return "никогда"; }
+        if (days <= 0) { return "сегодня"; }
+        return days + " дн. назад";
+    }
+
+    function panel(title, verdict, inner, span2) {
+        return "<div class='gph-panel" + (span2 ? " gph-span2" : "") + "'>" +
+            "<h6>" + title + " " + vbadge(verdict) + "</h6>" + inner + "</div>";
+    }
+
+    function sectionOr(s) {
+        return s || { error: "нет данных" };
+    }
+
+    function chip(label, val) {
+        return "<span class='gph-chip'>" + esc(label) + ": <b>" +
+            (val == null ? "—" : val) + "</b></span>";
+    }
+
+    function errTxt(s) {
+        return "<div class='gph-err-txt'>" + esc(s.error) + "</div>";
+    }
+
+    // ---------- рендер секций ----------
+
+    function rSegments(s) {
+        if (s.error) { return panel("Сегменты", "err", errTxt(s)); }
+        var inner = "<div class='gph-chips'>" +
+            chip("Всего", s.total) + chip("Primary", s.primaries) +
+            chip("Down", s.down) + chip("Не в своей роли", s.unbalanced) + "</div>";
+        if (s.down_list && s.down_list.length) {
+            inner += s.down_list.map(function (d) {
+                return "<div class='gph-row'><span class='nm'>seg" + esc(d.content) +
+                    " · " + esc(d.hostname) + ":" + esc(d.port) +
+                    "</span><span class='mut' style='color: var(--crit);'>down</span></div>";
+            }).join("");
+        } else {
+            inner += "<div class='gph-empty'>Все сегменты в строю.</div>";
+        }
+        return panel("Сегменты", s.verdict, inner);
+    }
+
+    function rDatabase(s) {
+        if (s.error) { return panel("База данных", "err", errTxt(s)); }
+        var inner = "<div class='gph-chips'>" +
+            chip("Backends", fmtN(s.numbackends)) +
+            chip("Cache hit", (s.cache_hit_pct || 0) + "%") +
+            chip("Commit", fmtN(s.xact_commit)) +
+            chip("Rollback", fmtN(s.xact_rollback)) +
+            chip("Temp files", fmtN(s.temp_files)) +
+            chip("Temp bytes", fmtBytes(s.temp_bytes)) +
+            chip("Deadlocks", fmtN(s.deadlocks)) + "</div>";
+        return panel("База данных", (s.deadlocks || 0) > 0 ? "warn" : "ok", inner);
+    }
+
+    function rActivity(s) {
+        if (s.error) { return panel("Активность", "err", errTxt(s)); }
+        var st = s.states || {};
+        var inner = "<div class='gph-chips'>" + Object.keys(st).map(function (k) {
+            return chip(k, st[k]);
+        }).join("") + "</div>";
+
+        var lq = s.long_queries || [];
+        var it = s.idle_in_transaction || [];
+        if (lq.length) {
+            inner += "<div class='gph-note' style='margin: 6px 0 2px;'>Долгие запросы (&gt; 5 мин):</div>";
+            inner += lq.map(function (q) {
+                return "<div class='gph-row'><div style='min-width: 0; flex: 1;'>" +
+                    "<div class='nm'>pid " + esc(q.pid) + " · " + esc(q.usename) + "</div>" +
+                    "<div class='gph-q' title='" + esc(q.query) + "'>" + esc(q.query) + "</div>" +
+                    "</div><span class='mut' style='color: var(--warn);'>" +
+                    fmtSec(q.query_sec) + "</span></div>";
+            }).join("");
+        }
+        if (it.length) {
+            inner += "<div class='gph-note' style='margin: 6px 0 2px;'>Idle in transaction:</div>";
+            inner += it.map(function (q) {
+                return "<div class='gph-row'><div style='min-width: 0; flex: 1;'>" +
+                    "<div class='nm'>pid " + esc(q.pid) + " · " + esc(q.usename) + "</div>" +
+                    "<div class='gph-q' title='" + esc(q.query) + "'>" + esc(q.query) + "</div>" +
+                    "</div><span class='mut' style='color: var(--warn);'>" +
+                    fmtSec(q.xact_sec) + "</span></div>";
+            }).join("");
+        }
+        if (!lq.length && !it.length) {
+            inner += "<div class='gph-empty'>Долгих запросов и зависших транзакций нет.</div>";
+        }
+        return panel("Активность", s.verdict, inner);
+    }
+
+    function rLocks(s) {
+        if (s.error) { return panel("Блокировки", "err", errTxt(s)); }
+        var rows = s.chains || [];
+        var inner;
+        if (!rows.length) {
+            inner = "<div class='gph-empty'>Ожидающих блокировок нет.</div>";
+        } else {
+            inner = rows.map(function (r) {
+                return "<div class='gph-row'><div style='min-width: 0; flex: 1;'>" +
+                    "<div class='nm'>ждёт pid " + esc(r.waiting_pid) + " (" +
+                    esc(r.waiting_user) + ") ← блокирует pid " + esc(r.blocking_pid) +
+                    " (" + esc(r.blocking_user) + ")</div>" +
+                    "<div class='gph-q' title='" + esc(r.waiting_query) + "'>" +
+                    esc(r.waiting_query) + "</div></div>" +
+                    "<span class='mut' style='color: var(--crit);'>" +
+                    fmtSec(r.waiting_sec) + "</span></div>";
+            }).join("");
+        }
+        return panel("Блокировки", s.verdict, inner);
+    }
+
+    function rVacuum(s) {
+        if (s.error) { return panel("ANALYZE / VACUUM", "err", errTxt(s), true); }
+        var inner = "<div class='gph-chips'>" +
+            chip("Таблиц со строками", fmtN(s.total_tables)) +
+            chip("Никогда не analyze", fmtN(s.never_analyzed)) +
+            chip("Никогда не vacuum", fmtN(s.never_vacuumed)) + "</div>" +
+            "<div class='row g-3'><div class='col-lg-6'>" +
+            "<div class='gph-note' style='margin-bottom: 4px;'>Давно без ANALYZE:</div>";
+
+        var stale = s.stale_analyze || [];
+        inner += stale.length ? stale.map(function (r) {
+            return "<div class='gph-row'><span class='nm'>" + esc(r.schemaname) +
+                "." + esc(r.relname) + "</span><span class='mut'>" +
+                fmtN(r.n_live_tup) + " строк</span><span class='mut' style='color: var(--" +
+                (r.verdict === "crit" ? "crit" : r.verdict === "warn" ? "warn" : "ok") +
+                ");'>" + ageTxt(r.analyze_age_days) + "</span></div>";
+        }).join("") : "<div class='gph-empty'>Все таблицы проанализированы недавно.</div>";
+
+        inner += "</div><div class='col-lg-6'>" +
+            "<div class='gph-note' style='margin-bottom: 4px;'>Больше всего мёртвых строк:</div>";
+
+        var dead = s.top_dead || [];
+        inner += dead.length ? dead.map(function (r) {
+            return "<div class='gph-row'><span class='nm'>" + esc(r.schemaname) +
+                "." + esc(r.relname) + "</span><span class='mut'>" +
+                fmtN(r.n_dead_tup) + " dead (" + Math.round((r.ratio || 0) * 100) +
+                "%)</span><span class='mut'>vacuum: " + ageTxt(r.vacuum_age_days) +
+                "</span></div>";
+        }).join("") : "<div class='gph-empty'>Мёртвых строк не накоплено.</div>";
+
+        inner += "</div></div>";
+        return panel("ANALYZE / VACUUM", s.verdict, inner, true);
+    }
+
+    function rSpill(s) {
+        if (s.error) { return panel("Spill-файлы (workfiles)", "err", errTxt(s), true); }
+        var rows = s.queries || [];
+        var inner;
+        if (!rows.length) {
+            inner = "<div class='gph-empty'>Активных spill-файлов нет — памяти хватает.</div>";
+        } else {
+            inner = rows.map(function (r) {
+                return "<div class='gph-row'><div style='min-width: 0; flex: 1;'>" +
+                    "<div class='nm'>sess " + esc(r.sess_id) + " · " + esc(r.usename) +
+                    "</div><div class='gph-q' title='" + esc(r.query) + "'>" +
+                    esc(r.query) + "</div></div>" +
+                    "<span class='mut' style='color: var(--warn);'>" +
+                    fmtBytes(r.total_bytes) + " · " + fmtN(r.files) + " файлов</span></div>";
+            }).join("");
+        }
+        return panel("Spill-файлы (workfiles)", s.verdict, inner, true);
+    }
+
+    // ---------- загрузка ----------
+
+    var loading = false;
+
+    function load(force) {
+        var connId = document.getElementById("gphConn").value;
+        var body = document.getElementById("gphBody");
+        var note = document.getElementById("gphNote");
+        if (!connId || loading) { return; }
+
+        loading = true;
+        note.textContent = "Собираю метрики из системных каталогов…";
+
+        fetch("/api/health/overview?connection_id=" + encodeURIComponent(connId) +
+              (force ? "&force=1" : ""))
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                loading = false;
+                if (!d.ok) {
+                    body.innerHTML = "<div class='gph-panel'><div class='gph-err-txt'>" +
+                        esc(d.message || "Ошибка") + "</div></div>";
+                    note.textContent = "";
+                    return;
+                }
+                var s = d.sections || {};
+                body.innerHTML = "<div class='gph-grid'>" +
+                    rSegments(sectionOr(s.segments)) +
+                    rDatabase(sectionOr(s.database)) +
+                    rActivity(sectionOr(s.activity)) +
+                    rLocks(sectionOr(s.locks)) +
+                    rVacuum(sectionOr(s.vacuum_analyze)) +
+                    rSpill(sectionOr(s.spill)) +
+                    "</div>";
+                note.textContent = "Снимок: " + (d.generated_at || "") +
+                    (d.cached ? " (из кэша, TTL " + d.ttl_seconds + " с)" : "");
+            })
+            .catch(function (e) {
+                loading = false;
+                body.innerHTML = "<div class='gph-panel'><div class='gph-err-txt'>" +
+                    esc(e.message || e) + "</div></div>";
+                note.textContent = "";
+            });
+    }
+
+    document.getElementById("gphConn").addEventListener("change", function () { load(false); });
+    document.getElementById("gphRefresh").addEventListener("click", function () { load(true); });
+})();
+</script>
+
 {% endblock %}
