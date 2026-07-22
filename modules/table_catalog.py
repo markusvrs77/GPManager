@@ -713,7 +713,64 @@ def filter_candidates_by_stats(candidates, stats, reltuples):
     return sure + unknown, rejected
 
 
-def probe_unique_column(connection_id, schema, table, limit_candidates=5,
+_KEY_UNFIT_TYPES = ("boolean", "bool")
+
+
+def rank_candidates_by_stats(columns_with_types, stats, reltuples, limit=8):
+    """
+    Кандидаты в уникальные колонки по СТАТИСТИКЕ всех колонок таблицы,
+    а не по именам (уникальной может быть name, first_tab — что угодно).
+
+    columns_with_types: [(name, data_type)];
+    stats: {column: {"n_distinct", "null_frac"}} из pg_stats.
+
+    Порядок: stats-уникальные (n_distinct ближе к -1) первыми, затем
+    колонки без статистики (тай-брейк — старая имя/тип-эвристика).
+    Отсев: NULL, низкая кардинальность, непригодный тип (bool).
+    Возвращает (keep, rejected: [{"column","reason"}]).
+    """
+    sure = []      # (uniqueness_score, name)
+    unknown = []   # (heuristic_score, name)
+    rejected = []
+
+    for name, data_type in columns_with_types:
+        if (data_type or "").lower() in _KEY_UNFIT_TYPES:
+            rejected.append({"column": name, "reason": "type"})
+            continue
+
+        st = stats.get(name)
+
+        if st is None:
+            unknown.append((_candidate_score(name, data_type) or 0, name))
+            continue
+
+        if (st.get("null_frac") or 0) > 0:
+            rejected.append({"column": name, "reason": "nulls"})
+            continue
+
+        nd = st.get("n_distinct") or 0
+
+        if nd < 0:
+            uniq = -nd  # доля уникальных значений (1.0 = все уникальны)
+        elif reltuples and reltuples > 0:
+            uniq = float(nd) / float(reltuples)
+        else:
+            unknown.append((_candidate_score(name, data_type) or 0, name))
+            continue
+
+        if uniq >= 0.99:
+            sure.append((uniq, name))
+        else:
+            rejected.append({"column": name, "reason": "low_cardinality"})
+
+    sure.sort(key=lambda x: -x[0])
+    unknown.sort(key=lambda x: -x[0])
+
+    keep = [n for _s, n in sure] + [n for _s, n in unknown]
+    return keep[:int(limit)], rejected
+
+
+def probe_unique_column(connection_id, schema, table, limit_candidates=8,
                         statement_timeout_ms=120000, sample_rows=500000,
                         full_scan_max_rows=20000000):
     """
@@ -732,10 +789,9 @@ def probe_unique_column(connection_id, schema, table, limit_candidates=5,
     Возвращает {"column", "confidence": "confirmed"|"sample"|None, "checked"}.
     """
     columns = fetch_columns_with_types(connection_id, schema, table)
-    candidates = choose_candidate_columns(columns, limit=limit_candidates)
 
-    if not candidates:
-        return {"column": None, "checked": []}
+    if not columns:
+        return {"column": None, "confidence": None, "checked": []}
 
     cfg = get_connection_by_id(int(connection_id))
     conn = open_psycopg2_connection_by_cfg(cfg)
@@ -786,7 +842,10 @@ def probe_unique_column(connection_id, schema, table, limit_candidates=5,
         )
         reltuples = int(rel[0][0]) if rel else 0
 
-        keep, rejected = filter_candidates_by_stats(candidates, stats, reltuples)
+        # кандидаты — по статистике ВСЕХ колонок, имя роли не играет
+        keep, rejected = rank_candidates_by_stats(
+            columns, stats, reltuples, limit=limit_candidates,
+        )
         for r in rejected:
             checked.append({"column": r["column"], "unique": False,
                             "stage": "stats", "reason": r["reason"]})
