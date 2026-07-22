@@ -117,8 +117,19 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 .gpp-msg.ok { color: var(--ok); }
 
 .gpp-runs .run { display: flex; align-items: center; gap: 14px; padding: 10px 4px;
-  border-bottom: 1px solid var(--hairline); font-size: 13.5px; }
+  border-bottom: 1px solid var(--hairline); font-size: 13.5px; cursor: pointer;
+  border-radius: 8px; }
+.gpp-runs .run:hover { background: var(--row-hover); }
 .gpp-runs .run:last-child { border-bottom: none; }
+
+/* модалка деталей запуска */
+.gpp-run-modal { width: min(680px, 94vw); }
+.gpp-run-modal .meta-line { color: var(--text-muted); font-size: 12.5px; margin-bottom: 10px; }
+.gpp-err { background: var(--surface-2); border: 1px solid var(--crit);
+  border-radius: var(--radius-sm); padding: 10px 12px; margin: 10px 0;
+  max-height: 220px; overflow: auto; }
+.gpp-err pre { margin: 0; font-family: var(--font-mono); font-size: 12px;
+  color: var(--text); white-space: pre-wrap; word-break: break-word; }
 .gpp-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .gpp-dot.g { background: var(--ok); }
 .gpp-dot.b { background: var(--a1); box-shadow: 0 0 8px var(--a1); }
@@ -464,6 +475,18 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
         <div class="foot">
             <button class="gpp-btn ghost" id="gppSelCancel">Закрыть</button>
             <button class="gpp-btn primary" id="gppSelDone">Готово</button>
+        </div>
+    </div>
+</div>
+<!-- RUN DETAILS MODAL -->
+<div class="gpp-overlay" id="gppRunModal" role="dialog" aria-modal="true"
+     aria-labelledby="gppRunTitle">
+    <div class="gpp-modal gpp-run-modal">
+        <h4 id="gppRunTitle"></h4>
+        <div id="gppRunBody"></div>
+        <div class="foot">
+            <span></span>
+            <button class="gpp-btn ghost" id="gppRunClose">Закрыть</button>
         </div>
     </div>
 </div>

@@ -1653,7 +1653,8 @@
                 if (failed && j.error_message) {
                     meta += " · " + esc(String(j.error_message).slice(0, 60));
                 }
-                return '<div class="run"><span class="gpp-dot ' + dot + '"></span>' +
+                return '<div class="run" data-job="' + j.id +
+                    '" title="Подробности запуска"><span class="gpp-dot ' + dot + '"></span>' +
                     "<span>#" + j.id + " · " + esc(label) + " · " +
                     fmtN(j.total_items) + " объектов</span>" +
                     '<div class="gpp-bar"><i class="' + barCls + '" style="width: ' + pct +
@@ -1661,12 +1662,101 @@
                     '<span class="meta">' + meta + "</span></div>";
             }).join("");
 
+            box.querySelectorAll(".run[data-job]").forEach(function (row) {
+                row.onclick = function () {
+                    openRunModal(parseInt(row.getAttribute("data-job"), 10));
+                };
+            });
+
             var anyActive = d.jobs.some(function (j) {
                 return j.status === "running" || j.status === "queued" ||
                     j.status === "stopping";
             });
             clearTimeout(loadRuns._t);
             loadRuns._t = setTimeout(loadRuns, anyActive ? 5000 : 20000);
+        });
+    }
+
+    /* ---------------- run details modal ---------------- */
+
+    var RUN_STATUS_BADGES = {
+        done: ["pk", "done"],
+        running: ["man", "running"],
+        queued: ["man", "queued"],
+        failed: ["none", "failed"],
+        error: ["none", "error"],
+        cancelled: ["none", "cancelled"],
+        skipped: ["comp", "skipped"],
+    };
+
+    function runBadge(status) {
+        var b = RUN_STATUS_BADGES[status] || ["", status];
+        return '<span class="gpp-key-badge ' + b[0] + '">' + esc(b[1]) + "</span>";
+    }
+
+    function openRunModal(jobId) {
+        $("gppRunTitle").textContent = "Запуск #" + jobId;
+        $("gppRunBody").innerHTML = '<div class="gpp-hint">Загружаю…</div>';
+        $("gppRunModal").classList.add("show");
+
+        api("/api/jobs/" + jobId + "/status").then(function (d) {
+            if (!d.ok) {
+                $("gppRunBody").innerHTML =
+                    '<div class="gpp-hint bad">' + esc(d.message) + "</div>";
+                return;
+            }
+            var j = d.job;
+            var s = d.summary || {};
+            var label = RUN_LABELS[j.job_type] || j.job_type;
+
+            $("gppRunTitle").innerHTML = "Запуск #" + j.id +
+                ' <span style="color: var(--text-muted); font-weight: 400;">· ' +
+                esc(label) + "</span> " + runBadge(j.status);
+
+            var html = '<div class="meta-line">' +
+                esc(j.started_at || "") +
+                (j.finished_at ? " → " + esc(j.finished_at) : "") +
+                " · объектов: " + fmtN(s.total || j.total_items) +
+                (s.done ? ' · <span class="good">done: ' + fmtN(s.done) + "</span>" : "") +
+                (s.failed ? ' · <span class="bad" style="color: var(--crit);">failed: ' +
+                    fmtN(s.failed) + "</span>" : "") +
+                (s.skipped ? " · skipped: " + fmtN(s.skipped) : "") +
+                "</div>";
+
+            if (j.error_message) {
+                html += '<div class="gpp-err"><pre>' +
+                    esc(j.error_message) + "</pre></div>";
+            }
+
+            var items = d.items || [];
+            // проблемные — наверх
+            items.sort(function (a, b) {
+                var af = a.status === "failed" ? 0 : 1;
+                var bf = b.status === "failed" ? 0 : 1;
+                return af - bf;
+            });
+
+            if (items.length) {
+                html += '<div class="gpp-key-list" style="max-height: 280px;">' +
+                    items.slice(0, 300).map(function (it) {
+                        var name = (it.schema_name || "") + "." + (it.table_name || "");
+                        var msg = it.message || it.error_message || "";
+                        return '<div class="gpp-key-row"><span>' + esc(name) +
+                            (msg ? ' <span class="cols">· ' +
+                                esc(String(msg).slice(0, 200)) + "</span>" : "") +
+                            "</span>" + runBadge(it.status) + "</div>";
+                    }).join("") +
+                    (items.length > 300
+                        ? '<div class="gpp-hint">…и ещё ' +
+                          fmtN(items.length - 300) + "</div>"
+                        : "") +
+                    "</div>";
+            }
+
+            $("gppRunBody").innerHTML = html;
+        }).catch(function (e) {
+            $("gppRunBody").innerHTML =
+                '<div class="gpp-hint bad">' + esc(String(e)) + "</div>";
         });
     }
 
@@ -1845,7 +1935,20 @@
             }
         });
         document.addEventListener("keydown", function (ev) {
-            if (ev.key === "Escape") { $("gppSelModal").classList.remove("show"); }
+            if (ev.key === "Escape") {
+                $("gppSelModal").classList.remove("show");
+                $("gppRunModal").classList.remove("show");
+            }
+        });
+
+        // модалка деталей запуска
+        $("gppRunClose").onclick = function () {
+            $("gppRunModal").classList.remove("show");
+        };
+        $("gppRunModal").addEventListener("click", function (ev) {
+            if (ev.target === $("gppRunModal")) {
+                $("gppRunModal").classList.remove("show");
+            }
         });
 
         $("gppSelSearch").oninput = function () {
