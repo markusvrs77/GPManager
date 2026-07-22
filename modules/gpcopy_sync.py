@@ -185,8 +185,9 @@ def run_gpcopy_sync_job(job_id):
                     if not table_cfg:
                         raise Exception(f"Config not found for {schema_name}.{table_name}")
 
-                    source_schema, source_table = split_table_name(table_cfg["source"])
-                    target_schema, target_table = split_table_name(table_cfg["target"])
+                    source_full, target_full = resolve_sync_names(table_cfg)
+                    source_schema, source_table = split_table_name(source_full)
+                    target_schema, target_table = split_table_name(target_full)
 
                     key_columns = table_cfg.get("key_columns") or []
                     compare_columns = table_cfg.get("compare_columns") or ["*"]
@@ -472,6 +473,28 @@ def qident(name):
     return '"' + str(name).replace('"', '""') + '"'
 
 
+def resolve_sync_names(cfg):
+    """
+    Имена source/target для sync-конфига таблицы.
+
+    Классический UI шлёт {"source": "s.t", "target": "s.t"}, конвейер и
+    расписания — {"schema": "s", "table": "t"}. Принимаем оба формата;
+    target по умолчанию совпадает с source.
+    """
+    source = cfg.get("source")
+
+    if not source:
+        schema = cfg.get("schema") or cfg.get("schema_name") or cfg.get("source_schema")
+        table = cfg.get("table") or cfg.get("table_name") or cfg.get("source_table")
+
+        if not (schema and table):
+            raise Exception("table config needs 'source' or schema+table: {!r}".format(cfg))
+
+        source = "{}.{}".format(schema, table)
+
+    return source, cfg.get("target") or source
+
+
 def split_table_name(full_name):
     parts = full_name.split(".")
 
@@ -622,8 +645,9 @@ def preview_gpcopy_sync(data):
 
     try:
         for cfg in table_configs:
-            source_schema, source_table = split_table_name(cfg["source"])
-            target_schema, target_table = split_table_name(cfg["target"])
+            source_full, target_full = resolve_sync_names(cfg)
+            source_schema, source_table = split_table_name(source_full)
+            target_schema, target_table = split_table_name(target_full)
 
             key_columns = cfg.get("key_columns") or []
             compare_columns = cfg.get("compare_columns") or ["*"]
@@ -643,8 +667,8 @@ def preview_gpcopy_sync(data):
             # preview без gpcopy: считаем по dblink невозможно без extension.
             # Поэтому preview здесь только валидирует структуру.
             item = {
-                "source": cfg["source"],
-                "target": cfg["target"],
+                "source": source_full,
+                "target": target_full,
                 "key_columns": key_columns,
                 "compare_columns": compare_cols,
                 "delete_missing": delete_missing,
