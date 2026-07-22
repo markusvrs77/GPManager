@@ -70,28 +70,35 @@ def test_filter_candidates_by_stats():
     assert reasons["region_id"] == "low_cardinality"
 
 
-def test_rank_candidates_scans_all_columns_not_names():
-    # уникальная колонка называется first_tab — имя ни на что не намекает
+def test_rank_candidates_rejects_only_on_sample_facts():
+    """
+    n_distinct — ОЦЕНКА (у уникальных колонок на больших таблицах
+    занижается), поэтому по ней только порядок. Жёсткий отсев — лишь по
+    фактам сэмпла ANALYZE: NULL (null_frac>0), дубликат (most_common_vals),
+    непригодный тип.
+    """
     columns = [
-        ("id", "integer"),          # по имени идеальна, но по данным не уникальна
-        ("first_tab", "text"),      # уникальна по статистике
+        ("dti_id", "bigint"),       # уникальна, но n_distinct занижен оценщиком
+        ("first_tab", "text"),      # уникальна и по статистике
+        ("report_date", "date"),    # реально повторяется — есть MCV
         ("is_active", "boolean"),   # bool ключом не бывает
         ("comment", "text"),        # есть NULL
         ("mystery", "text"),        # статистики нет — проверим по данным
     ]
     stats = {
-        "id": {"n_distinct": -0.4, "null_frac": 0.0},
-        "first_tab": {"n_distinct": -1.0, "null_frac": 0.0},
-        "comment": {"n_distinct": -1.0, "null_frac": 0.1},
+        "dti_id": {"n_distinct": 200000.0, "null_frac": 0.0, "has_mcv": False},
+        "first_tab": {"n_distinct": -1.0, "null_frac": 0.0, "has_mcv": False},
+        "report_date": {"n_distinct": 3000.0, "null_frac": 0.0, "has_mcv": True},
+        "comment": {"n_distinct": -1.0, "null_frac": 0.1, "has_mcv": False},
     }
 
     keep, rejected = rank_candidates_by_stats(columns, stats, reltuples=5000000)
 
-    # stats-уникальная first_tab первой, без-статистики mystery после
-    assert keep[0] == "first_tab"
-    assert "mystery" in keep
-    assert "id" not in keep and "is_active" not in keep and "comment" not in keep
+    # заниженная оценка НЕ выбрасывает dti_id — он идёт на проверку данными
+    assert "dti_id" in keep
+    assert keep[0] == "first_tab"          # лучшая оценка — первой
+    assert keep.index("dti_id") < keep.index("mystery")  # без статистики — после
     reasons = {r["column"]: r["reason"] for r in rejected}
-    assert reasons["id"] == "low_cardinality"
+    assert reasons["report_date"] == "duplicates"  # MCV = реальный дубликат в сэмпле
     assert reasons["comment"] == "nulls"
     assert reasons["is_active"] == "type"

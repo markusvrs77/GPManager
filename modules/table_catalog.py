@@ -718,19 +718,25 @@ _KEY_UNFIT_TYPES = ("boolean", "bool")
 
 def rank_candidates_by_stats(columns_with_types, stats, reltuples, limit=8):
     """
-    Кандидаты в уникальные колонки по СТАТИСТИКЕ всех колонок таблицы,
-    а не по именам (уникальной может быть name, first_tab — что угодно).
+    Кандидаты в уникальные колонки по статистике всех колонок таблицы.
 
-    columns_with_types: [(name, data_type)];
-    stats: {column: {"n_distinct", "null_frac"}} из pg_stats.
+    Жёсткий отсев — ТОЛЬКО по фактам, которые ANALYZE реально видел
+    в сэмпле (строки настоящие, значит выводы точные):
+      null_frac > 0 — в сэмпле были NULL;
+      has_mcv       — какое-то значение встретилось в сэмпле дважды+
+                      (most_common_vals непуст) = настоящий дубликат;
+      bool          — непригодный тип.
 
-    Порядок: stats-уникальные (n_distinct ближе к -1) первыми, затем
-    колонки без статистики (тай-брейк — старая имя/тип-эвристика).
-    Отсев: NULL, низкая кардинальность, непригодный тип (bool).
+    n_distinct — лишь ПОРЯДОК проверки: это оценка, и у по-настоящему
+    уникальных колонок на больших таблицах она систематически занижается,
+    поэтому отбрасывать по ней нельзя — только проверять данными раньше
+    или позже. Колонки без статистики идут после (тай-брейк — имя/тип).
+
+    stats: {column: {"n_distinct", "null_frac", "has_mcv"}}.
     Возвращает (keep, rejected: [{"column","reason"}]).
     """
-    sure = []      # (uniqueness_score, name)
-    unknown = []   # (heuristic_score, name)
+    scored = []    # (uniqueness_estimate, name) — есть статистика
+    unknown = []   # (heuristic_score, name) — статистики нет
     rejected = []
 
     for name, data_type in columns_with_types:
@@ -748,6 +754,10 @@ def rank_candidates_by_stats(columns_with_types, stats, reltuples, limit=8):
             rejected.append({"column": name, "reason": "nulls"})
             continue
 
+        if st.get("has_mcv"):
+            rejected.append({"column": name, "reason": "duplicates"})
+            continue
+
         nd = st.get("n_distinct") or 0
 
         if nd < 0:
@@ -758,15 +768,12 @@ def rank_candidates_by_stats(columns_with_types, stats, reltuples, limit=8):
             unknown.append((_candidate_score(name, data_type) or 0, name))
             continue
 
-        if uniq >= 0.99:
-            sure.append((uniq, name))
-        else:
-            rejected.append({"column": name, "reason": "low_cardinality"})
+        scored.append((uniq, name))
 
-    sure.sort(key=lambda x: -x[0])
+    scored.sort(key=lambda x: -x[0])
     unknown.sort(key=lambda x: -x[0])
 
-    keep = [n for _s, n in sure] + [n for _s, n in unknown]
+    keep = [n for _s, n in scored] + [n for _s, n in unknown]
     return keep[:int(limit)], rejected
 
 
@@ -819,8 +826,10 @@ def probe_unique_column(connection_id, schema, table, limit_candidates=8,
         # inherited=f (только сама таблица). У партиционированного родителя
         # собственная строка пуста/бессмысленна — предпочитаем inherited=t.
         stats = {}
-        for attname, nd, nf, inherited in q(
-            "SELECT attname, n_distinct, null_frac, inherited FROM pg_stats "
+        for attname, nd, nf, inherited, has_mcv in q(
+            "SELECT attname, n_distinct, null_frac, inherited, "
+            "       most_common_vals IS NOT NULL AS has_mcv "
+            "FROM pg_stats "
             "WHERE schemaname = %s AND tablename = %s",
             (schema, table),
         ):
@@ -830,6 +839,7 @@ def probe_unique_column(connection_id, schema, table, limit_candidates=8,
                     "n_distinct": float(nd),
                     "null_frac": float(nf),
                     "inherited": bool(inherited),
+                    "has_mcv": bool(has_mcv),
                 }
         # Размер: у партиционированного родителя reltuples = 0, поэтому
         # суммируем по всему дереву pg_inherits (root + все партиции).
