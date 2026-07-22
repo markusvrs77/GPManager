@@ -667,16 +667,66 @@ def _qident(name):
     return '"' + str(name).replace('"', '""') + '"'
 
 
-def probe_unique_column(connection_id, schema, table, limit_candidates=5,
-                        statement_timeout_ms=120000):
+def filter_candidates_by_stats(candidates, stats, reltuples):
     """
-    Вычисление уникальной колонки по данным (когда нет ни PK, ни индексов):
-    кандидаты по эвристике, для каждого count(*) == count(col) ==
-    count(distinct col). Останавливается на первом уникальном.
+    Бесплатный отсев кандидатов по статистике ANALYZE (чистая функция).
 
-    statement_timeout_ms ограничивает каждый пробный запрос на кластере —
-    гигантская таблица не повиснет навсегда; кандидат с таймаутом
-    помечается timeout=True и пропускается.
+    stats: {column: {"n_distinct": float, "null_frac": float}}.
+    Семантика pg_stats.n_distinct: -1 = все значения уникальны,
+    -f (0..1) = доля уникальных, положительное = оценка числа значений.
+
+    Возвращает (keep, rejected): keep — сперва stats-уникальные, затем
+    кандидаты без статистики; rejected — [{"column", "reason"}].
+    """
+    sure = []
+    unknown = []
+    rejected = []
+
+    for col in candidates:
+        st = stats.get(col)
+
+        if st is None:
+            unknown.append(col)
+            continue
+
+        if (st.get("null_frac") or 0) > 0:
+            rejected.append({"column": col, "reason": "nulls"})
+            continue
+
+        nd = st.get("n_distinct") or 0
+
+        if nd < 0:
+            # доля уникальных значений
+            if nd <= -0.99:
+                sure.append(col)
+            else:
+                rejected.append({"column": col, "reason": "low_cardinality"})
+        elif reltuples and reltuples > 0:
+            if nd >= 0.99 * reltuples:
+                sure.append(col)
+            else:
+                rejected.append({"column": col, "reason": "low_cardinality"})
+        else:
+            # сравнивать не с чем — проверим по данным
+            unknown.append(col)
+
+    return sure + unknown, rejected
+
+
+def probe_unique_column(connection_id, schema, table, limit_candidates=5,
+                        statement_timeout_ms=120000, sample_rows=100000):
+    """
+    Лёгкий и точный поиск уникальной колонки (когда нет ни PK, ни индексов):
+
+    1) pg_stats (бесплатно): кандидаты с NULL или низкой кардинальностью
+       отсеиваются без сканов; n_distinct = -1 идёт первым.
+    2) сэмпл (дёшево): дубликат в первых `sample_rows` строках — точный отказ.
+    3) подтверждение (без count(distinct)): NULL-скан с LIMIT 1 и
+       GROUP BY col HAVING count(*)>1 LIMIT 1 — одна агрегация вместо
+       дорогой дедупликации по всему кластеру.
+
+    statement_timeout_ms ограничивает каждый запрос; кандидат с таймаутом
+    помечается и пропускается.
     """
     columns = fetch_columns_with_types(connection_id, schema, table)
     candidates = choose_candidate_columns(columns, limit=limit_candidates)
@@ -689,40 +739,86 @@ def probe_unique_column(connection_id, schema, table, limit_candidates=5,
 
     checked = []
 
+    def q(sql, params=None):
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            try:
+                return cur.fetchall()
+            except Exception:
+                return []
+
     try:
         if statement_timeout_ms:
-            with conn.cursor() as cur:
-                cur.execute("SET statement_timeout = {}".format(
-                    int(statement_timeout_ms)))
+            q("SET statement_timeout = {}".format(int(statement_timeout_ms)))
 
-        for candidate in candidates:
+        # пустая таблица — уникальность не доказать
+        if not q("SELECT 1 FROM {}.{} LIMIT 1".format(_qident(schema), _qident(table))):
+            return {"column": None, "checked": [{"reason": "empty_table"}]}
+
+        # 1) статистика ANALYZE
+        stats = {
+            r[0]: {"n_distinct": float(r[1]), "null_frac": float(r[2])}
+            for r in q(
+                "SELECT attname, n_distinct, null_frac FROM pg_stats "
+                "WHERE schemaname = %s AND tablename = %s",
+                (schema, table),
+            )
+        }
+        rel = q(
+            "SELECT c.reltuples::bigint FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = %s AND c.relname = %s",
+            (schema, table),
+        )
+        reltuples = int(rel[0][0]) if rel else 0
+
+        keep, rejected = filter_candidates_by_stats(candidates, stats, reltuples)
+        for r in rejected:
+            checked.append({"column": r["column"], "unique": False,
+                            "stage": "stats", "reason": r["reason"]})
+
+        fq = "{}.{}".format(_qident(schema), _qident(table))
+
+        for candidate in keep:
+            c = _qident(candidate)
             try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT count(*), count({c}), count(DISTINCT {c}) FROM {s}.{t}".format(
-                            c=_qident(candidate),
-                            s=_qident(schema),
-                            t=_qident(table),
-                        )
-                    )
-                    total, non_null, distinct = cur.fetchone()
-            except Exception:
-                # statement_timeout или другая ошибка — честно пропускаем кандидата
-                conn.rollback()
-                checked.append({"column": candidate, "timeout": True, "unique": False})
-                continue
+                # 2) дешёвый отсев: дубликат в первых sample_rows строках
+                dup = q(
+                    "SELECT c FROM (SELECT {c} AS c FROM {fq} "
+                    "WHERE {c} IS NOT NULL LIMIT {n}) s "
+                    "GROUP BY c HAVING count(*) > 1 LIMIT 1".format(
+                        c=c, fq=fq, n=int(sample_rows)),
+                )
+                if dup:
+                    checked.append({"column": candidate, "unique": False,
+                                    "stage": "sample", "reason": "duplicate"})
+                    continue
 
-            is_unique = bool(total) and total == non_null == distinct
-            checked.append({
-                "column": candidate,
-                "rows": int(total),
-                "nulls": int(total - non_null),
-                "distinct": int(distinct),
-                "unique": is_unique,
-            })
+                # 3) точное подтверждение: NULL и дубликаты по всей таблице
+                if q("SELECT 1 FROM {fq} WHERE {c} IS NULL LIMIT 1".format(
+                        c=c, fq=fq)):
+                    checked.append({"column": candidate, "unique": False,
+                                    "stage": "full", "reason": "nulls"})
+                    continue
 
-            if is_unique:
+                dup = q(
+                    "SELECT {c} FROM {fq} GROUP BY {c} "
+                    "HAVING count(*) > 1 LIMIT 1".format(c=c, fq=fq),
+                )
+                if dup:
+                    checked.append({"column": candidate, "unique": False,
+                                    "stage": "full", "reason": "duplicate"})
+                    continue
+
+                checked.append({"column": candidate, "unique": True,
+                                "stage": "full"})
                 return {"column": candidate, "checked": checked}
+
+            except Exception:
+                conn.rollback()
+                checked.append({"column": candidate, "unique": False,
+                                "timeout": True, "stage": "full"})
+                continue
 
         return {"column": None, "checked": checked}
 

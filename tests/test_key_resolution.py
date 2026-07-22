@@ -2,6 +2,7 @@ from modules.table_catalog import (
     resolve_keys_hierarchy,
     choose_candidate_columns,
     pick_columns_with_fallback,
+    filter_candidates_by_stats,
 )
 
 
@@ -47,3 +48,22 @@ def test_pick_columns_with_fallback_any_date():
     assert resolved[("s", "a")] == {"column": "date_change$", "via": "priority"}
     assert resolved[("s", "b")] == {"column": "dt_load", "via": "fallback_date"}
     assert missing == [("s", "c")]
+
+
+def test_filter_candidates_by_stats():
+    candidates = ["id", "code", "region_id", "note", "fresh_col"]
+    stats = {
+        "id": {"n_distinct": -1.0, "null_frac": 0.0},        # уникальна по статистике
+        "code": {"n_distinct": -1.0, "null_frac": 0.02},      # есть NULL — мимо
+        "region_id": {"n_distinct": 40.0, "null_frac": 0.0},  # 40 значений на 1М строк — мимо
+        "note": {"n_distinct": -0.3, "null_frac": 0.0},       # 30% уникальных — мимо
+        # fresh_col: статистики нет (не ANALYZEd) — оставляем на проверку
+    }
+
+    keep, rejected = filter_candidates_by_stats(candidates, stats, reltuples=1000000)
+
+    assert keep == ["id", "fresh_col"]  # stats-уникальная первой, без статистики — после
+    assert {r["column"] for r in rejected} == {"code", "region_id", "note"}
+    reasons = {r["column"]: r["reason"] for r in rejected}
+    assert reasons["code"] == "nulls"
+    assert reasons["region_id"] == "low_cardinality"
