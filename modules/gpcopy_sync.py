@@ -90,8 +90,68 @@ except ImportError:
 
 from db import get_connection_by_id
 
+try:
+    from modules.gpcopy import (
+        build_gpcopy_command,
+        get_conn_host,
+        get_conn_port,
+        get_conn_user,
+        get_conn_dbname,
+    )
+except ImportError:
+    from gpcopy import (
+        build_gpcopy_command,
+        get_conn_host,
+        get_conn_port,
+        get_conn_user,
+        get_conn_dbname,
+    )
+
 
 DEFAULT_GPCOPY_PATH = "/usr/local/gpdb/greenplum-db/bin/gpcopy"
+
+
+def copy_source_to_stage_via_gpcopy(source_connection_id, dest_connection_id,
+                                    source_schema, source_table,
+                                    stage_schema, stage_table,
+                                    gpcopy_path, jobs):
+    """
+    Перенос source -> staging бинарём gpcopy (segment-to-segment),
+    а не построчной перекачкой через psycopg2.
+    """
+    source_cfg = get_connection_by_id(int(source_connection_id))
+    dest_cfg = get_connection_by_id(int(dest_connection_id))
+
+    cmd = build_gpcopy_command(
+        gpcopy_path=gpcopy_path or DEFAULT_GPCOPY_PATH,
+        source_host=get_conn_host(source_cfg),
+        dest_host=get_conn_host(dest_cfg),
+        source_port=get_conn_port(source_cfg),
+        dest_port=get_conn_port(dest_cfg),
+        dest_user=get_conn_user(dest_cfg),
+        include_tables="{}.{}.{}".format(
+            get_conn_dbname(source_cfg), source_schema, source_table),
+        dest_tables="{}.{}.{}".format(
+            get_conn_dbname(dest_cfg), stage_schema, stage_table),
+        jobs=int(jobs or 4),
+        truncate=True,  # staging создан пустым, --truncate идемпотентен
+    )
+
+    print(f"[gpcopy_sync] gpcopy stage load: {' '.join(cmd)}")
+
+    process = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    stdout_data, stderr_data = process.communicate()
+
+    if process.returncode != 0:
+        raise Exception(
+            "gpcopy stage load failed rc={}: {}".format(
+                process.returncode,
+                (stderr_data or stdout_data or "")[-2000:],
+            )
+        )
 
 
 def run_gpcopy_sync_job(job_id):
@@ -243,20 +303,21 @@ def run_gpcopy_sync_job(job_id):
 
                     target_conn.commit()
 
-                    # 2. Copy PROD -> TEST staging через psycopg2 COPY
+                    # 2. Copy source -> staging бинарём gpcopy
                     print(
-                        f"[gpcopy_sync] copy source to staging via psycopg2: "
+                        f"[gpcopy_sync] copy source to staging via gpcopy: "
                         f"{source_schema}.{source_table} -> {stage_schema}.{stage_table}"
                     )
 
-                    copy_source_to_stage_via_psycopg2(
-                        source_conn=source_conn,
-                        target_conn=target_conn,
+                    copy_source_to_stage_via_gpcopy(
+                        source_connection_id=source_connection_id,
+                        dest_connection_id=dest_connection_id,
                         source_schema=source_schema,
                         source_table=source_table,
                         stage_schema=stage_schema,
                         stage_table=stage_table,
-                        columns=common_cols,
+                        gpcopy_path=gpcopy_path,
+                        jobs=jobs,
                     )
 
 
