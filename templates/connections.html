@@ -83,6 +83,15 @@
                            placeholder="Greenplum PROD" required>
                 </div>
                 <div>
+                    <label class="form-label">Тип СУБД</label>
+                    <select name="db_type" class="form-select">
+                        <option value="greenplum">Greenplum</option>
+                        <option value="postgres">PostgreSQL</option>
+                        <option value="mysql">MySQL (скоро)</option>
+                        <option value="oracle">Oracle (скоро)</option>
+                    </select>
+                </div>
+                <div>
                     <label class="form-label">Host</label>
                     <input type="text" name="host" class="form-control"
                            placeholder="172.17.138.23" required>
@@ -120,10 +129,11 @@
     <div class="cx-grid">
         {% for c in connections %}
         <div class="cx-card">
+            {% set dbt = c.db_type or 'greenplum' %}
             <div class="cx-top">
-                <span class="cx-logo">GP</span>
+                <span class="cx-logo">{{ {'greenplum': 'GP', 'postgres': 'PG', 'mysql': 'MY', 'oracle': 'OR'}[dbt] }}</span>
                 <span class="cx-nm">{{ c.name }}</span>
-                <span class="cx-id">#{{ c.id }}</span>
+                <span class="cx-id">{{ {'greenplum': 'Greenplum', 'postgres': 'PostgreSQL', 'mysql': 'MySQL', 'oracle': 'Oracle'}[dbt] }} · #{{ c.id }}</span>
             </div>
             <div class="cx-meta">
                 <div class="r"><span class="k">Host</span>

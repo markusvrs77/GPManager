@@ -90,6 +90,10 @@ gpm_scheduler.register_runner("gpcopy_increment", run_gpcopy_increment_job)
 gpm_scheduler.register_runner("gpcopy_partition_diff", run_gpcopy_partition_diff_job)
 gpm_scheduler.register_runner("gpcopy_sync", run_gpcopy_sync_job)
 
+from modules.sync_transport import pick_transport, run_copy_pipe_job
+
+gpm_scheduler.register_runner("copy_pipe", run_copy_pipe_job)
+
 
 app = Flask(__name__)
 
@@ -1108,8 +1112,27 @@ def api_gpcopy_start():
             "validate_count": validate_count,
         }
 
+        # выбор транспорта по типам СУБД: gpcopy для GP→GP,
+        # copy_pipe (COPY-стрим) для PG↔PG / PG↔GP
+        from modules.connections import get_connection_by_id as _conn_cfg
+
+        src_cfg = _conn_cfg(source_connection_id) or {}
+        dst_cfg = _conn_cfg(dest_connection_id) or {}
+        transport = pick_transport(
+            src_cfg.get("db_type"), dst_cfg.get("db_type")
+        )
+
+        if transport == "copy_pipe":
+            job_type = "copy_pipe"
+            runner = run_copy_pipe_job
+            action = "COPY"
+        else:
+            job_type = "gpcopy"
+            runner = run_gpcopy_job
+            action = "GPCOPY"
+
         job_id = create_job(
-            job_type="gpcopy",
+            job_type=job_type,
             connection_id=source_connection_id,
             config=config,
         )
@@ -1120,14 +1143,14 @@ def api_gpcopy_start():
                 {
                     "schema_name": item["schema"],
                     "table_name": item["table"],
-                    "action": "GPCOPY",
+                    "action": action,
                 }
                 for item in unique_tables
             ],
         )
 
         threading.Thread(
-            target=run_gpcopy_job,
+            target=runner,
             args=(job_id,),
             daemon=True,
         ).start()
@@ -1135,9 +1158,16 @@ def api_gpcopy_start():
         return jsonify({
             "ok": True,
             "job_id": job_id,
+            "transport": transport,
             "total_items": len(unique_tables),
-            "message": "gpcopy job started",
+            "message": "%s job started" % job_type,
         })
+
+    except ValueError as e:
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+        }), 400
 
     except Exception as e:
         return jsonify({

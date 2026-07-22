@@ -92,6 +92,7 @@
         gpcopy_increment: "инкремент",
         gpcopy_partition_diff: "партиции",
         gpcopy_sync: "sync",
+        copy_pipe: "полное (COPY)",
     };
 
     function srcId() { return parseInt($("gppSrc").value, 10); }
@@ -1693,7 +1694,7 @@
 
     /* ---------------- runs feed ---------------- */
 
-    var RUN_TYPES = "gpcopy,gpcopy_date,gpcopy_increment,gpcopy_partition_diff,gpcopy_sync";
+    var RUN_TYPES = "gpcopy,gpcopy_date,gpcopy_increment,gpcopy_partition_diff,gpcopy_sync,copy_pipe";
 
     function progressRing(pct) {
         var r = 19;

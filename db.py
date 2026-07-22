@@ -267,6 +267,12 @@ def init_db():
         "ALTER TABLE jobs ADD COLUMN stop_requested INTEGER DEFAULT 0"
     )
 
+    ensure_column_exists(
+        "connections",
+        "db_type",
+        "ALTER TABLE connections ADD COLUMN db_type TEXT DEFAULT 'greenplum'"
+    )
+
 
 def get_connection_by_id(connection_id):
     """

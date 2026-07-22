@@ -168,7 +168,8 @@
                 var badge = document.getElementById('gpNavSyncBadge');
                 if (!badge || !d.ok) { return; }
                 var n = (d.jobs || []).filter(function (j) {
-                    return String(j.job_type || '').indexOf('gpcopy') === 0;
+                    var t = String(j.job_type || '');
+                    return t.indexOf('gpcopy') === 0 || t === 'copy_pipe';
                 }).length;
                 badge.textContent = n;
                 badge.style.display = n ? '' : 'none';

@@ -19,6 +19,7 @@ def list_connections():
                     WHEN password IS NULL OR password = '' THEN ''
                     ELSE '********'
                 END AS password_masked,
+                COALESCE(db_type, 'greenplum') AS db_type,
                 created_at,
                 updated_at
             FROM connections
@@ -40,6 +41,7 @@ def get_connection_by_id(connection_id: int):
                 database_name,
                 username,
                 password,
+                COALESCE(db_type, 'greenplum') AS db_type,
                 created_at,
                 updated_at
             FROM connections
@@ -59,6 +61,10 @@ def create_connection(data: dict):
     username = data.get("username", "").strip()
     password = data.get("password", "")
 
+    db_type = str(data.get("db_type") or "greenplum").strip().lower()
+    if db_type not in ("greenplum", "postgres", "mysql", "oracle"):
+        db_type = "greenplum"
+
     if not name:
         raise ValueError("Название подключения обязательно")
     if not host:
@@ -77,9 +83,10 @@ def create_connection(data: dict):
                 port,
                 database_name,
                 username,
-                password
+                password,
+                db_type
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name,
@@ -88,6 +95,7 @@ def create_connection(data: dict):
                 database_name,
                 username,
                 password,
+                db_type,
             ),
         )
         return cur.lastrowid
