@@ -2265,7 +2265,7 @@ def api_gpcopy_partition_diff_preview_bulk():
             changed = sum(1 for r in rows if r["action"] == "copy_changed")
             total_copy += missing + changed
 
-            # детализация только по отстающим — их и выбирают чекбоксами
+            # детализация по ВСЕМ партициям — фильтры (все/разл./совпад.) в UI
             detail = [
                 {
                     "partition": r["partition"],
@@ -2274,7 +2274,7 @@ def api_gpcopy_partition_diff_preview_bulk():
                     "dest": r["dest_count"],
                     "action": r["action"],
                 }
-                for r in rows if r["action"] != "skip"
+                for r in rows
             ]
 
             out.append({
