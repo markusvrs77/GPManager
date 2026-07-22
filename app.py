@@ -1352,11 +1352,20 @@ def api_gpcopy_start_date():
         })
 
     try:
+        # gpcopy требует ровно один из флагов skip-existing/truncate/drop/append.
+        # Для среза по датам дефолт — append (догрузка периода, остальные
+        # данные назначения не трогаем).
+        flag_chosen = any(
+            bool(data.get(k))
+            for k in ("append", "truncate", "drop", "skip_existing")
+        )
+
         job_id = create_job(
             job_type="gpcopy",
             connection_id=int(source_connection_id),
             config={
-                "mode": "date",
+                # run_gpcopy_job включает JSON-срезы только на mode="date_filter"
+                "mode": "date_filter",
                 "source_connection_id": int(source_connection_id),
                 "dest_connection_id": int(dest_connection_id),
                 "destination_connection_id": int(dest_connection_id),
@@ -1369,7 +1378,7 @@ def api_gpcopy_start_date():
                 "jobs": data.get("jobs") or 4,
                 "on_segment_threshold": data.get("on_segment_threshold", -1),
 
-                "append": bool(data.get("append")),
+                "append": bool(data.get("append")) or not flag_chosen,
                 "truncate": bool(data.get("truncate")),
                 "drop": bool(data.get("drop")),
                 "skip_existing": bool(data.get("skip_existing")),

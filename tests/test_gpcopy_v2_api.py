@@ -1,3 +1,29 @@
+def test_date_include_json_uses_ready_table_configs(monkeypatch):
+    """Пер-табличные SQL-срезы из table_configs идут в json как есть."""
+    import modules.gpcopy as g
+
+    monkeypatch.setattr(
+        g, "get_connection_by_id",
+        lambda cid: {"id": cid, "database": "adb", "host": "h"},
+    )
+
+    items = g.build_gpcopy_date_include_json_preview({
+        "source_connection_id": 1,
+        "dest_connection_id": 2,
+        "table_configs": [{
+            "schema": "s", "table": "t",
+            "source": "s.t", "dest": "s.t",
+            "sql": "SELECT * FROM s.t WHERE d >= '2026-01-01' AND d < '2026-02-01'",
+        }],
+    })
+
+    assert items == [{
+        "source": "adb.s.t",
+        "dest": "adb.s.t",
+        "sql": "SELECT * FROM s.t WHERE d >= '2026-01-01' AND d < '2026-02-01'",
+    }]
+
+
 def test_increment_preview_requires_tables(client):
     res = client.post("/api/gpcopy/increment/preview", json={
         "source_connection_id": 1, "dest_connection_id": 1, "tables": [],

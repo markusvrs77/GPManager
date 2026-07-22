@@ -330,6 +330,37 @@ def build_gpcopy_date_include_json_preview(config):
     if not dest_dbname:
         raise ValueError("Destination database/dbname is empty")
 
+    # Готовые пер-табличные срезы (конвейер /gpcopy: у каждой таблицы своя
+    # date-колонка и свой SQL) — используем их как есть, только дополняем
+    # имена до трёхчастных db.schema.table.
+    table_configs = config.get("table_configs") or []
+
+    if table_configs and any(tc.get("sql") for tc in table_configs):
+        items = []
+
+        for tc in table_configs:
+            if not tc.get("sql"):
+                continue
+
+            src = tc.get("source") or ""
+            schema_name = tc.get("schema") or tc.get("schema_name") or src.split(".")[0]
+            table_name = tc.get("table") or tc.get("table_name") or src.split(".")[-1]
+
+            dest = tc.get("dest") or tc.get("target") or ""
+            dest_schema = dest.split(".")[0] if "." in dest else schema_name
+            dest_table = dest.split(".")[-1] if dest else table_name
+
+            items.append({
+                "source": "{}.{}.{}".format(source_dbname, schema_name, table_name),
+                "dest": "{}.{}.{}".format(dest_dbname, dest_schema, dest_table),
+                "sql": tc["sql"],
+            })
+
+        if not items:
+            raise ValueError("table_configs без SQL — нечего копировать")
+
+        return items
+
     selected_tables = config.get("selected_tables") or []
     target_schema = (config.get("target_schema") or "").strip()
 
