@@ -21,10 +21,10 @@ function setVacuumButtonRunning(isRunning) {
 
     if (isRunning) {
         btn.className = "btn btn-danger w-100 mb-3";
-        btn.textContent = "Stop current job";
+        btn.textContent = "Остановить задачу";
     } else {
-        btn.className = "btn btn-warning w-100 mb-3";
-        btn.textContent = "Run Vacuum / Analyze";
+        btn.className = "btn btn-primary w-100 mb-3";
+        btn.textContent = "Запустить Vacuum / Analyze";
     }
 }
 

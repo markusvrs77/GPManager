@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Schedules · GPManager{% endblock %}
+{% block title %}Расписания · GPManager{% endblock %}
 
 {% block content %}
 
@@ -10,21 +10,21 @@
 
         <div class="col-lg-4">
             <div class="card shadow-sm">
-                <div class="card-header fw-bold">New schedule</div>
+                <div class="card-header">Новое расписание</div>
                 <div class="card-body">
 
-                    <label class="form-label">Name</label>
+                    <label class="form-label">Название</label>
                     <input type="text" id="schName" class="form-control mb-3" placeholder="nightly-gpcopy">
 
-                    <label class="form-label">Job type</label>
+                    <label class="form-label">Тип задачи</label>
                     <select id="schJobType" class="form-select mb-3" onchange="onJobTypeChange()">
-                        <option value="gpcopy">gpcopy (tables)</option>
-                        <option value="gpcopy_date">gpcopy by date window</option>
-                        <option value="gpcopy_increment">gpcopy increment (watermark)</option>
-                        <option value="gpcopy_partition_diff">gpcopy partitions-diff</option>
-                        <option value="vacuum">vacuum / analyze</option>
-                        <option value="reorganize">reorganize</option>
-                        <option value="skew">skew analysis</option>
+                        <option value="gpcopy">Копирование (gpcopy)</option>
+                        <option value="gpcopy_date">Диапазон дат</option>
+                        <option value="gpcopy_increment">Инкремент (watermark)</option>
+                        <option value="gpcopy_partition_diff">Партиции (diff)</option>
+                        <option value="vacuum">Vacuum / Analyze</option>
+                        <option value="reorganize">Реорганизация</option>
+                        <option value="skew">Анализ перекоса</option>
                     </select>
 
                     <div id="schWatermarkBox" class="mb-3" style="display:none">
@@ -110,47 +110,56 @@
                         </div>
                     </div>
 
-                    <button type="button" class="btn btn-primary w-100" onclick="createSchedule()">Create schedule</button>
+                    <button type="button" class="btn btn-primary w-100" onclick="createSchedule()">Создать расписание</button>
                     <div class="small text-danger mt-2" id="schError"></div>
                 </div>
             </div>
         </div>
 
         <div class="col-lg-8">
+            <style>
+            /* карточки расписаний */
+            .sch-item { display: flex; align-items: center; gap: 14px;
+              padding: 13px 16px; border: 1px solid var(--hairline);
+              border-radius: var(--radius-sm); margin-bottom: 10px;
+              background: var(--surface-2); min-width: 0;
+              transition: transform var(--dur-fast), box-shadow var(--dur-fast); }
+            .sch-item:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
+            .sch-item.off { opacity: .55; }
+            .sch-main { flex: 1 1 auto; min-width: 0; }
+            .sch-top { display: flex; align-items: center; gap: 9px;
+              margin-bottom: 4px; min-width: 0; }
+            .sch-tag { font-size: 10.5px; font-weight: 800;
+              border-radius: var(--radius-pill); padding: 2px 9px; flex: none;
+              background: color-mix(in srgb, var(--a1) 15%, transparent);
+              border: 1px solid color-mix(in srgb, var(--a1) 40%, transparent); }
+            .sch-nm { font-weight: 700; font-size: 14px; overflow: hidden;
+              text-overflow: ellipsis; white-space: nowrap; }
+            .sch-meta { display: flex; align-items: baseline; gap: 12px;
+              color: var(--text-muted); font-size: 12px; min-width: 0; }
+            .sch-meta code { font-family: var(--font-mono); font-size: 11.5px;
+              background: var(--surface); border: 1px solid var(--hairline);
+              border-radius: 6px; padding: 1px 7px; color: var(--a2); }
+            .sch-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+            </style>
+
             <div class="card shadow-sm">
-                <div class="card-header fw-bold d-flex justify-content-between align-items-center">
-                    <span>Schedules</span>
-                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadSchedules()">Refresh</button>
+                <div class="card-header">
+                    <span>Расписания</span>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="loadSchedules()">Обновить</button>
                 </div>
-                <div class="card-body p-0">
-                    <div class="table-responsive">
-                        <table class="table table-sm align-middle mb-0">
-                            <thead>
-                                <tr>
-                                    <th>Name</th>
-                                    <th>Type</th>
-                                    <th>Cron</th>
-                                    <th>Next run</th>
-                                    <th>Last</th>
-                                    <th>On</th>
-                                    <th class="text-end">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="schedulesBody">
-                                <tr><td colspan="7" class="text-muted p-3">Загрузка…</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
+                <div class="card-body" id="schedulesBody">
+                    <div class="text-muted">Загрузка…</div>
                 </div>
             </div>
 
             <div class="card shadow-sm mt-3" id="runsCard" style="display:none">
-                <div class="card-header fw-bold">Run history — <span id="runsTitle"></span></div>
+                <div class="card-header">История запусков — <span id="runsTitle"></span></div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
                         <table class="table table-sm mb-0">
                             <thead>
-                                <tr><th>Fired</th><th>Run date</th><th>Job</th><th>Status</th><th>#</th><th>Error</th></tr>
+                                <tr><th>Запуск</th><th>Run date</th><th>Job</th><th>Статус</th><th>#</th><th>Ошибка</th></tr>
                             </thead>
                             <tbody id="runsBody"></tbody>
                         </table>

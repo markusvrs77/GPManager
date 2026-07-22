@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 
 {% block title %}Vacuum / Analyze · GPManager{% endblock %}
 
@@ -11,13 +11,13 @@
         <div class="col-lg-4">
 
             <div class="card shadow-sm">
-                <div class="card-header fw-bold">
-                    Select objects
+                <div class="card-header">
+                    Выбор объектов
                 </div>
 
                 <div class="card-body">
 
-                    <label class="form-label">Connection</label>
+                    <label class="form-label">Подключение</label>
                     <select id="connection_id" class="form-select mb-3">
                         {% for c in connections %}
                         <option value="{{ c.id }}">
@@ -31,28 +31,28 @@
                         class="btn btn-outline-primary w-100 mb-3"
                         onclick="loadObjectTree()"
                     >
-                        Load database objects
+                        Загрузить объекты БД
                     </button>
 
                     <input
                         type="text"
                         id="objectSearch"
                         class="form-control form-control-sm mb-2"
-                        placeholder="Search schema/table..."
+                        placeholder="Поиск: схема / таблица…"
                         oninput="filterObjectTree()"
                     >
 
                     <div class="small text-muted mb-2">
-                        Selected: <span id="selectedCount">0</span>
+                        Выбрано: <span id="selectedCount">0</span>
                     </div>
 
                     <div id="objectTreeStatus" class="small text-muted mb-2">
-                        Выбери connection и нажми Load database objects.
+                        Выбери подключение и нажми «Загрузить объекты БД».
                     </div>
 
                     <div id="objectTree" class="object-tree-box border rounded p-2">
                         <div class="text-muted small">
-                            Выбери connection и нажми Load database objects.
+                            Выбери подключение и нажми «Загрузить объекты БД».
                         </div>
                     </div>
 
@@ -64,13 +64,13 @@
         <div class="col-lg-8">
 
             <div class="card shadow-sm">
-                <div class="card-header fw-bold">
-                    Run
+                <div class="card-header">
+                    Запуск
                 </div>
 
                 <div class="card-body">
 
-                    <label class="form-label">Action</label>
+                    <label class="form-label">Операция</label>
 
                     <select id="vacuumAction" class="form-select mb-3">
                         <option value="VACUUM_ANALYZE">VACUUM ANALYZE</option>
@@ -83,18 +83,18 @@
                     <button
                         type="button"
                         id="vacuumActionButton"
-                        class="btn btn-warning w-100 mb-3"
+                        class="btn btn-primary w-100 mb-3"
                         onclick="handleVacuumActionButton()"
                     >
-                        Run Vacuum / Analyze
+                        Запустить Vacuum / Analyze
                     </button>
 
                     <div id="vacuumStatusBox" class="alert alert-info">
-                        Выбери таблицы и нажми Run Vacuum / Analyze.
+                        Выбери таблицы и запусти Vacuum / Analyze.
                     </div>
 
                     <div class="d-flex justify-content-between">
-                        <strong>Progress</strong>
+                        <strong>Прогресс</strong>
                         <span id="vacuumProgressPercent">0%</span>
                     </div>
 
@@ -110,23 +110,23 @@
 
                     <div class="row text-center mb-3">
                         <div class="col">
-                            <div class="text-muted small">Total</div>
+                            <div class="text-muted small">Всего</div>
                             <strong id="vacuumTotal">0</strong>
                         </div>
                         <div class="col">
-                            <div class="text-muted small">Done</div>
+                            <div class="text-muted small">Готово</div>
                             <strong id="vacuumDone" class="text-success">0</strong>
                         </div>
                         <div class="col">
-                            <div class="text-muted small">Running</div>
+                            <div class="text-muted small">В работе</div>
                             <strong id="vacuumRunning" class="text-primary">0</strong>
                         </div>
                         <div class="col">
-                            <div class="text-muted small">Failed</div>
+                            <div class="text-muted small">Ошибки</div>
                             <strong id="vacuumFailed" class="text-danger">0</strong>
                         </div>
                         <div class="col">
-                            <div class="text-muted small">Skipped</div>
+                            <div class="text-muted small">Пропущено</div>
                             <strong id="vacuumSkipped" class="text-warning">0</strong>
                         </div>
                     </div>
@@ -135,12 +135,12 @@
                         <table class="table table-sm table-bordered align-middle">
                             <thead>
                                 <tr>
-                                    <th>Schema</th>
-                                    <th>Table</th>
-                                    <th>Action</th>
-                                    <th>Status</th>
-                                    <th>Duration</th>
-                                    <th>Error</th>
+                                    <th>Схема</th>
+                                    <th>Таблица</th>
+                                    <th>Операция</th>
+                                    <th>Статус</th>
+                                    <th>Время</th>
+                                    <th>Ошибка</th>
                                 </tr>
                             </thead>
                             <tbody id="vacuumItemsBody">
@@ -163,6 +163,6 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/object_tree.js') }}?v=30"></script>
-<script src="{{ url_for('static', filename='js/vacuum.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/vacuum.js') }}?v=2"></script>
 
 {% endblock %}

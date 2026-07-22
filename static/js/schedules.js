@@ -147,35 +147,49 @@ function statusBadge(status) {
     return '<span class="badge bg-' + cls + '">' + escapeHtml(status || "—") + "</span>";
 }
 
+const SCH_LABELS = {
+    gpcopy: "Копирование",
+    gpcopy_date: "Диапазон дат",
+    gpcopy_increment: "Инкремент",
+    gpcopy_partition_diff: "Партиции",
+    vacuum: "Vacuum",
+    reorganize: "Реорганизация",
+    skew: "Перекос"
+};
+
 async function loadSchedules() {
     const body = document.getElementById("schedulesBody");
     const data = await api("/api/schedules");
 
     if (!data.ok || !data.schedules.length) {
-        body.innerHTML = '<tr><td colspan="7" class="text-muted p-3">Пока нет расписаний.</td></tr>';
+        body.innerHTML = '<div class="text-muted">Пока нет расписаний — создай первое слева.</div>';
         return;
     }
 
     body.innerHTML = data.schedules.map((s) => {
         const id = parseInt(s.id, 10);
-        return "<tr>" +
-            "<td>" + escapeHtml(s.name) + "</td>" +
-            "<td><code>" + escapeHtml(s.job_type) + "</code></td>" +
-            "<td><code>" + escapeHtml(s.cron_expr) + "</code></td>" +
-            "<td class='small'>" + escapeHtml(s.next_run_at || "—") + "</td>" +
-            "<td>" + statusBadge(s.last_status) + "</td>" +
-            "<td>" +
-                '<div class="form-check form-switch m-0">' +
+        return '<div class="sch-item' + (s.enabled ? "" : " off") + '">' +
+            '<div class="sch-main">' +
+                '<div class="sch-top">' +
+                    '<span class="sch-tag">' + escapeHtml(SCH_LABELS[s.job_type] || s.job_type) + "</span>" +
+                    '<span class="sch-nm">' + escapeHtml(s.name) + "</span>" +
+                    statusBadge(s.last_status) +
+                "</div>" +
+                '<div class="sch-meta">' +
+                    "<code>" + escapeHtml(s.cron_expr) + "</code>" +
+                    "<span>след.: " + escapeHtml(s.next_run_at || "—") + "</span>" +
+                "</div>" +
+            "</div>" +
+            '<div class="sch-actions">' +
+                '<div class="form-check form-switch m-0" title="Вкл / выкл">' +
                 '<input class="form-check-input" type="checkbox" ' +
                 (s.enabled ? "checked" : "") +
                 ' onchange="toggleSchedule(' + id + ')"></div>' +
-            "</td>" +
-            "<td class='text-end text-nowrap'>" +
-                '<button class="btn btn-sm btn-outline-primary me-1" onclick="runNow(' + id + ')">Run</button>' +
-                '<button class="btn btn-sm btn-outline-secondary me-1" onclick="showRuns(' + id + ', this)">History</button>' +
+                '<button class="btn btn-sm btn-outline-primary" onclick="runNow(' + id + ')">Запустить</button>' +
+                '<button class="btn btn-sm btn-outline-secondary" onclick="showRuns(' + id + ', this)">История</button>' +
                 '<button class="btn btn-sm btn-outline-danger" onclick="deleteSchedule(' + id + ')">✕</button>' +
-            "</td>" +
-        "</tr>";
+            "</div>" +
+        "</div>";
     }).join("");
 }
 
