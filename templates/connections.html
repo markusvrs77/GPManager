@@ -74,17 +74,17 @@
 
     <!-- форма добавления (раскрывается по карточке «+») -->
     <div class="cx-form" id="cxForm" {% if not error %}hidden{% endif %}>
-        <h6>Новое подключение Greenplum</h6>
+        <h6 id="cxFormTitle">Новое подключение</h6>
         <form method="post" action="/connections/add">
             <div class="fgrid">
                 <div>
                     <label class="form-label">Название</label>
                     <input type="text" name="name" class="form-control"
-                           placeholder="Greenplum PROD" required>
+                           placeholder="Мой кластер" required>
                 </div>
                 <div>
                     <label class="form-label">Тип СУБД</label>
-                    <select name="db_type" class="form-select">
+                    <select name="db_type" id="cxDbType" class="form-select">
                         <option value="greenplum">Greenplum</option>
                         <option value="postgres">PostgreSQL</option>
                         <option value="mysql">MySQL (скоро)</option>
@@ -94,7 +94,7 @@
                 <div>
                     <label class="form-label">Host</label>
                     <input type="text" name="host" class="form-control"
-                           placeholder="172.17.138.23" required>
+                           placeholder="10.10.0.1" required>
                 </div>
                 <div>
                     <label class="form-label">Port</label>
@@ -104,12 +104,12 @@
                 <div>
                     <label class="form-label">База данных</label>
                     <input type="text" name="database_name" class="form-control"
-                           placeholder="adb" required>
+                           placeholder="mydb" required>
                 </div>
                 <div>
                     <label class="form-label">Пользователь</label>
                     <input type="text" name="username" class="form-control"
-                           placeholder="gpadmin" required>
+                           placeholder="db_user" required>
                 </div>
                 <div>
                     <label class="form-label">Пароль</label>
@@ -179,6 +179,46 @@
         f.querySelector("input[name='name']").focus();
         if (window.gpMotion) { window.gpMotion.enter(f, { y: 8, dur: 220 }); }
     });
+
+    // плейсхолдеры и порт под выбранный тип СУБД
+    var CX_PRESETS = {
+        greenplum: { label: "Greenplum", name: "Greenplum DWH",
+            host: "10.10.0.1", port: 5432, db: "dwh", user: "gpadmin" },
+        postgres: { label: "PostgreSQL", name: "PostgreSQL OLTP",
+            host: "10.10.0.2", port: 5432, db: "app_db", user: "postgres" },
+        mysql: { label: "MySQL", name: "MySQL Shop",
+            host: "10.10.0.3", port: 3306, db: "shop", user: "mysql_user" },
+        oracle: { label: "Oracle", name: "Oracle ERP",
+            host: "10.10.0.4", port: 1521, db: "ORCLPDB", user: "system" }
+    };
+
+    (function () {
+        var sel = document.getElementById("cxDbType");
+        var form = document.getElementById("cxForm");
+        if (!sel || !form) { return; }
+
+        var prevPort = CX_PRESETS[sel.value] ? CX_PRESETS[sel.value].port : 5432;
+
+        function applyPreset() {
+            var p = CX_PRESETS[sel.value] || CX_PRESETS.greenplum;
+            form.querySelector("input[name='name']").placeholder = p.name;
+            form.querySelector("input[name='host']").placeholder = p.host;
+            form.querySelector("input[name='database_name']").placeholder = p.db;
+            form.querySelector("input[name='username']").placeholder = p.user;
+            document.getElementById("cxFormTitle").textContent =
+                "Новое подключение " + p.label;
+
+            // порт меняем, только если пользователь его не правил
+            var portInput = form.querySelector("input[name='port']");
+            if (String(portInput.value) === String(prevPort) || !portInput.value) {
+                portInput.value = p.port;
+            }
+            prevPort = p.port;
+        }
+
+        sel.addEventListener("change", applyPreset);
+        applyPreset();
+    })();
 
     var box = document.getElementById("testResult");
 
