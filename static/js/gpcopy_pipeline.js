@@ -1829,7 +1829,7 @@
             return '<div class="run" data-job="' + j.id + '" title="Подробности">' +
                 '<span class="chev">' + (open ? "▾" : "▸") + "</span>" +
                 '<span class="gpp-dot ' + dot + '"></span>' +
-                "<span>#" + j.id + " · " + esc(label) +
+                '<span class="rlab">#' + j.id + " · " + esc(label) +
                 (what ? ' <span class="what">' + esc(what) + "</span>" : "") +
                 " · " + fmtN(j.done_items) + "/" + fmtN(j.total_items) + "</span>" +
                 '<div class="gpp-bar"><i class="' + barCls + '" style="width: ' + pct +

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}Здоровье БД · GPManager{% endblock %}
+
+{% block content %}
+<div style="max-width: 720px;">
+    <div class="card">
+        <div class="card-body">
+            <h5 class="mb-2">♥ Здоровье БД — скоро</h5>
+            <p class="text-muted mb-3">
+                Аналитика кластера без нагрузки: все метрики — из системных
+                каталогов и статистических вьюх, без сканов пользовательских таблиц.
+            </p>
+            <ul class="text-muted mb-0" style="line-height: 2;">
+                <li>Давность ANALYZE / VACUUM и мёртвые строки (pg_stat_all_tables)</li>
+                <li>Долгие запросы и idle in transaction (pg_stat_activity)</li>
+                <li>Цепочки блокировок (pg_locks)</li>
+                <li>Spill-файлы и IO-проблемы (gp_toolkit.gp_workfile_usage_per_query)</li>
+                <li>Состояние сегментов (gp_segment_configuration)</li>
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}

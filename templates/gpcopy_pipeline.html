@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}gpcopy · GPManager{% endblock %}
+{% block title %}Синхронизация данных · GPManager{% endblock %}
 
 {% block content %}
 <style>
@@ -129,6 +129,8 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 .gpp-run-drawer .meta-line { color: var(--text-muted); font-size: 12.5px;
   margin-bottom: 8px; }
 .gpp-runs .run .chev { color: var(--text-muted); font-size: 10px; flex: none; }
+.gpp-runs .run .rlab { flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
 .gpp-runs .run .what { font-family: var(--font-mono); font-size: 12px;
   color: var(--a2); }
 .gpp-err { background: var(--surface-2); border: 1px solid var(--crit);
@@ -141,12 +143,13 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 .gpp-dot.b { background: var(--a1); box-shadow: 0 0 8px var(--a1); }
 .gpp-dot.r { background: var(--crit); }
 .gpp-dot.i { background: var(--idle); }
-.gpp-bar { flex: 1; height: 6px; background: var(--surface-2); border-radius: 4px;
-  overflow: hidden; min-width: 80px; }
+.gpp-bar { flex: 0 1 120px; height: 6px; background: var(--surface-2); border-radius: 4px;
+  overflow: hidden; min-width: 60px; }
 .gpp-bar i { display: block; height: 100%; background: var(--accent-grad); border-radius: 4px; }
 .gpp-bar i.done { background: var(--ok); }
 .gpp-bar i.fail { background: var(--crit); }
-.gpp-runs .meta { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.gpp-runs .meta { color: var(--text-muted); font-size: 12px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 34%; flex: none; }
 
 /* selector modal */
 .gpp-overlay { position: fixed; inset: 0; background: rgba(5, 6, 12, .6);
@@ -257,7 +260,6 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 </style>
 
 <div class="gpp">
-    <h2>gpcopy</h2>
     <div class="gpp-sub">
         Задача читается сверху вниз: откуда → куда → что → как → когда.
         <a href="/gpcopy/classic">Классический интерфейс</a>

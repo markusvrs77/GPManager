@@ -1,0 +1,75 @@
+/* ============================================================
+   GPManager shell: сворачиваемый левый сайдбар + топбар.
+   Все цвета — через токены (tokens.css), работает в обеих темах.
+   ============================================================ */
+
+.gp-shell { display: flex; min-height: 100vh; }
+
+/* ---------- sidebar ---------- */
+.gp-sb { width: 232px; flex: none; display: flex; flex-direction: column;
+  background-color: var(--bg);
+  background-image: linear-gradient(var(--surface), var(--surface));
+  border-right: 1px solid var(--hairline);
+  position: sticky; top: 0; height: 100vh; z-index: 20;
+  transition: width var(--dur) var(--ease); overflow: hidden; }
+html[data-sb="mini"] .gp-sb { width: 64px; }
+
+.gp-sb .brand { display: flex; align-items: center; gap: 10px;
+  padding: 16px 14px; border-bottom: 1px solid var(--hairline);
+  white-space: nowrap; color: var(--text); text-decoration: none; }
+.gp-sb .brand .gp-logo { width: 34px; height: 34px; border-radius: 9px;
+  background: var(--accent-grad); color: #fff; display: flex;
+  align-items: center; justify-content: center; font-weight: 800;
+  font-size: 13px; flex: none; }
+.gp-sb .brand .bname { font-weight: 700; transition: opacity var(--dur-fast); }
+html[data-sb="mini"] .gp-sb .brand .bname { opacity: 0; }
+
+.gp-sb nav { padding: 10px 8px; display: flex; flex-direction: column;
+  gap: 2px; flex: 1; }
+.gp-sb nav a { display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: 10px; color: var(--text-muted);
+  text-decoration: none; white-space: nowrap; overflow: hidden;
+  font-size: 14px; border: 1px solid transparent; }
+.gp-sb nav a .ic { width: 20px; text-align: center; flex: none;
+  font-size: 16px; }
+.gp-sb nav a:hover { background: var(--surface-2); color: var(--text); }
+.gp-sb nav a.active { background: rgba(99, 102, 241, .14); color: var(--text);
+  border-color: rgba(99, 102, 241, .45); }
+.gp-sb nav a .lbl { transition: opacity var(--dur-fast); }
+html[data-sb="mini"] .gp-sb nav a .lbl { opacity: 0; width: 0; }
+
+.gp-sb .nav-badge { margin-left: auto; background: var(--accent-grad);
+  color: #fff; font-size: 10.5px; font-weight: 700;
+  border-radius: var(--radius-pill); padding: 1px 7px; }
+html[data-sb="mini"] .gp-sb .nav-badge { display: none; }
+
+.gp-sb .sb-foot { padding: 10px 8px; border-top: 1px solid var(--hairline); }
+.gp-sb .sb-collapse { width: 100%; display: flex; align-items: center;
+  gap: 12px; padding: 10px 12px; border-radius: 10px; background: none;
+  border: none; color: var(--text-muted); cursor: pointer; font-size: 14px;
+  white-space: nowrap; overflow: hidden; }
+.gp-sb .sb-collapse:hover { background: var(--surface-2); color: var(--text); }
+.gp-sb .sb-collapse .ic { width: 20px; text-align: center; flex: none; }
+
+/* ---------- main / topbar ---------- */
+.gp-shell-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.gp-top { display: flex; align-items: center; gap: 14px;
+  padding: 12px 26px; border-bottom: 1px solid var(--hairline);
+  background-color: var(--bg);
+  background-image: linear-gradient(var(--surface), var(--surface));
+  position: sticky; top: 0; z-index: 10; }
+.gp-top .pgtitle { font-size: 17px; font-weight: 700; margin: 0; }
+.gp-top .pgcrumb { color: var(--text-muted); font-size: 12.5px; }
+.gp-top .sp { flex: 1; }
+.gp-top .gp-theme { background: var(--surface-2);
+  border: 1px solid var(--hairline); border-radius: var(--radius-pill);
+  padding: 5px 13px; cursor: pointer; font-size: 14px; }
+
+.gp-shell-content { flex: 1; }
+
+/* мобильная деградация: сайдбар всегда узкий */
+@media (max-width: 820px) {
+  .gp-sb { width: 64px; }
+  .gp-sb .brand .bname, .gp-sb nav a .lbl, .gp-sb .nav-badge { display: none; }
+}

@@ -25,6 +25,7 @@ from modules.vacuum_analyze import run_vacuum_analyze_job
 from job_manager import (
     create_job,
     create_job_items,
+    get_active_jobs,
     get_job,
     get_job_items,
     get_latest_job,
@@ -1700,6 +1701,11 @@ def api_gpcopy_sync_apply():
             "message": str(e),
             "traceback": traceback.format_exc(),
         }), 500
+
+@app.route("/health")
+def health_page():
+    return render_template("health.html")
+
 
 # ============================================================
 # Scheduler (spec §8)

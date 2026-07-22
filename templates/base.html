@@ -7,12 +7,15 @@
 
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Ctext x='16' y='22' font-family='sans-serif' font-size='15' font-weight='700' fill='white' text-anchor='middle'%3EGP%3C/text%3E%3C/svg%3E">
 
-    <!-- no-flash: apply stored theme before first paint -->
+    <!-- no-flash: тема и состояние сайдбара до первой отрисовки -->
     <script>
     (function () {
         try {
             var t = localStorage.getItem('gp-theme');
             if (t) { document.documentElement.setAttribute('data-theme', t); }
+            if (localStorage.getItem('gp-sb-mini') === '1') {
+                document.documentElement.setAttribute('data-sb', 'mini');
+            }
         } catch (e) {}
     })();
     </script>
@@ -23,32 +26,75 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css') }}">
 </head>
 <body>
 
-<nav class="gp-nav">
-    <a class="gp-brand" href="/">
-        <span class="gp-logo">GP</span> GPManager
-    </a>
+{% set p = request.path %}
+{% if p in ['/', '/dashboard'] %}
+    {% set page_title, page_crumb = 'Dashboard', 'обзор кластеров и задач' %}
+{% elif p.startswith('/connections') %}
+    {% set page_title, page_crumb = 'Подключения', 'кластеры и базы данных' %}
+{% elif p.startswith('/gpcopy') %}
+    {% set page_title, page_crumb = 'Синхронизация данных', 'перенос между кластерами' %}
+{% elif p.startswith('/schedules') %}
+    {% set page_title, page_crumb = 'Расписания', 'планировщик задач' %}
+{% elif p.startswith('/vacuum') %}
+    {% set page_title, page_crumb = 'Vacuum / Analyze', 'обслуживание таблиц' %}
+{% elif p.startswith('/maintenance') %}
+    {% set page_title, page_crumb = 'Maintenance', 'реорганизация и перекос' %}
+{% elif p.startswith('/health') %}
+    {% set page_title, page_crumb = 'Здоровье БД', 'аналитика без нагрузки' %}
+{% else %}
+    {% set page_title, page_crumb = 'GPManager', '' %}
+{% endif %}
 
-    <div class="gp-links">
-        <a href="/" class="{% if request.path in ['/', '/dashboard'] %}active{% endif %}">Dashboard</a>
-        <a href="/connections" class="{% if request.path.startswith('/connections') %}active{% endif %}">Connections</a>
-        <a href="/objects" class="{% if request.path == '/objects' %}active{% endif %}">Objects</a>
-        <a href="/maintenance" class="{% if request.path == '/maintenance' %}active{% endif %}">Maintenance</a>
-        <a href="/vacuum" class="{% if request.path == '/vacuum' %}active{% endif %}">Vacuum / Analyze</a>
-        <a href="{{ url_for('gpcopy_page') }}" class="{% if request.path.startswith('/gpcopy') %}active{% endif %}">gpcopy</a>
-        <a href="/schedules" class="{% if request.path.startswith('/schedules') %}active{% endif %}">Schedules</a>
+<div class="gp-shell">
+    <aside class="gp-sb">
+        <a class="brand" href="/">
+            <span class="gp-logo">GP</span><span class="bname">GPManager</span>
+        </a>
+        <nav>
+            <a href="/" class="{% if p in ['/', '/dashboard'] %}active{% endif %}">
+                <span class="ic">▦</span><span class="lbl">Dashboard</span></a>
+            <a href="/connections" class="{% if p.startswith('/connections') %}active{% endif %}">
+                <span class="ic">⛁</span><span class="lbl">Подключения</span></a>
+            <a href="{{ url_for('gpcopy_page') }}" class="{% if p.startswith('/gpcopy') %}active{% endif %}">
+                <span class="ic">⇄</span><span class="lbl">Синхронизация данных</span>
+                <span class="nav-badge" id="gpNavSyncBadge" style="display: none;"></span></a>
+            <a href="/schedules" class="{% if p.startswith('/schedules') %}active{% endif %}">
+                <span class="ic">🗓</span><span class="lbl">Расписания</span></a>
+            <a href="/vacuum" class="{% if p.startswith('/vacuum') %}active{% endif %}">
+                <span class="ic">🧹</span><span class="lbl">Vacuum / Analyze</span></a>
+            <a href="/maintenance" class="{% if p.startswith('/maintenance') %}active{% endif %}">
+                <span class="ic">🛠</span><span class="lbl">Maintenance</span></a>
+            <a href="/health" class="{% if p.startswith('/health') %}active{% endif %}">
+                <span class="ic">♥</span><span class="lbl">Здоровье БД</span></a>
+        </nav>
+        <div class="sb-foot">
+            <button class="sb-collapse" id="gpSbToggle" type="button"
+                    aria-label="Свернуть или развернуть меню">
+                <span class="ic">«</span><span class="lbl">Свернуть</span>
+            </button>
+        </div>
+    </aside>
+
+    <div class="gp-shell-main">
+        <header class="gp-top">
+            <div>
+                <h1 class="pgtitle">{{ page_title }}</h1>
+                {% if page_crumb %}<div class="pgcrumb">{{ page_crumb }}</div>{% endif %}
+            </div>
+            <div class="sp"></div>
+            <button class="gp-theme" id="gpThemeBtn" type="button"
+                    aria-label="Toggle light / dark theme">🌙</button>
+        </header>
+
+        <main class="gp-shell-content container-fluid py-4">
+            {% block content %}{% endblock %}
+        </main>
     </div>
-
-    <div class="gp-spacer"></div>
-
-    <button class="gp-theme" id="gpThemeBtn" type="button" aria-label="Toggle light / dark theme">🌙</button>
-</nav>
-
-<main class="container-fluid py-4">
-    {% block content %}{% endblock %}
-</main>
+</div>
 
 <script src="{{ url_for('static', filename='vendor/bootstrap/bootstrap.bundle.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/motion.js') }}"></script>
@@ -78,6 +124,47 @@
         });
     }
     update();
+
+    // сворачивание сайдбара
+    var sbBtn = document.getElementById('gpSbToggle');
+
+    function sbUpdate() {
+        var mini = root.getAttribute('data-sb') === 'mini';
+        if (sbBtn) {
+            sbBtn.querySelector('.ic').textContent = mini ? '»' : '«';
+            sbBtn.querySelector('.lbl').textContent = mini ? '' : 'Свернуть';
+        }
+    }
+    if (sbBtn) {
+        sbBtn.addEventListener('click', function () {
+            var mini = root.getAttribute('data-sb') === 'mini';
+            if (mini) { root.removeAttribute('data-sb'); }
+            else { root.setAttribute('data-sb', 'mini'); }
+            try {
+                localStorage.setItem('gp-sb-mini', mini ? '0' : '1');
+            } catch (e) {}
+            sbUpdate();
+        });
+    }
+    sbUpdate();
+
+    // бейдж активных задач синхронизации
+    function pollSyncBadge() {
+        fetch('/api/jobs/active')
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                var badge = document.getElementById('gpNavSyncBadge');
+                if (!badge || !d.ok) { return; }
+                var n = (d.jobs || []).filter(function (j) {
+                    return String(j.job_type || '').indexOf('gpcopy') === 0;
+                }).length;
+                badge.textContent = n;
+                badge.style.display = n ? '' : 'none';
+            })
+            .catch(function () {});
+    }
+    pollSyncBadge();
+    setInterval(pollSyncBadge, 30000);
 })();
 </script>
 
