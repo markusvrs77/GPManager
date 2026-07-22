@@ -896,6 +896,7 @@
         pk: ["pk", "PK"],
         unique_index: ["uniq", "уник. индекс"],
         computed: ["comp", "вычислен"],
+        sampled: ["comp", "по сэмплу"],
         manual: ["man", "вручную"],
     };
 
@@ -1108,8 +1109,10 @@
                 if (op.cancelled) { return; }
                 checked += 1;
                 if (d.ok && d.column) {
-                    state.syncKeys[t.schema + "." + t.table] =
-                        { columns: [d.column], source: "computed" };
+                    state.syncKeys[t.schema + "." + t.table] = {
+                        columns: [d.column],
+                        source: d.confidence === "sample" ? "sampled" : "computed",
+                    };
                     found += 1;
                 }
                 next(i + 1);

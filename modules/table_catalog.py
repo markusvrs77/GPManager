@@ -714,19 +714,22 @@ def filter_candidates_by_stats(candidates, stats, reltuples):
 
 
 def probe_unique_column(connection_id, schema, table, limit_candidates=5,
-                        statement_timeout_ms=120000, sample_rows=100000):
+                        statement_timeout_ms=120000, sample_rows=500000,
+                        full_scan_max_rows=20000000):
     """
-    Лёгкий и точный поиск уникальной колонки (когда нет ни PK, ни индексов):
+    Лёгкий поиск уникальной колонки (когда нет ни PK, ни индексов):
 
     1) pg_stats (бесплатно): кандидаты с NULL или низкой кардинальностью
        отсеиваются без сканов; n_distinct = -1 идёт первым.
-    2) сэмпл (дёшево): дубликат в первых `sample_rows` строках — точный отказ.
-    3) подтверждение (без count(distinct)): NULL-скан с LIMIT 1 и
-       GROUP BY col HAVING count(*)>1 LIMIT 1 — одна агрегация вместо
-       дорогой дедупликации по всему кластеру.
+    2) сэмпл (дёшево): NULL или дубликат в первых `sample_rows` строках —
+       точный отказ.
+    3) подтверждение одним GROUP BY-проходом — но только если таблица
+       не больше full_scan_max_rows (по reltuples). Для гигантских таблиц
+       полное доказательство = чтение всей таблицы, поэтому вердикт
+       останавливается на "confidence": "sample" (статистика + сэмпл),
+       и UI помечает такой ключ отдельным бейджем.
 
-    statement_timeout_ms ограничивает каждый запрос; кандидат с таймаутом
-    помечается и пропускается.
+    Возвращает {"column", "confidence": "confirmed"|"sample"|None, "checked"}.
     """
     columns = fetch_columns_with_types(connection_id, schema, table)
     candidates = choose_candidate_columns(columns, limit=limit_candidates)
@@ -764,10 +767,21 @@ def probe_unique_column(connection_id, schema, table, limit_candidates=5,
                 (schema, table),
             )
         }
+        # Размер: у партиционированного родителя reltuples = 0, поэтому
+        # суммируем по всему дереву pg_inherits (root + все партиции).
         rel = q(
-            "SELECT c.reltuples::bigint FROM pg_class c "
-            "JOIN pg_namespace n ON n.oid = c.relnamespace "
-            "WHERE n.nspname = %s AND c.relname = %s",
+            """
+            WITH RECURSIVE tree AS (
+                SELECT c.oid FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = %s AND c.relname = %s
+                UNION ALL
+                SELECT i.inhrelid FROM tree
+                JOIN pg_inherits i ON i.inhparent = tree.oid
+            )
+            SELECT COALESCE(SUM(c.reltuples), 0)::bigint
+            FROM tree JOIN pg_class c ON c.oid = tree.oid
+            """,
             (schema, table),
         )
         reltuples = int(rel[0][0]) if rel else 0
@@ -779,40 +793,55 @@ def probe_unique_column(connection_id, schema, table, limit_candidates=5,
 
         fq = "{}.{}".format(_qident(schema), _qident(table))
 
+        # NULL и дубликаты ловятся ОДНИМ GROUP BY-проходом: NULL-группа
+        # попадает под `c IS NULL`, дубликаты — под count(*) > 1.
+        # Отдельный `WHERE c IS NULL LIMIT 1` убран: без NULL он был
+        # полным сканом таблицы.
+        def bad_group(source_sql):
+            rows = q(
+                "SELECT c FROM ({src}) s GROUP BY c "
+                "HAVING count(*) > 1 OR c IS NULL LIMIT 1".format(src=source_sql),
+            )
+            if not rows:
+                return None
+            return "nulls" if rows[0][0] is None else "duplicate"
+
+        # гигантская таблица: полный проход не делаем, вердикт по сэмплу
+        huge = bool(full_scan_max_rows) and reltuples > int(full_scan_max_rows)
+
         for candidate in keep:
             c = _qident(candidate)
             try:
-                # 2) дешёвый отсев: дубликат в первых sample_rows строках
-                dup = q(
-                    "SELECT c FROM (SELECT {c} AS c FROM {fq} "
-                    "WHERE {c} IS NOT NULL LIMIT {n}) s "
-                    "GROUP BY c HAVING count(*) > 1 LIMIT 1".format(
+                # 2) дешёвый отсев: NULL или дубликат в первых sample_rows строках
+                reason = bad_group(
+                    "SELECT {c} AS c FROM {fq} LIMIT {n}".format(
                         c=c, fq=fq, n=int(sample_rows)),
                 )
-                if dup:
+                if reason:
                     checked.append({"column": candidate, "unique": False,
-                                    "stage": "sample", "reason": "duplicate"})
+                                    "stage": "sample", "reason": reason})
                     continue
 
-                # 3) точное подтверждение: NULL и дубликаты по всей таблице
-                if q("SELECT 1 FROM {fq} WHERE {c} IS NULL LIMIT 1".format(
-                        c=c, fq=fq)):
-                    checked.append({"column": candidate, "unique": False,
-                                    "stage": "full", "reason": "nulls"})
-                    continue
+                if huge:
+                    # статистика говорит "уникальна", сэмпл чистый —
+                    # честно возвращаем без полного доказательства
+                    checked.append({"column": candidate, "unique": True,
+                                    "stage": "sample",
+                                    "rows_estimate": reltuples})
+                    return {"column": candidate, "confidence": "sample",
+                            "checked": checked}
 
-                dup = q(
-                    "SELECT {c} FROM {fq} GROUP BY {c} "
-                    "HAVING count(*) > 1 LIMIT 1".format(c=c, fq=fq),
-                )
-                if dup:
+                # 3) точное подтверждение: один агрегатный проход по всей таблице
+                reason = bad_group("SELECT {c} AS c FROM {fq}".format(c=c, fq=fq))
+                if reason:
                     checked.append({"column": candidate, "unique": False,
-                                    "stage": "full", "reason": "duplicate"})
+                                    "stage": "full", "reason": reason})
                     continue
 
                 checked.append({"column": candidate, "unique": True,
                                 "stage": "full"})
-                return {"column": candidate, "checked": checked}
+                return {"column": candidate, "confidence": "confirmed",
+                        "checked": checked}
 
             except Exception:
                 conn.rollback()
@@ -820,7 +849,7 @@ def probe_unique_column(connection_id, schema, table, limit_candidates=5,
                                 "timeout": True, "stage": "full"})
                 continue
 
-        return {"column": None, "checked": checked}
+        return {"column": None, "confidence": None, "checked": checked}
 
     finally:
         conn.close()
