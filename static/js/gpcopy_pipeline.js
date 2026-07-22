@@ -18,12 +18,13 @@
         if (window.gpToast) { window.gpToast(msg, type || "info"); }
     }
 
-    function api(url, method, body) {
+    function api(url, method, body, signal) {
         var opts = { method: method || "GET" };
         if (body !== undefined) {
             opts.headers = { "Content-Type": "application/json" };
             opts.body = JSON.stringify(body);
         }
+        if (signal) { opts.signal = signal; }
         return fetch(url, opts).then(function (r) { return r.json(); });
     }
 
@@ -645,12 +646,22 @@
 
         hint.textContent = "Проверяю " + fmtN(tables.length) + " таблиц…";
 
+        var ac = new AbortController();
+        var op = opStart("Проверяю колонки у " + fmtN(tables.length) + " таблиц",
+            function () { ac.abort(); });
+
         return api("/api/catalog/resolve-columns", "POST", {
             connection_id: srcId(),
             tables: tables,
             priority: priority,
             fallback_any_date: true,
+        }, ac.signal).catch(function (e) {
+            opEnd(op);
+            if (op.cancelled) { hint.textContent = "Проверка отменена."; return null; }
+            throw e;
         }).then(function (d) {
+            opEnd(op);
+            if (!d) { return null; }
             if (!d.ok) {
                 hint.innerHTML = '<span class="bad">' + esc(d.message) + "</span>";
                 return null;
@@ -848,13 +859,18 @@
         $("gppIncHint").textContent =
             "Читаю watermark в назначении (" + fmtN(todo.length) + " таблиц)…";
 
+        var ac = new AbortController();
+        var op = opStart("Watermark-превью: " + fmtN(todo.length) + " таблиц",
+            function () { ac.abort(); });
+
         api("/api/gpcopy/increment/preview", "POST", {
             source_connection_id: srcId(),
             dest_connection_id: dstId(),
             tables: todo.map(function (r) {
                 return { schema: r.schema, table: r.table, watermark_column: r.column };
             }),
-        }).then(function (d) {
+        }, ac.signal).then(function (d) {
+            opEnd(op);
             btn.disabled = false;
             if (!d.ok) { toast(d.message, "error"); renderIncSummaryHint(); return; }
             d.tables.forEach(function (t) {
@@ -866,7 +882,12 @@
             $("gppIncHint").innerHTML += " · превью: у " + fmtN(empty) +
                 " watermark пуст (полная догрузка)" +
                 (rows.length > CAPW ? " · показаны первые " + CAPW : "");
-        }).catch(function () { btn.disabled = false; renderIncSummaryHint(); });
+        }).catch(function () {
+            opEnd(op);
+            btn.disabled = false;
+            if (op.cancelled) { $("gppIncHint").textContent = "Превью отменено."; return; }
+            renderIncSummaryHint();
+        });
     }
 
     /* ---------------- smart resolution: sync keys ---------------- */
@@ -988,10 +1009,20 @@
 
         hint.textContent = "Ищу ключи у " + fmtN(tables.length) + " таблиц…";
 
+        var ac = new AbortController();
+        var op = opStart("Ключи (PK + уник. индексы) у " + fmtN(tables.length) + " таблиц",
+            function () { ac.abort(); });
+
         return api("/api/catalog/resolve-keys", "POST", {
             connection_id: srcId(),
             tables: tables,
+        }, ac.signal).catch(function (e) {
+            opEnd(op);
+            if (op.cancelled) { hint.textContent = "Поиск ключей отменён."; return null; }
+            throw e;
         }).then(function (d) {
+            opEnd(op);
+            if (!d) { return null; }
             if (!d.ok) {
                 hint.innerHTML = '<span class="bad">' + esc(d.message) + "</span>";
                 return null;
@@ -1033,9 +1064,17 @@
         var found = 0, checked = 0;
 
         $("gppSyncCompute").disabled = true;
+        var op = opStart("Вычисляю уникальные колонки", null);
 
         function next(i) {
+            if (op.cancelled) {
+                $("gppSyncCompute").disabled = false;
+                hint.innerHTML = "Вычисление отменено (проверено " + fmtN(checked) + ").";
+                renderKeyList();
+                return;
+            }
             if (i >= todo.length) {
+                opEnd(op);
                 $("gppSyncCompute").disabled = false;
                 state.syncUnresolved = pending.filter(function (t) {
                     return !state.syncKeys[t.schema + "." + t.table];
@@ -1056,6 +1095,8 @@
             var t = todo[i];
             hint.textContent = "Пробую по данным: " + t.schema + "." + t.table +
                 " (" + (i + 1) + "/" + todo.length + ")…";
+            opProgress(op, Math.round(i * 100 / todo.length),
+                t.schema + "." + t.table + " (" + (i + 1) + "/" + todo.length + ")");
             api("/api/catalog/compute-unique", "POST", {
                 connection_id: srcId(), schema: t.schema, table: t.table,
             }).then(function (d) {
@@ -1090,10 +1131,17 @@
             (exact ? "Точный пересчёт COUNT(*) батчами…" : "Читаю статистику каталога…") +
             "</div>";
 
+        var ac = new AbortController();
+        var op = opStart(
+            (exact ? "Diff партиций (точный COUNT)" : "Diff партиций (по статистике)") +
+            ": " + fmtN(tables.length) + " таблиц",
+            function () { ac.abort(); });
+
         api("/api/gpcopy/partition-diff/preview-bulk", "POST", {
             source_connection_id: srcId(), dest_connection_id: dstId(),
             tables: tables, exact: exact,
-        }).then(function (d) {
+        }, ac.signal).then(function (d) {
+            opEnd(op);
             btn.disabled = false;
             if (!d.ok) {
                 box.innerHTML = '<div class="gpp-hint bad">' + esc(d.message) + "</div>";
@@ -1112,8 +1160,11 @@
             });
             renderPartList();
         }).catch(function (e) {
+            opEnd(op);
             btn.disabled = false;
-            box.innerHTML = '<div class="gpp-hint bad">' + esc(String(e)) + "</div>";
+            box.innerHTML = op.cancelled
+                ? '<div class="gpp-hint">Diff отменён.</div>'
+                : '<div class="gpp-hint bad">' + esc(String(e)) + "</div>";
         });
     }
 
@@ -1641,81 +1692,59 @@
             '</svg><span class="pct">' + pct + "%</span></div>";
     }
 
-    function renderActiveJobs(jobs) {
-        var box = $("gppActiveJobs");
-        if (!box) { return; }
-
-        var active = jobs.filter(function (j) {
-            return j.status === "running" || j.status === "queued" ||
-                j.status === "stopping";
-        });
-
-        if (!active.length) { box.innerHTML = ""; return; }
-
-        // подтягиваем items, чтобы показать, что именно сейчас копируется
-        Promise.all(active.map(function (j) {
-            return api("/api/jobs/" + j.id + "/status")
-                .catch(function () { return null; });
-        })).then(function (details) {
-            box.innerHTML = active.map(function (j, i) {
-                var pct = Math.max(0, Math.min(100, Math.round(j.progress_percent || 0)));
-                var label = RUN_LABELS[j.job_type] || j.job_type;
-                var stopping = j.status === "stopping";
-
-                var what = "";
-                var items = (details[i] && details[i].ok && details[i].items) || [];
-                var current = items.find(function (it) {
-                    return it.status === "running";
-                });
-                if (!current) {
-                    current = items.find(function (it) {
-                        return it.status === "pending" || it.status === "queued";
-                    });
-                }
-                if (current) {
-                    what = (current.schema_name || "") + "." + (current.table_name || "");
-                } else if (items.length) {
-                    what = items[0].schema_name + "." + items[0].table_name +
-                        (items.length > 1 ? " +" + fmtN(items.length - 1) : "");
-                }
-
-                return '<div class="gpp-active">' + progressRing(pct) +
-                    "<span>#" + j.id + " · " + esc(label) +
-                    (what ? ' <span class="what">' + esc(what) + "</span>" : "") +
-                    " · " + fmtN(j.done_items) + "/" + fmtN(j.total_items) +
-                    (j.failed_items ? ' · <span style="color: var(--crit);">fail ' +
-                        fmtN(j.failed_items) + "</span>" : "") + "</span>" +
-                    '<div class="gpp-bar"><i style="width: ' + pct + '%;"></i></div>' +
-                    '<button class="gpp-btn sm stop" data-stop="' + j.id + '"' +
-                    (stopping ? " disabled" : "") + ">" +
-                    (stopping ? "останавливаю…" : "⏹ Стоп") + "</button></div>";
-            }).join("");
-            wireStopButtons(box);
-        });
+    function indeterminateRing() {
+        var r = 19;
+        var c = 2 * Math.PI * r;
+        return '<div class="gpp-ring ind"><svg viewBox="0 0 46 46">' +
+            '<circle class="bg" cx="23" cy="23" r="' + r + '"></circle>' +
+            '<circle class="fg" cx="23" cy="23" r="' + r +
+            '" stroke-dasharray="' + (c * 0.3).toFixed(1) + " " + c.toFixed(1) +
+            '"></circle></svg></div>';
     }
 
-    function wireStopButtons(box) {
-        box.querySelectorAll("button[data-stop]").forEach(function (btn) {
-            btn.onclick = function () {
-                var id = btn.getAttribute("data-stop");
-                var doStop = function () {
-                    btn.disabled = true;
-                    api("/api/jobs/" + id + "/stop", "POST").then(function (d) {
-                        if (!d.ok) {
-                            btn.disabled = false;
-                            toast(d.message || "Не удалось остановить", "error");
-                            return;
-                        }
-                        toast("Задача #" + id + " останавливается", "info");
-                        loadRuns();
-                    });
-                };
-                if (window.gpConfirm) {
-                    window.gpConfirm("Остановить задачу #" + id + "?")
-                        .then(function (yes) { if (yes) { doStop(); } });
-                } else if (confirm("Остановить задачу #" + id + "?")) { doStop(); }
-            };
-        });
+    /* Индикатор локальных операций анализа (резолв колонок/ключей, diff…).
+       gpcopy-переносы сюда не попадают — они в ленте «Запуски». */
+
+    var currentOp = null;
+
+    function opRender(pct, detail) {
+        var box = $("gppActiveJobs");
+        if (!box) { return; }
+        if (!currentOp) { box.innerHTML = ""; return; }
+
+        box.innerHTML = '<div class="gpp-active">' +
+            (pct === null ? indeterminateRing() : progressRing(pct)) +
+            "<span>" + esc(currentOp.label) +
+            (detail ? ' <span class="what">' + esc(detail) + "</span>" : "") +
+            "</span>" +
+            '<button class="gpp-btn sm stop" id="gppOpCancel">⏹ Отмена</button></div>';
+
+        $("gppOpCancel").onclick = function () {
+            var op = currentOp;
+            if (!op) { return; }
+            op.cancelled = true;
+            if (op.onCancel) { try { op.onCancel(); } catch (e) { /* aborted */ } }
+            opEnd(op);
+            toast("Операция отменена", "info");
+        };
+    }
+
+    function opStart(label, onCancel) {
+        currentOp = { label: label, cancelled: false, onCancel: onCancel };
+        opRender(null, "");
+        return currentOp;
+    }
+
+    function opProgress(op, pct, detail) {
+        if (op === currentOp && !op.cancelled) { opRender(pct, detail); }
+    }
+
+    function opEnd(op) {
+        if (op === currentOp) {
+            currentOp = null;
+            var box = $("gppActiveJobs");
+            if (box) { box.innerHTML = ""; }
+        }
     }
 
     function loadRuns() {
@@ -1724,7 +1753,6 @@
             var box = $("gppRuns");
             if (!d.jobs.length) {
                 box.innerHTML = '<div class="gpp-hint">Пока нет запусков.</div>';
-                renderActiveJobs([]);
                 return;
             }
             box.innerHTML = d.jobs.map(function (j) {
@@ -1756,8 +1784,6 @@
                     openRunModal(parseInt(row.getAttribute("data-job"), 10));
                 };
             });
-
-            renderActiveJobs(d.jobs);
 
             var anyActive = d.jobs.some(function (j) {
                 return j.status === "running" || j.status === "queued" ||
@@ -1814,6 +1840,16 @@
                 (s.skipped ? " · skipped: " + fmtN(s.skipped) : "") +
                 "</div>";
 
+            var isActive = j.status === "running" || j.status === "queued" ||
+                j.status === "stopping";
+            if (isActive) {
+                html += '<div style="margin: 6px 0 10px;">' +
+                    '<button class="gpp-btn sm stop" id="gppRunStop"' +
+                    (j.status === "stopping" ? " disabled" : "") + ">" +
+                    (j.status === "stopping" ? "останавливаю…" : "⏹ Остановить") +
+                    "</button></div>";
+            }
+
             if (j.error_message) {
                 html += '<div class="gpp-err"><pre>' +
                     esc(j.error_message) + "</pre></div>";
@@ -1845,6 +1881,29 @@
             }
 
             $("gppRunBody").innerHTML = html;
+
+            var stopBtn = $("gppRunStop");
+            if (stopBtn) {
+                stopBtn.onclick = function () {
+                    var doStop = function () {
+                        stopBtn.disabled = true;
+                        api("/api/jobs/" + j.id + "/stop", "POST").then(function (r) {
+                            if (!r.ok) {
+                                stopBtn.disabled = false;
+                                toast(r.message || "Не удалось остановить", "error");
+                                return;
+                            }
+                            toast("Задача #" + j.id + " останавливается", "info");
+                            loadRuns();
+                            openRunModal(j.id);
+                        });
+                    };
+                    if (window.gpConfirm) {
+                        window.gpConfirm("Остановить задачу #" + j.id + "?")
+                            .then(function (yes) { if (yes) { doStop(); } });
+                    } else if (confirm("Остановить задачу #" + j.id + "?")) { doStop(); }
+                };
+            }
         }).catch(function (e) {
             $("gppRunBody").innerHTML =
                 '<div class="gpp-hint bad">' + esc(String(e)) + "</div>";
