@@ -2150,8 +2150,29 @@
             } else if (confirm("Очистить выбор?")) { doClear(); }
         };
 
-        // connections
+        // connections — запоминаем выбор в localStorage, чтобы добавление
+        // нового коннектора не подменяло источник/назначение
+        var SRC_KEY = "gpp-src-conn";
+        var DST_KEY = "gpp-dst-conn";
+
+        function hasOption(sel, val) {
+            return Array.prototype.some.call(sel.options, function (o) {
+                return o.value === String(val);
+            });
+        }
+        function restoreConn(sel, key) {
+            try {
+                var saved = localStorage.getItem(key);
+                if (saved && hasOption(sel, saved)) { sel.value = saved; return true; }
+            } catch (e) {}
+            return false;
+        }
+        function saveConn(key, val) {
+            try { localStorage.setItem(key, String(val)); } catch (e) {}
+        }
+
         $("gppSrc").onchange = function () {
+            saveConn(SRC_KEY, $("gppSrc").value);
             state.catalog = null;
             invalidateResolutions();
             loadSel();
@@ -2159,11 +2180,17 @@
             loadCatalog(false);
             loadSets();
         };
-        $("gppDst").onchange = renderSummary;
+        $("gppDst").onchange = function () {
+            saveConn(DST_KEY, $("gppDst").value);
+            renderSummary();
+        };
         $("gppCatalogRefresh").onclick = function () { loadCatalog(true); };
 
-        // если подключений ≥ 2 — по умолчанию назначение второе
-        if ($("gppDst").options.length > 1) { $("gppDst").selectedIndex = 1; }
+        // восстановить прошлый выбор; иначе дефолт — назначение = второе
+        restoreConn($("gppSrc"), SRC_KEY);
+        if (!restoreConn($("gppDst"), DST_KEY)) {
+            if ($("gppDst").options.length > 1) { $("gppDst").selectedIndex = 1; }
+        }
 
         fancySelect($("gppSrc"));
         fancySelect($("gppDst"));
