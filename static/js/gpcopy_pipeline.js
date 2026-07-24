@@ -1928,8 +1928,8 @@
                     var name = (it.schema_name || "") + "." + (it.table_name || "");
                     var msg = it.message || it.error_message || "";
                     return '<div class="gpp-key-row"><span>' + esc(name) +
-                        (msg ? ' <span class="cols">· ' +
-                            esc(String(msg).slice(0, 200)) + "</span>" : "") +
+                        (msg ? ' <span class="cols err">· ' + esc(String(msg)) +
+                            "</span>" : "") +
                         "</span>" + runBadge(it.status) + "</div>";
                 }).join("") +
                 (items.length > 300

@@ -165,6 +165,86 @@ def get_item_value(item, key, default=None):
         return getattr(item, key, default)
 
 
+def extract_error_lines(stdout_data, stderr_data, limit=12):
+    """
+    Строки с ошибками из вывода gpcopy — именно они объясняют падение.
+    Лог за несколько часов огромный, поэтому в отчёт кладём выжимку.
+    """
+    found = []
+
+    for chunk in (stderr_data, stdout_data):
+        for line in (chunk or "").splitlines():
+            stripped = line.strip()
+
+            if not stripped:
+                continue
+
+            upper = stripped.upper()
+
+            if "[ERROR]" in upper or "ERROR:" in upper or upper.startswith("ERROR"):
+                if stripped not in found:
+                    found.append(stripped)
+
+    return found[-limit:]
+
+
+_FINISHED_TABLE_RE = re.compile(
+    r'Finished copying table\s+"(?P<db>[^"]+)"\."(?P<schema>[^"]+)"\."(?P<table>[^"]+)"'
+)
+
+
+def parse_finished_tables(stdout_data):
+    """
+    {(schema, table)} — таблицы, которые gpcopy успел скопировать.
+
+    Даже при падении команды часть таблиц обычно уже перенесена, а раньше
+    мы помечали ошибкой все объекты задачи разом.
+    """
+    finished = set()
+
+    for match in _FINISHED_TABLE_RE.finditer(stdout_data or ""):
+        finished.add((match.group("schema"), match.group("table")))
+
+    return finished
+
+
+def build_failure_report(command_text, rc, stdout_data, stderr_data,
+                         stdout_tail_chars=6000, stderr_chars=4000):
+    """
+    Отчёт о падении gpcopy: сначала STDERR и строки с ошибками, затем ХВОСТ
+    STDOUT. Раньше STDOUT шёл первым и на длинных логах вытеснял STDERR —
+    настоящая причина падения не доходила до интерфейса.
+    """
+    stdout_data = stdout_data or ""
+    stderr_data = stderr_data or ""
+
+    stderr_text = stderr_data[-stderr_chars:] if stderr_data else "(пусто)"
+
+    if len(stderr_data) > stderr_chars:
+        stderr_text = "…\n" + stderr_text
+
+    parts = [
+        "Command:\n{}".format(command_text),
+        "Return code: {}".format(rc),
+        "STDERR:\n{}".format(stderr_text),
+    ]
+
+    error_lines = extract_error_lines(stdout_data, stderr_data)
+
+    if error_lines:
+        parts.append("Ошибки из лога:\n{}".format("\n".join(error_lines)))
+
+    if stdout_data:
+        tail = stdout_data[-stdout_tail_chars:]
+
+        if len(stdout_data) > stdout_tail_chars:
+            tail = "…\n" + tail
+
+        parts.append("STDOUT (последние строки):\n{}".format(tail))
+
+    return "\n\n".join(parts)
+
+
 def safe_mark_job_failed(job_id, error_message):
     try:
         mark_job_failed(job_id, error_message)
@@ -1189,30 +1269,44 @@ def run_gpcopy_job(job_id):
             mark_job_done(job_id)
 
         else:
-            error_text = stderr_data or stdout_data or "gpcopy failed with rc={}".format(rc)
+            # по таблицам показываем выжимку строк с ошибками: слепой срез
+            # начала stderr обрывал сообщение на полуслове
+            error_lines = extract_error_lines(stdout_data, stderr_data, limit=5)
 
-            full_error = (
-                "Command:\n{command}\n\n"
-                "Return code: {rc}\n\n"
-                "STDOUT:\n{stdout}\n\n"
-                "STDERR:\n{stderr}"
-            ).format(
-                command=command_text,
-                rc=rc,
-                stdout=stdout_data,
-                stderr=stderr_data,
+            error_text = (
+                "\n".join(error_lines)
+                or stderr_data
+                or stdout_data
+                or "gpcopy failed with rc={}".format(rc)
             )
+
+            full_error = build_failure_report(
+                command_text, rc, stdout_data, stderr_data
+            )
+
+            # часть таблиц обычно успевает скопироваться — не помечаем
+            # ошибкой то, что gpcopy явно отчитался как готовое
+            finished = parse_finished_tables(stdout_data)
 
             for item in items:
                 item_id = get_item_value(item, "id")
+                key = (
+                    get_item_value(item, "schema_name"),
+                    get_item_value(item, "table_name"),
+                )
+
+                if key in finished:
+                    safe_mark_item_done(item_id, duration_seconds=duration)
+                    continue
+
                 safe_mark_item_failed(
                     item_id,
-                    error_message=error_text[:1000],
+                    error_message=error_text[:2000],
                     duration_seconds=duration,
                 )
 
             refresh_job_progress(job_id)
-            safe_mark_job_failed(job_id, full_error[:4000])
+            safe_mark_job_failed(job_id, full_error[:12000])
 
     except Exception as e:
         err = "{}\n{}".format(str(e), traceback.format_exc())

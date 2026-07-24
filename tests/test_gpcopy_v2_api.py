@@ -104,6 +104,77 @@ def test_expand_date_entries_requires_date_column_for_partitioned():
     assert "партиционирована" in str(e.value)
 
 
+def test_failure_report_keeps_stderr_when_stdout_is_huge():
+    """
+    Лог многочасового gpcopy вытеснял STDERR из отчёта, и причина падения
+    не доходила до интерфейса. Теперь STDERR идёт первым, от STDOUT — хвост.
+    """
+    import modules.gpcopy as g
+
+    stdout = "\n".join("INFO: copying table t{}".format(i) for i in range(20000))
+    stderr = "Error: ERROR: child process exited with exit code 1"
+
+    report = g.build_failure_report("gpcopy --truncate", 1, stdout, stderr)
+
+    assert "child process exited with exit code 1" in report
+    # STDERR раньше хвоста STDOUT
+    assert report.index("STDERR:") < report.index("STDOUT (последние строки)")
+    # хвост, а не начало лога
+    assert "copying table t19999" in report
+    assert "copying table t0\n" not in report
+
+
+def test_parse_finished_tables():
+    """Скопированные до падения таблицы не должны попадать в failed."""
+    import modules.gpcopy as g
+
+    stdout = (
+        '20260724:15:42:14 gpcopy:-[INFO]:-[Worker 2] Start copying table '
+        '"adb"."dwh_stage"."s01_t_trnatr" => "adb"."dwh_stage"."s01_t_trnatr"\n'
+        '20260724:15:42:14 gpcopy:-[INFO]:-[Worker 2] [Progress: (0/1) DBs, '
+        '(1/5216) tables done] Finished copying table '
+        '"adb"."dwh_stage"."s01_t_trnatr" => "adb"."dwh_stage"."s01_t_trnatr"\n'
+        '20260724:15:43:39 gpcopy:-[INFO]:-[Worker 1] [Progress: (0/1) DBs, '
+        '(3/5216) tables done] Finished copying table '
+        '"adb"."dwh_stage"."s01_n_crdinekv" => "adb"."dwh_stage"."s01_n_crdinekv"\n'
+    )
+
+    assert g.parse_finished_tables(stdout) == {
+        ("dwh_stage", "s01_t_trnatr"),
+        ("dwh_stage", "s01_n_crdinekv"),
+    }
+
+    # "Start copying" без "Finished" не считается
+    assert g.parse_finished_tables(
+        '[INFO]:-Start copying table "adb"."s"."t" => "adb"."s"."t"'
+    ) == set()
+
+    assert g.parse_finished_tables("") == set()
+
+
+def test_extract_error_lines():
+    """По таблицам показываем строки с ошибками, а не срез начала лога."""
+    import modules.gpcopy as g
+
+    stdout = (
+        "20260724:15:42:14 gpcopy:-[INFO]:-Start copying table\n"
+        "20260724:17:50:01 gpcopy:-[ERROR]:-[Worker 2] Finished task 178221_P_DA_V_ "
+        "with error: ERROR: child process exited with exit code 1\n"
+        "20260724:17:50:01 gpcopy:-[INFO]:-done\n"
+    )
+
+    lines = g.extract_error_lines(stdout, "")
+
+    assert len(lines) == 1
+    assert lines[0].endswith("exit code 1")
+
+    # дубли не копим, порядок — последние ошибки
+    assert g.extract_error_lines("ERROR: a\nERROR: a\nERROR: b", "") == [
+        "ERROR: a", "ERROR: b",
+    ]
+    assert g.extract_error_lines("all fine", "") == []
+
+
 def test_parse_range_bound():
     """Границы RANGE-партиций из каталога (формат GP7 / PG12)."""
     import modules.gpcopy as g
