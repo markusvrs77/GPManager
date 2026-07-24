@@ -295,6 +295,282 @@ def make_include_table_file(items, dbname=None):
 # Include JSON for gpcopy by date
 # ------------------------------------------------------------
 
+def build_date_slice_sql(schema_name, table_name, date_column, date_from, date_to):
+    """SELECT-срез по дате для одной таблицы (идентификаторы экранируем)."""
+    column = quote_ident(date_column)
+
+    return (
+        "SELECT * FROM {table} WHERE {column} >= '{date_from}' "
+        "AND {column} < '{date_to}'"
+    ).format(
+        table="{}.{}".format(quote_ident(schema_name), quote_ident(table_name)),
+        column=column,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+
+def expand_date_entries_to_leaves(entries, leaves_by_key, date_from, date_to):
+    """
+    Разворачивает партиционированные таблицы в leaf-партиции.
+
+    gpcopy отказывается применять SQL-выражение к родительской
+    партиционированной таблице ("Don't support partition table ... with SQL
+    statement"), поэтому для каждой leaf-партиции отдаём отдельный срез —
+    leaf это обычная таблица, ограничение на неё не распространяется.
+
+    entries: [{schema, table, dest_schema, dest_table, date_column, sql}]
+    leaves_by_key: {(schema, table): [(leaf_schema, leaf_table), ...]}
+    """
+    expanded = []
+
+    for entry in entries:
+        key = (entry["schema"], entry["table"])
+        leaves = [tuple(leaf) for leaf in (leaves_by_key.get(key) or [])]
+
+        # непартиционированная таблица: leaf-запрос возвращает её саму
+        # (или мы просто не знаем структуру) — оставляем как есть
+        if not leaves or leaves == [key]:
+            expanded.append(entry)
+            continue
+
+        if not entry.get("date_column"):
+            raise ValueError(
+                "Таблица {}.{} партиционирована: для среза по датам нужна "
+                "колонка даты, чтобы построить запрос по каждой партиции".format(
+                    entry["schema"], entry["table"]
+                )
+            )
+
+        for leaf_schema, leaf_table in leaves:
+            expanded.append({
+                "schema": leaf_schema,
+                "table": leaf_table,
+                # партиции живут в той же схеме, что и родитель
+                "dest_schema": (
+                    entry["dest_schema"]
+                    if leaf_schema == entry["schema"]
+                    else leaf_schema
+                ),
+                "dest_table": leaf_table,
+                "date_column": entry["date_column"],
+                "sql": build_date_slice_sql(
+                    leaf_schema, leaf_table,
+                    entry["date_column"], date_from, date_to,
+                ),
+            })
+
+    return expanded
+
+
+_RANGE_BOUND_RE = re.compile(
+    r"FOR\s+VALUES\s+FROM\s+\((?P<lo>.+?)\)\s+TO\s+\((?P<hi>.+?)\)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def parse_range_bound(bound_text):
+    """
+    "FOR VALUES FROM ('2025-01-02') TO ('2025-01-03')" -> ('2025-01-02', '2025-01-03').
+
+    None — если это DEFAULT-партиция, составной ключ или незнакомый формат:
+    такие партиции при отсечении оставляем (безопасный вариант).
+    """
+    text = (bound_text or "").strip()
+
+    if not text or text.upper() == "DEFAULT":
+        return None
+
+    match = _RANGE_BOUND_RE.search(text)
+
+    if not match:
+        return None
+
+    def one_value(raw):
+        raw = raw.strip()
+
+        # составной ключ партиционирования — не наш случай
+        if "," in raw:
+            return None
+
+        if raw.upper() == "MINVALUE":
+            return ""          # меньше любой строки
+        if raw.upper() == "MAXVALUE":
+            return None        # бесконечность — обрабатываем отдельно
+
+        if len(raw) >= 2 and raw[0] == "'" and raw[-1] == "'":
+            return raw[1:-1].replace("''", "'")
+
+        return None
+
+    lo = one_value(match.group("lo"))
+    hi_raw = match.group("hi").strip()
+    hi = one_value(hi_raw)
+
+    if lo is None and match.group("lo").strip().upper() != "MINVALUE":
+        return None
+
+    if hi is None and hi_raw.upper() != "MAXVALUE":
+        return None
+
+    return (lo, hi)
+
+
+def range_overlaps(part_from, part_to, date_from, date_to):
+    """
+    Пересекается ли [part_from, part_to) с запрошенным [date_from, date_to).
+    part_to=None означает MAXVALUE. Даты в ISO — сравниваем как строки.
+    """
+    if part_to is not None and part_to <= date_from:
+        return False
+
+    if part_from is not None and part_from >= date_to:
+        return False
+
+    return True
+
+
+def select_partitions_by_bounds(children, date_from, date_to):
+    """
+    children: [(name, bound_text)] — прямые партиции таблицы.
+    Возвращает имена партиций, попадающих в диапазон (DEFAULT и партиции
+    с непонятной границей оставляем всегда).
+    """
+    keep = []
+
+    for name, bound_text in children:
+        bounds = parse_range_bound(bound_text)
+
+        if bounds is None:
+            keep.append(name)
+            continue
+
+        part_from, part_to = bounds
+
+        if range_overlaps(part_from, part_to, date_from, date_to):
+            keep.append(name)
+
+    return keep
+
+
+def prune_leaves_by_bounds(conn, schema_name, table_name, date_column,
+                           date_from, date_to):
+    """
+    Leaf-партиции, попадающие в диапазон дат, по границам из каталога.
+    None — если отсечь нельзя (не RANGE по этой колонке / нет партиций):
+    тогда вызывающий берёт все leaf-партиции.
+
+    Планировщик GP7 здесь не помогает: он использует Dynamic Seq Scan и
+    отбирает партиции во время выполнения, поэтому в плане стоит родитель.
+    """
+    try:
+        from modules.gpcopy_partition import list_leaf_partitions
+    except ImportError:
+        from gpcopy_partition import list_leaf_partitions
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT pg_get_partkeydef(c.oid)
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = %s AND c.relname = %s
+                """,
+                (schema_name, table_name),
+            )
+            row = cur.fetchone()
+            keydef = (row[0] if row else "") or ""
+
+            # отсекаем только RANGE по одной колонке — той же, что в фильтре
+            match = re.match(r"^RANGE\s+\((.+)\)$", keydef.strip(), re.IGNORECASE)
+
+            if not match:
+                return None
+
+            key_column = match.group(1).strip().strip('"')
+
+            if key_column.lower() != str(date_column).strip().strip('"').lower():
+                return None
+
+            cur.execute(
+                """
+                SELECT c.relname, n.nspname, pg_get_expr(c.relpartbound, c.oid)
+                FROM pg_class c
+                JOIN pg_inherits i ON i.inhrelid = c.oid
+                JOIN pg_class p ON p.oid = i.inhparent
+                JOIN pg_namespace pn ON pn.oid = p.relnamespace
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE pn.nspname = %s AND p.relname = %s
+                """,
+                (schema_name, table_name),
+            )
+            rows = cur.fetchall()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
+
+    if not rows:
+        return None
+
+    schema_by_name = {r[0]: r[1] for r in rows}
+    keep = select_partitions_by_bounds([(r[0], r[2]) for r in rows], date_from, date_to)
+
+    if not keep:
+        return None
+
+    # партиция может быть сама партиционирована (подпартиции) — разворачиваем
+    leaves = []
+
+    for name in keep:
+        leaves.extend(list_leaf_partitions(conn, schema_by_name[name], name))
+
+    return leaves or None
+
+
+def fetch_leaves_by_key(source_connection, entries, date_from="", date_to=""):
+    """{(schema, table): [(leaf_schema, leaf_table), ...]} для списка entries."""
+    try:
+        from modules.gpcopy_partition import list_leaf_partitions
+    except ImportError:
+        from gpcopy_partition import list_leaf_partitions
+
+    leaves_by_key = {}
+    conn = open_psycopg2_connection_by_cfg(source_connection)
+
+    try:
+        for entry in entries:
+            key = (entry["schema"], entry["table"])
+
+            if key in leaves_by_key:
+                continue
+
+            leaves = list_leaf_partitions(conn, key[0], key[1])
+
+            # для партиционированной таблицы отсекаем партиции вне
+            # диапазона дат — иначе gpcopy прочитал бы их все
+            if entry.get("date_column") and date_from and date_to \
+                    and leaves and leaves != [key]:
+                pruned = prune_leaves_by_bounds(
+                    conn, key[0], key[1], entry["date_column"],
+                    date_from, date_to,
+                )
+                if pruned:
+                    leaves = pruned
+
+            leaves_by_key[key] = leaves
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return leaves_by_key
+
+
 def build_gpcopy_date_include_json_preview(config):
     source_connection_id = (
         config.get("source_connection_id")
@@ -336,7 +612,7 @@ def build_gpcopy_date_include_json_preview(config):
     table_configs = config.get("table_configs") or []
 
     if table_configs and any(tc.get("sql") for tc in table_configs):
-        items = []
+        entries = []
 
         for tc in table_configs:
             if not tc.get("sql"):
@@ -350,16 +626,44 @@ def build_gpcopy_date_include_json_preview(config):
             dest_schema = dest.split(".")[0] if "." in dest else schema_name
             dest_table = dest.split(".")[-1] if dest else table_name
 
-            items.append({
-                "source": "{}.{}.{}".format(source_dbname, schema_name, table_name),
-                "dest": "{}.{}.{}".format(dest_dbname, dest_schema, dest_table),
+            entries.append({
+                "schema": schema_name,
+                "table": table_name,
+                "dest_schema": dest_schema,
+                "dest_table": dest_table,
+                "date_column": tc.get("date_column"),
                 "sql": tc["sql"],
             })
 
-        if not items:
+        if not entries:
             raise ValueError("table_configs без SQL — нечего копировать")
 
-        return items
+        # Партиционированные таблицы разворачиваем в leaf-партиции:
+        # gpcopy не принимает SQL-срез для родительской таблицы.
+        cfg_date_from = (config.get("date_from") or "").strip()
+        cfg_date_to = (config.get("date_to") or "").strip()
+
+        entries = expand_date_entries_to_leaves(
+            entries,
+            fetch_leaves_by_key(
+                source_connection, entries, cfg_date_from, cfg_date_to
+            ),
+            cfg_date_from,
+            cfg_date_to,
+        )
+
+        return [
+            {
+                "source": "{}.{}.{}".format(
+                    source_dbname, entry["schema"], entry["table"]
+                ),
+                "dest": "{}.{}.{}".format(
+                    dest_dbname, entry["dest_schema"], entry["dest_table"]
+                ),
+                "sql": entry["sql"],
+            }
+            for entry in entries
+        ]
 
     selected_tables = config.get("selected_tables") or []
     target_schema = (config.get("target_schema") or "").strip()
@@ -380,7 +684,7 @@ def build_gpcopy_date_include_json_preview(config):
     if not date_from or not date_to:
         raise ValueError("date_from и date_to обязательны")
 
-    items = []
+    entries = []
     seen = set()
 
     for table_item in selected_tables:
@@ -403,51 +707,43 @@ def build_gpcopy_date_include_json_preview(config):
 
         seen.add(key)
 
-        dest_schema = target_schema or schema_name
-
-        # Формат, который у тебя уже сработал:
-        # source: adb.schema.table
-        # dest:   adb.schema.table
-        source_json = "{}.{}.{}".format(
-            source_dbname,
-            schema_name,
-            table_name,
-        )
-
-        dest_json = "{}.{}.{}".format(
-            dest_dbname,
-            dest_schema,
-            table_name,
-        )
-
-        sql_table_name = "{}.{}".format(
-            quote_ident(schema_name),
-            quote_ident(table_name),
-        )
-
-        sql_column_name = quote_ident(date_filter_column)
-
-        sql = (
-            "SELECT * FROM {table_name} "
-            "WHERE {column_name} >= '{date_from}' "
-            "AND {column_name} < '{date_to}'"
-        ).format(
-            table_name=sql_table_name,
-            column_name=sql_column_name,
-            date_from=date_from,
-            date_to=date_to,
-        )
-
-        items.append({
-            "source": source_json,
-            "dest": dest_json,
-            "sql": sql,
+        entries.append({
+            "schema": schema_name,
+            "table": table_name,
+            "dest_schema": target_schema or schema_name,
+            "dest_table": table_name,
+            "date_column": date_filter_column,
+            "sql": build_date_slice_sql(
+                schema_name, table_name, date_filter_column, date_from, date_to
+            ),
         })
 
-    if not items:
+    if not entries:
         raise ValueError("Нет таблиц для gpcopy include-table-json")
 
-    return items
+    # партиционированные таблицы — по одному срезу на leaf-партицию
+    entries = expand_date_entries_to_leaves(
+        entries,
+        fetch_leaves_by_key(source_connection, entries, date_from, date_to),
+        date_from,
+        date_to,
+    )
+
+    # Формат, который у тебя уже сработал:
+    # source: adb.schema.table
+    # dest:   adb.schema.table
+    return [
+        {
+            "source": "{}.{}.{}".format(
+                source_dbname, entry["schema"], entry["table"]
+            ),
+            "dest": "{}.{}.{}".format(
+                dest_dbname, entry["dest_schema"], entry["dest_table"]
+            ),
+            "sql": entry["sql"],
+        }
+        for entry in entries
+    ]
 
 
 def build_gpcopy_date_include_json_file(config):
