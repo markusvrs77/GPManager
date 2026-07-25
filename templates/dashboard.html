@@ -293,10 +293,13 @@ const dashboardSkewResults = {{ last_results|tojson }};
         gpcopy_increment: "Инкремент",
         gpcopy_partition_diff: "Партиции",
         gpcopy_sync: "Sync по ключу",
-        copy_pipe: "Копирование (COPY)"
+        copy_pipe: "Копирование (COPY)",
+        gpbackup: "Бэкап",
+        gprestore: "Восстановление"
     };
     var RUN_PAGES = {
-        skew: "/maintenance", reorganize: "/maintenance", vacuum: "/vacuum"
+        skew: "/maintenance", reorganize: "/maintenance", vacuum: "/vacuum",
+        gpbackup: "/backups", gprestore: "/backups"
     };
 
     function pageFor(jobType) {

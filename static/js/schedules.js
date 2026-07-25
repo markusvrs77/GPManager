@@ -154,7 +154,9 @@ const SCH_LABELS = {
     gpcopy_partition_diff: "Партиции",
     vacuum: "Vacuum",
     reorganize: "Реорганизация",
-    skew: "Перекос"
+    skew: "Перекос",
+    gpbackup: "Бэкап",
+    gprestore: "Восстановление"
 };
 
 async function loadSchedules() {

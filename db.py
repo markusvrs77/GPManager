@@ -91,6 +91,22 @@ def init_db():
 
         cur.execute(
             """
+            CREATE TABLE IF NOT EXISTS backups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                connection_id INTEGER,
+                job_id INTEGER,
+                backup_timestamp TEXT,
+                dbname TEXT,
+                backup_type TEXT,
+                backup_dir TEXT,
+                status TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS skew_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 job_id INTEGER,

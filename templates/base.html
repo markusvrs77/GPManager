@@ -43,6 +43,8 @@
     {% set page_title, page_crumb = 'Vacuum / Analyze', 'обслуживание таблиц' %}
 {% elif p.startswith('/maintenance') %}
     {% set page_title, page_crumb = 'Maintenance', 'реорганизация и перекос' %}
+{% elif p.startswith('/backups') %}
+    {% set page_title, page_crumb = 'Резервные копии', 'gpbackup / gprestore' %}
 {% elif p.startswith('/health') %}
     {% set page_title, page_crumb = 'Здоровье БД', 'аналитика без нагрузки' %}
 {% else %}
@@ -82,6 +84,9 @@
             <a href="/maintenance" class="{% if p.startswith('/maintenance') %}active{% endif %}">
                 <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>
                 <span class="lbl">Maintenance</span></a>
+            <a href="/backups" class="{% if p.startswith('/backups') %}active{% endif %}">
+                <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg></span>
+                <span class="lbl">Резервные копии</span></a>
         </nav>
         <div class="sb-foot">
             <button class="sb-collapse" id="gpSbToggle" type="button"

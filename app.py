@@ -95,6 +95,15 @@ from modules.sync_transport import pick_transport, run_copy_pipe_job
 
 gpm_scheduler.register_runner("copy_pipe", run_copy_pipe_job)
 
+from modules.gpbackup import (
+    list_backups as list_backup_records,
+    run_gpbackup_job,
+    run_gprestore_job,
+)
+
+gpm_scheduler.register_runner("gpbackup", run_gpbackup_job)
+gpm_scheduler.register_runner("gprestore", run_gprestore_job)
+
 
 app = Flask(__name__)
 
@@ -1809,6 +1818,129 @@ def health_page():
         "health.html",
         connections=list_connections(),
     )
+
+
+@app.route("/backups")
+def backups_page():
+    return render_template(
+        "backups.html",
+        connections=list_connections(),
+    )
+
+
+@app.route("/api/backup/list")
+def api_backup_list():
+    return jsonify({"ok": True, "backups": list_backup_records()})
+
+
+@app.route("/api/backup/start", methods=["POST"])
+def api_backup_start():
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    config = {
+        "connection_id": int(connection_id),
+        "backup_type": data.get("backup_type") or "full",
+        "backup_dir": (data.get("backup_dir") or "").strip(),
+        "include_schemas": data.get("include_schemas") or "",
+        "include_tables": data.get("include_tables") or "",
+        "jobs": data.get("jobs") or 1,
+        "compression_level": data.get("compression_level"),
+        "gpbackup_path": (data.get("gpbackup_path") or "").strip(),
+        "extra_args": data.get("extra_args") or "",
+    }
+
+    try:
+        # валидация конфига до создания задачи (понятная ошибка сразу)
+        from modules.connections import get_connection_by_id as _cfg
+        from modules.gpbackup import build_gpbackup_command
+
+        conn_cfg = _cfg(int(connection_id))
+
+        if not conn_cfg:
+            return jsonify({"ok": False, "message": "Подключение не найдено"}), 400
+
+        probe = dict(config)
+        probe.setdefault(
+            "dbname",
+            conn_cfg.get("database_name") or conn_cfg.get("database"),
+        )
+        build_gpbackup_command(probe)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    job_id = create_job(
+        job_type="gpbackup",
+        connection_id=int(connection_id),
+        config=config,
+    )
+
+    create_job_items(
+        job_id=job_id,
+        items=[{
+            "schema_name": conn_cfg.get("database_name") or "",
+            "table_name": "gpbackup ({})".format(config["backup_type"]),
+            "action": "GPBACKUP",
+        }],
+    )
+
+    threading.Thread(target=run_gpbackup_job, args=(job_id,), daemon=True).start()
+
+    return jsonify({"ok": True, "job_id": job_id, "message": "Бэкап запущен"})
+
+
+@app.route("/api/backup/restore", methods=["POST"])
+def api_backup_restore():
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+    backup_timestamp = data.get("backup_timestamp")
+
+    if not connection_id or not backup_timestamp:
+        return jsonify({
+            "ok": False,
+            "message": "connection_id и backup_timestamp обязательны",
+        }), 400
+
+    config = {
+        "connection_id": int(connection_id),
+        "backup_timestamp": str(backup_timestamp),
+        "backup_dir": (data.get("backup_dir") or "").strip(),
+        "redirect_db": (data.get("redirect_db") or "").strip(),
+        "create_db": bool(data.get("create_db")),
+        "data_only": bool(data.get("data_only")),
+        "include_tables": data.get("include_tables") or "",
+        "jobs": data.get("jobs") or 1,
+        "gprestore_path": (data.get("gprestore_path") or "").strip(),
+    }
+
+    try:
+        from modules.gpbackup import build_gprestore_command
+
+        build_gprestore_command(config)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    job_id = create_job(
+        job_type="gprestore",
+        connection_id=int(connection_id),
+        config=config,
+    )
+
+    create_job_items(
+        job_id=job_id,
+        items=[{
+            "schema_name": config["redirect_db"] or "",
+            "table_name": "gprestore {}".format(backup_timestamp),
+            "action": "GPRESTORE",
+        }],
+    )
+
+    threading.Thread(target=run_gprestore_job, args=(job_id,), daemon=True).start()
+
+    return jsonify({"ok": True, "job_id": job_id, "message": "Восстановление запущено"})
 
 
 @app.route("/api/health/overview")
