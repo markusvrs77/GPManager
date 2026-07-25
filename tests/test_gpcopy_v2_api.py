@@ -150,6 +150,25 @@ def test_parse_gpcopy_summary_and_failed_leaves():
     assert g.parse_gpcopy_summary("no summary here") is None
 
 
+def test_find_owner_item():
+    """Партиция из лога относится к своей таблице; точное имя важнее префикса."""
+    import modules.gpcopy as g
+
+    keys = [
+        (1, "dwh_stage", "s01_t_bal"),
+        (2, "dwh_stage", "s01_t_operjrn"),
+        (3, "public", "plain_table"),
+    ]
+
+    assert g.find_owner_item("dwh_stage", "s01_t_bal_1_prt_995", keys) == 1
+    assert g.find_owner_item("dwh_stage", "s01_t_operjrn_1_def_pr_x", keys) == 2
+    # непартиционированная таблица приходит своим именем
+    assert g.find_owner_item("public", "plain_table", keys) == 3
+    # чужая схема/таблица — никому
+    assert g.find_owner_item("other", "s01_t_bal_1_prt_1", keys) is None
+    assert g.find_owner_item("dwh_stage", "unknown_1_prt_1", keys) is None
+
+
 def test_build_retry_config():
     """Ретрай перезаливает только упавшие партиции, целиком (--truncate)."""
     import pytest

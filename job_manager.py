@@ -145,7 +145,9 @@ def get_job_items(job_id):
                 duration_seconds,
                 error_message,
                 COALESCE(size_bytes, 0) AS size_bytes,
-                COALESCE(bytes_done, 0) AS bytes_done
+                COALESCE(bytes_done, 0) AS bytes_done,
+                COALESCE(parts_total, 0) AS parts_total,
+                COALESCE(parts_done, 0) AS parts_done
             FROM job_items
             WHERE job_id = ?
             ORDER BY id
@@ -401,6 +403,31 @@ def set_item_bytes(item_id, bytes_done):
         cur.execute(
             "UPDATE job_items SET bytes_done = ? WHERE id = ?",
             (int(bytes_done or 0), item_id),
+        )
+
+
+def set_item_parts(item_id, parts_done=None, parts_total=None):
+    """Счётчики партиций таблицы (live-прогресс gpcopy по одному объекту)."""
+    fields = []
+    params = []
+
+    if parts_done is not None:
+        fields.append("parts_done = ?")
+        params.append(int(parts_done))
+
+    if parts_total is not None:
+        fields.append("parts_total = ?")
+        params.append(int(parts_total))
+
+    if not fields:
+        return
+
+    params.append(item_id)
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE job_items SET {} WHERE id = ?".format(", ".join(fields)),
+            params,
         )
 
 

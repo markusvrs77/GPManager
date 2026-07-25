@@ -286,6 +286,19 @@ def init_db():
         "ALTER TABLE job_items ADD COLUMN bytes_done INTEGER DEFAULT 0"
     )
 
+    # партиции таблицы: всего / уже скопировано (live-прогресс gpcopy)
+    ensure_column_exists(
+        "job_items",
+        "parts_total",
+        "ALTER TABLE job_items ADD COLUMN parts_total INTEGER DEFAULT 0"
+    )
+
+    ensure_column_exists(
+        "job_items",
+        "parts_done",
+        "ALTER TABLE job_items ADD COLUMN parts_done INTEGER DEFAULT 0"
+    )
+
 
 def get_connection_by_id(connection_id):
     """

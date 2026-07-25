@@ -26,6 +26,7 @@ try:
         refresh_job_progress,
         set_job_progress,
         set_item_size,
+        set_item_parts,
         update_job_config,
         is_stop_requested,
         clear_stop_flag,
@@ -45,6 +46,7 @@ except ImportError:
         refresh_job_progress,
         set_job_progress,
         set_item_size,
+        set_item_parts,
         update_job_config,
         is_stop_requested,
         clear_stop_flag,
@@ -273,6 +275,27 @@ def parse_gpcopy_summary(text):
         "skipped": int(match.group("skipped")),
         "failed": int(match.group("failed")),
     }
+
+
+def find_owner_item(leaf_schema, leaf_table, item_keys):
+    """
+    id элемента задачи, которому принадлежит партиция из лога gpcopy.
+    item_keys: [(item_id, schema, table)]. Точное имя важнее префикса:
+    сама таблица без партиций тоже приходит строкой Finished copying.
+    """
+    prefix_hit = None
+
+    for item_id, schema, table in item_keys:
+        if leaf_schema != schema:
+            continue
+
+        if leaf_table == table:
+            return item_id
+
+        if leaf_table.startswith(table + "_1_") and prefix_hit is None:
+            prefix_hit = item_id
+
+    return prefix_hit
 
 
 def build_retry_config(config, failed_leaves):
@@ -1357,6 +1380,36 @@ def run_gpcopy_job(job_id):
 
         refresh_job_progress(job_id)
 
+        # ключи для атрибуции партиций из лога к таблицам задачи
+        item_keys = [
+            (
+                get_item_value(item, "id"),
+                get_item_value(item, "schema_name"),
+                get_item_value(item, "table_name"),
+            )
+            for item in items
+        ]
+
+        # сколько партиций у каждой таблицы — для пер-табличного индикатора
+        try:
+            try:
+                from modules.gpcopy_partition import list_leaf_partitions
+            except ImportError:
+                from gpcopy_partition import list_leaf_partitions
+
+            _cnt_conn = open_psycopg2_connection_by_cfg(source_connection)
+            try:
+                for item_id, ischema, itable in item_keys:
+                    leaves = list_leaf_partitions(_cnt_conn, ischema, itable)
+                    set_item_parts(item_id, parts_total=max(len(leaves), 1))
+            finally:
+                try:
+                    _cnt_conn.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass  # без totals покажем просто счётчик готовых
+
         if is_stop_requested(job_id):
             safe_mark_job_cancelled(job_id, "Stop requested before gpcopy start")
             refresh_job_progress(job_id)
@@ -1393,6 +1446,23 @@ def run_gpcopy_job(job_id):
         last_pct = -1
         last_stop_check = 0.0
 
+        # пер-табличный live-счётчик: партиция из лога -> её таблица
+        parts_done_by_item = {}
+        dirty_items = set()
+        last_parts_flush = 0.0
+
+        def flush_parts(force=False):
+            now_ts = time.time()
+            if not force and now_ts - last_parts_flush < 2:
+                return last_parts_flush
+            for _iid in list(dirty_items):
+                try:
+                    set_item_parts(_iid, parts_done=parts_done_by_item[_iid])
+                except Exception:
+                    pass
+            dirty_items.clear()
+            return now_ts
+
         for line in process.stdout:
             stdout_lines.append(line)
 
@@ -1406,6 +1476,16 @@ def run_gpcopy_job(job_id):
                                          total_items=total_n)
                         last_pct = pct
 
+            leaf = _FINISHED_TABLE_RE.search(line) or _FAILED_TABLE_RE.search(line)
+            if leaf:
+                owner = find_owner_item(
+                    leaf.group("schema"), leaf.group("table"), item_keys
+                )
+                if owner is not None:
+                    parts_done_by_item[owner] = parts_done_by_item.get(owner, 0) + 1
+                    dirty_items.add(owner)
+                    last_parts_flush = flush_parts()
+
             # реагируем на стоп без ожидания конца лога
             now = time.time()
             if now - last_stop_check > 3:
@@ -1416,6 +1496,8 @@ def run_gpcopy_job(job_id):
                     except Exception:
                         pass
                     break
+
+        flush_parts(force=True)
 
         process.wait()
         stderr_thread.join(timeout=10)

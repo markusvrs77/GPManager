@@ -1962,6 +1962,8 @@
                     var msg = it.message || it.error_message || "";
                     var size = Number(it.size_bytes || 0);
                     var moved = Number(it.bytes_done || 0);
+                    var pTot = Number(it.parts_total || 0);
+                    var pDone = Number(it.parts_done || 0);
                     var vol = "";
                     if (size > 0) {
                         if (it.status === "running") {
@@ -1971,6 +1973,15 @@
                         } else if (it.status === "done") {
                             vol = ' <span class="cols">· ' + fmtBytes(size) + "</span>";
                         }
+                    } else if (pTot > 0 && it.status === "running") {
+                        // свой индикатор таблицы: партиций готово / всего
+                        var pp = Math.min(100, Math.round(pDone / pTot * 100));
+                        vol = ' <span class="cols">· ' + fmtN(pDone) + "/" + fmtN(pTot) +
+                            ' парт.</span> <span class="gpp-bar" style="display: inline-block;' +
+                            ' width: 90px; vertical-align: middle;"><i style="width: ' +
+                            pp + '%;"></i></span> <span class="cols">' + pp + "%</span>";
+                    } else if (pTot > 0 && it.status === "done") {
+                        vol = ' <span class="cols">· ' + fmtN(pTot) + " парт.</span>";
                     }
                     return '<div class="gpp-key-row"><span>' + esc(name) + vol +
                         (msg ? ' <span class="cols err">· ' + esc(String(msg)) +
