@@ -134,66 +134,65 @@
 
     window.advRunSelected = function () {
         var conn = document.getElementById("connection_id").value;
-        var groups = {};    // action -> [{schema, table}]
 
-        ADV.forEach(function (r, i) {
-            if (!ADV_CHECKED[i]) { return; }
-            (groups[r.action] = groups[r.action] || []).push({
-                schema: r.schema, table: r.table,
+        // одна задача: у каждой таблицы своя рекомендованная операция,
+        // критичные — первыми (ADV уже отсортирован crit -> warn),
+        // раннер исполняет строки по порядку
+        var tables = [];
+
+        ["crit", "warn"].forEach(function (sev) {
+            ADV.forEach(function (r, i) {
+                if (!ADV_CHECKED[i] || r.severity !== sev) { return; }
+                tables.push({
+                    schema: r.schema, table: r.table, action: r.action,
+                });
             });
         });
 
-        var actions = Object.keys(groups);
-
-        if (!actions.length) { return; }
+        if (!tables.length) { return; }
 
         var btn = document.getElementById("advRun");
         btn.disabled = true;
 
-        var jobIds = [];
+        fetch("/api/vacuum/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                connection_id: conn,
+                action: "VACUUM_ANALYZE",   // запас на таблицы без action
+                tables: tables,
+            }),
+        }).then(function (r) { return r.json(); }).then(function (d) {
+            btn.disabled = false;
 
-        // по одной задаче на тип операции, последовательно
-        var next = function (k) {
-            if (k >= actions.length) {
-                btn.disabled = false;
-
-                if (jobIds.length && typeof showVacuumMessage === "function") {
-                    showVacuumMessage(
-                        "Ассистент запустил задачи: #" + jobIds.join(", #"),
-                        "success"
-                    );
-                }
-
-                // поллим последнюю задачу штатным механизмом vacuum.js
-                if (jobIds.length &&
-                        typeof startVacuumPolling === "function") {
-                    currentVacuumJobId = jobIds[jobIds.length - 1];
-                    if (typeof setVacuumButtonRunning === "function") {
-                        setVacuumButtonRunning(true);
-                    }
-                    startVacuumPolling();
+            if (!d.ok) {
+                if (typeof showVacuumMessage === "function") {
+                    showVacuumMessage(d.message || "Ошибка запуска", "danger");
                 }
                 return;
             }
 
-            fetch("/api/vacuum/start", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    connection_id: conn,
-                    action: actions[k],
-                    tables: groups[actions[k]],
-                }),
-            }).then(function (r) { return r.json(); }).then(function (d) {
-                if (d.ok) { jobIds.push(d.job_id); }
-                else if (typeof showVacuumMessage === "function") {
-                    showVacuumMessage(actions[k] + ": " +
-                        (d.message || "ошибка"), "danger");
-                }
-                next(k + 1);
-            }).catch(function () { next(k + 1); });
-        };
+            if (typeof showVacuumMessage === "function") {
+                showVacuumMessage(
+                    "Ассистент запустил задачу #" + d.job_id +
+                    ": " + tables.length + " таблиц, у каждой своя операция, " +
+                    "критичные первыми.",
+                    "success"
+                );
+            }
 
-        next(0);
+            currentVacuumJobId = d.job_id;
+            if (typeof setVacuumButtonRunning === "function") {
+                setVacuumButtonRunning(true);
+            }
+            if (typeof startVacuumPolling === "function") {
+                startVacuumPolling();
+            }
+        }).catch(function (e) {
+            btn.disabled = false;
+            if (typeof showVacuumMessage === "function") {
+                showVacuumMessage(String(e), "danger");
+            }
+        });
     };
 })();

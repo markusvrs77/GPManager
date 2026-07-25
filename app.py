@@ -973,10 +973,13 @@ def api_vacuum_start():
         for item in selected_tables:
             schema_name = None
             table_name = None
+            item_action = None
 
             if isinstance(item, dict):
                 schema_name = item.get("schema") or item.get("schema_name")
                 table_name = item.get("table") or item.get("table_name")
+                # своя операция у таблицы (ассистент): валидируем так же
+                item_action = str(item.get("action") or "").upper().strip()
 
             elif isinstance(item, str):
                 value = item.strip()
@@ -996,12 +999,15 @@ def api_vacuum_start():
 
             seen.add(key)
 
-            unique_tables.append(
-                {
-                    "schema": schema_name,
-                    "table": table_name,
-                }
-            )
+            entry = {
+                "schema": schema_name,
+                "table": table_name,
+            }
+
+            if item_action and item_action in allowed_actions:
+                entry["action"] = item_action
+
+            unique_tables.append(entry)
 
         if not unique_tables:
             return jsonify(

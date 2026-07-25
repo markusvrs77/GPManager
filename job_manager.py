@@ -76,6 +76,12 @@ def create_job(job_type, connection_id, config):
             if not schema_name or not table_name:
                 continue
 
+            # у таблицы может быть своя операция (ассистент vacuum:
+            # каждой таблице — то, что ей рекомендовано)
+            row_action = str(
+                item.get("action") or item_action
+            ).upper().strip()
+
             cur.execute(
                 """
                 INSERT INTO job_items (
@@ -91,7 +97,7 @@ def create_job(job_type, connection_id, config):
                     job_id,
                     schema_name,
                     table_name,
-                    item_action,
+                    row_action,
                     "queued",
                 ),
             )
