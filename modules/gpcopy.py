@@ -234,6 +234,59 @@ def parse_finished_tables(stdout_data):
     return finished
 
 
+_FAILED_TABLE_RE = re.compile(
+    r'Failed to copy table\s+"(?P<db>[^"]+)"\."(?P<schema>[^"]+)"\."(?P<table>[^"]+)"'
+)
+
+_SUMMARY_RE = re.compile(
+    r"successfully copied\s+(?P<copied>\d+)\s+tables,\s+skipped\s+"
+    r"(?P<skipped>\d+)\s+tables,\s+failed\s+(?P<failed>\d+)\s+tables",
+    re.IGNORECASE,
+)
+
+
+def parse_failed_leaf_tables(text):
+    """[(schema, table)] партиций, которые gpcopy отчитал как Failed to copy."""
+    out = []
+    seen = set()
+
+    for match in _FAILED_TABLE_RE.finditer(text or ""):
+        pair = (match.group("schema"), match.group("table"))
+        if pair not in seen:
+            seen.add(pair)
+            out.append(pair)
+
+    return out
+
+
+def parse_gpcopy_summary(text):
+    """{'copied': N, 'skipped': N, 'failed': N} из финальной сводки gpcopy."""
+    match = _SUMMARY_RE.search(text or "")
+
+    if not match:
+        return None
+
+    return {
+        "copied": int(match.group("copied")),
+        "skipped": int(match.group("skipped")),
+        "failed": int(match.group("failed")),
+    }
+
+
+def leaf_belongs_to_item(leaf_schema, leaf_table, item_schema, item_table):
+    """
+    Партиция принадлежит выбранной таблице, если та же схема и имя —
+    либо совпадает, либо это её партиция (<родитель>_1_prt…/_1_def…).
+    """
+    if leaf_schema != item_schema:
+        return False
+
+    if leaf_table == item_table:
+        return True
+
+    return leaf_table.startswith(item_table + "_1_")
+
+
 def build_failure_report(command_text, rc, stdout_data, stderr_data,
                          stdout_tail_chars=6000, stderr_chars=4000):
     """
@@ -1362,26 +1415,61 @@ def run_gpcopy_job(job_id):
                 command_text, rc, stdout_data, stderr_data
             )
 
-            # часть таблиц обычно успевает скопироваться — не помечаем
-            # ошибкой то, что gpcopy явно отчитался как готовое
+            # авторитетная сводка самого gpcopy — в шапку отчёта
+            summary = parse_gpcopy_summary(stdout_data)
+            if summary:
+                full_error = (
+                    "gpcopy: скопировано {copied}, пропущено {skipped}, "
+                    "не удалось {failed} таблиц(ы).\n\n{rest}".format(
+                        copied=summary["copied"],
+                        skipped=summary["skipped"],
+                        failed=summary["failed"],
+                        rest=full_error,
+                    )
+                )
+
+            # gpcopy разворачивает выбранную таблицу в тысячи партиций;
+            # относим готовые/упавшие партиции к её родителю, чтобы не красить
+            # таблицу целиком, когда упало 2 партиции из 2131
             finished = parse_finished_tables(stdout_data)
+            failed_leaves = parse_failed_leaf_tables(
+                stdout_data + "\n" + stderr_data
+            )
 
             for item in items:
                 item_id = get_item_value(item, "id")
-                key = (
-                    get_item_value(item, "schema_name"),
-                    get_item_value(item, "table_name"),
-                )
+                ischema = get_item_value(item, "schema_name")
+                itable = get_item_value(item, "table_name")
 
-                if key in finished:
+                my_failed = [
+                    lt for (ls, lt) in failed_leaves
+                    if leaf_belongs_to_item(ls, lt, ischema, itable)
+                ]
+                my_done = [
+                    lt for (ls, lt) in finished
+                    if leaf_belongs_to_item(ls, lt, ischema, itable)
+                ]
+
+                if my_failed:
+                    names = ", ".join(my_failed[:5])
+                    if len(my_failed) > 5:
+                        names += " …ещё {}".format(len(my_failed) - 5)
+
+                    msg = "Скопировано {} партиций, не удалось {}: {}".format(
+                        len(my_done), len(my_failed), names
+                    )
+                    safe_mark_item_failed(
+                        item_id, error_message=msg[:2000],
+                        duration_seconds=duration,
+                    )
+                elif my_done:
+                    # все партиции этой таблицы перенеслись
                     safe_mark_item_done(item_id, duration_seconds=duration)
-                    continue
-
-                safe_mark_item_failed(
-                    item_id,
-                    error_message=error_text[:2000],
-                    duration_seconds=duration,
-                )
+                else:
+                    safe_mark_item_failed(
+                        item_id, error_message=error_text[:2000],
+                        duration_seconds=duration,
+                    )
 
             refresh_job_progress(job_id)
             safe_mark_job_failed(job_id, full_error[:12000])

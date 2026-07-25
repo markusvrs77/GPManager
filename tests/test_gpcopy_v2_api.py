@@ -124,6 +124,45 @@ def test_failure_report_keeps_stderr_when_stdout_is_huge():
     assert "copying table t0\n" not in report
 
 
+def test_parse_gpcopy_summary_and_failed_leaves():
+    """Из падения 2/2131 партиций видно, что почти всё скопировалось."""
+    import modules.gpcopy as g
+
+    log = (
+        '20260725:16:39:12 gpcopy:-[ERROR]:-[Worker 1] Failed to copy table '
+        '"adb"."dwh_stage"."s01_t_bal_1_prt_995" => '
+        '"adb"."dwh_stage"."s01_t_bal_1_prt_995"\n'
+        '20260725:16:26:11 gpcopy:-[ERROR]:-[Worker 2] Failed to copy table '
+        '"adb"."dwh_stage"."s01_t_bal_1_prt_1191" => '
+        '"adb"."dwh_stage"."s01_t_bal_1_prt_1191"\n'
+        '20260725:16:41:18 gpcopy:-[INFO]:-\tDatabase adb: successfully copied '
+        '2129 tables, skipped 0 tables, failed 2 tables\n'
+    )
+
+    assert g.parse_gpcopy_summary(log) == {"copied": 2129, "skipped": 0, "failed": 2}
+
+    failed = g.parse_failed_leaf_tables(log)
+    assert set(failed) == {
+        ("dwh_stage", "s01_t_bal_1_prt_995"),
+        ("dwh_stage", "s01_t_bal_1_prt_1191"),
+    }
+
+    assert g.parse_gpcopy_summary("no summary here") is None
+
+
+def test_leaf_belongs_to_item():
+    """Партиции относим к родителю; чужие таблицы не цепляем."""
+    import modules.gpcopy as g
+
+    assert g.leaf_belongs_to_item("s", "t_1_prt_5", "s", "t")
+    assert g.leaf_belongs_to_item("s", "t_1_def_pr_x", "s", "t")
+    assert g.leaf_belongs_to_item("s", "t", "s", "t")           # непартиц.
+    # другая схема
+    assert not g.leaf_belongs_to_item("other", "t_1_prt_5", "s", "t")
+    # другая таблица с похожим префиксом
+    assert not g.leaf_belongs_to_item("s", "t_hist_1_prt_5", "s", "t")
+
+
 def test_parse_progress_counter():
     """Детальный live-процент берём из счётчика '(done/total) tables done'."""
     import modules.gpcopy as g
