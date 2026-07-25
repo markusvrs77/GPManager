@@ -286,6 +286,13 @@ def init_db():
         "ALTER TABLE job_items ADD COLUMN bytes_done INTEGER DEFAULT 0"
     )
 
+    # PID внешнего процесса (gpcopy) — для переподхвата после рестарта
+    ensure_column_exists(
+        "jobs",
+        "pid",
+        "ALTER TABLE jobs ADD COLUMN pid INTEGER"
+    )
+
     # партиции таблицы: всего / уже скопировано (live-прогресс gpcopy)
     ensure_column_exists(
         "job_items",

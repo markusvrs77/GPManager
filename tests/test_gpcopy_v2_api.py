@@ -150,6 +150,29 @@ def test_parse_gpcopy_summary_and_failed_leaves():
     assert g.parse_gpcopy_summary("no summary here") is None
 
 
+def test_is_gpcopy_success():
+    """После рестарта rc неизвестен — успех определяем по сводке gpcopy."""
+    import modules.gpcopy as g
+
+    assert g.is_gpcopy_success(0, None) is True
+    assert g.is_gpcopy_success(1, None) is False
+    # переподхват: rc=None, сводка без упавших -> успех
+    assert g.is_gpcopy_success(None, {"copied": 10, "skipped": 0, "failed": 0}) is True
+    assert g.is_gpcopy_success(None, {"copied": 9, "skipped": 0, "failed": 1}) is False
+    # rc=None и сводки нет (лог оборван) -> не считаем успехом
+    assert g.is_gpcopy_success(None, None) is False
+
+
+def test_pid_alive():
+    import os
+
+    import modules.gpcopy as g
+
+    assert g.pid_alive(os.getpid()) is True
+    assert g.pid_alive(None) is False
+    assert g.pid_alive(999999999) is False
+
+
 def test_find_owner_item():
     """Партиция из лога относится к своей таблице; точное имя важнее префикса."""
     import modules.gpcopy as g

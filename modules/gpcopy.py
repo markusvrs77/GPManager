@@ -27,6 +27,8 @@ try:
         set_job_progress,
         set_item_size,
         set_item_parts,
+        set_job_runtime,
+        list_unfinished_jobs,
         update_job_config,
         is_stop_requested,
         clear_stop_flag,
@@ -47,6 +49,8 @@ except ImportError:
         set_job_progress,
         set_item_size,
         set_item_parts,
+        set_job_runtime,
+        list_unfinished_jobs,
         update_job_config,
         is_stop_requested,
         clear_stop_flag,
@@ -275,6 +279,68 @@ def parse_gpcopy_summary(text):
         "skipped": int(match.group("skipped")),
         "failed": int(match.group("failed")),
     }
+
+
+def _job_log_path(job_id):
+    """Постоянный лог gpcopy-задачи — переживает рестарт приложения."""
+    log_dir = os.path.join(tempfile.gettempdir(), "gpmanager_jobs")
+
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except Exception:
+        log_dir = tempfile.gettempdir()
+
+    return os.path.join(log_dir, "gpcopy_job_{}.log".format(int(job_id)))
+
+
+def pid_alive(pid):
+    """Жив ли процесс. Кроссплатформенно, без psutil."""
+    if not pid:
+        return False
+
+    pid = int(pid)
+
+    if os.name == "nt":
+        import ctypes
+
+        SYNCHRONIZE = 0x00100000
+        handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, 0, pid)
+
+        if not handle:
+            return False
+
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def terminate_pid(pid):
+    """Мягко останавливает внешний процесс по PID."""
+    import signal
+
+    try:
+        os.kill(int(pid), signal.SIGTERM)
+    except Exception:
+        pass
+
+
+def is_gpcopy_success(rc, summary):
+    """
+    Успех задачи: код возврата 0, либо (после рестарта, когда rc неизвестен)
+    финальная сводка gpcopy без упавших таблиц.
+    """
+    if rc == 0:
+        return True
+
+    if rc is None and summary and int(summary.get("failed") or 0) == 0:
+        return True
+
+    return False
 
 
 def find_owner_item(leaf_schema, leaf_table, item_keys):
@@ -1161,6 +1227,316 @@ def build_include_json_for_date(source_db, dest_db, table_configs):
     return result
 
 
+def _watch_gpcopy_log(job_id, log_path, item_keys, process=None, pid=None):
+    """
+    Следит за лог-файлом gpcopy: live-процент, пер-табличные счётчики,
+    остановка по кнопке. Работает и для только что запущенного процесса,
+    и для переподхваченного после рестарта (по PID). Возвращает текст лога.
+    """
+    if process is not None and pid is None:
+        pid = process.pid
+
+    collected = []
+    state = {"last_pct": -1, "last_stop": 0.0, "flush_ts": 0.0}
+
+    parts_done_by_item = {}
+    dirty_items = set()
+
+    def flush_parts(force=False):
+        now_ts = time.time()
+
+        if not force and now_ts - state["flush_ts"] < 2:
+            return
+
+        for _iid in list(dirty_items):
+            try:
+                set_item_parts(_iid, parts_done=parts_done_by_item[_iid])
+            except Exception:
+                pass
+
+        dirty_items.clear()
+        state["flush_ts"] = now_ts
+
+    def handle_line(line):
+        counter = parse_progress_counter(line)
+
+        if counter:
+            done_n, total_n = counter
+
+            if total_n > 0:
+                pct = round(done_n / float(total_n) * 100, 2)
+
+                if pct != state["last_pct"]:
+                    set_job_progress(job_id, pct, done_items=done_n,
+                                     total_items=total_n)
+                    state["last_pct"] = pct
+
+        leaf = _FINISHED_TABLE_RE.search(line) or _FAILED_TABLE_RE.search(line)
+
+        if leaf:
+            owner = find_owner_item(
+                leaf.group("schema"), leaf.group("table"), item_keys
+            )
+
+            if owner is not None:
+                parts_done_by_item[owner] = parts_done_by_item.get(owner, 0) + 1
+                dirty_items.add(owner)
+                flush_parts()
+
+    # файл мог ещё не появиться (первая запись gpcopy)
+    for _ in range(20):
+        if os.path.exists(log_path):
+            break
+        time.sleep(0.25)
+
+    try:
+        lf = open(log_path, "r", encoding="utf-8", errors="replace")
+    except Exception:
+        lf = None
+
+    if lf is None:
+        if process is not None:
+            process.wait()
+        else:
+            while pid_alive(pid):
+                time.sleep(1)
+        return ""
+
+    with lf:
+        while True:
+            line = lf.readline()
+
+            if line:
+                collected.append(line)
+                handle_line(line)
+                continue
+
+            alive = (
+                process.poll() is None
+                if process is not None
+                else pid_alive(pid)
+            )
+
+            if not alive:
+                rest = lf.read()
+
+                if rest:
+                    collected.append(rest)
+
+                    for tail_line in rest.splitlines():
+                        handle_line(tail_line)
+                break
+
+            now = time.time()
+
+            if now - state["last_stop"] > 3:
+                state["last_stop"] = now
+
+                if is_stop_requested(job_id):
+                    if process is not None:
+                        try:
+                            process.terminate()
+                        except Exception:
+                            pass
+                    elif pid:
+                        terminate_pid(pid)
+
+            time.sleep(0.5)
+
+    if process is not None:
+        process.wait()
+
+    flush_parts(force=True)
+    return "".join(collected)
+
+
+def finalize_gpcopy_job(job_id, items, rc, stdout_data, stderr_data,
+                        command_text, duration, config):
+    """
+    Итоговые статусы задачи и объектов по логу gpcopy.
+    Общая точка для обычного запуска и переподхвата после рестарта
+    (там rc неизвестен — ориентируемся на финальную сводку gpcopy).
+    """
+    summary = parse_gpcopy_summary(stdout_data)
+
+    if is_gpcopy_success(rc, summary):
+        for item in items:
+            item_id = get_item_value(item, "id")
+            safe_mark_item_done(item_id, duration_seconds=duration)
+
+        refresh_job_progress(job_id)
+        mark_job_done(job_id)
+        return
+
+    # по таблицам показываем выжимку строк с ошибками: слепой срез
+    # начала stderr обрывал сообщение на полуслове
+    error_lines = extract_error_lines(stdout_data, stderr_data, limit=5)
+
+    error_text = (
+        "\n".join(error_lines)
+        or stderr_data
+        or stdout_data
+        or "gpcopy failed with rc={}".format(rc)
+    )
+
+    full_error = build_failure_report(
+        command_text, rc, stdout_data, stderr_data
+    )
+
+    # авторитетная сводка самого gpcopy — в шапку отчёта
+    if summary:
+        full_error = (
+            "gpcopy: скопировано {copied}, пропущено {skipped}, "
+            "не удалось {failed} таблиц(ы).\n\n{rest}".format(
+                copied=summary["copied"],
+                skipped=summary["skipped"],
+                failed=summary["failed"],
+                rest=full_error,
+            )
+        )
+
+    # gpcopy разворачивает выбранную таблицу в тысячи партиций;
+    # относим готовые/упавшие партиции к её родителю, чтобы не красить
+    # таблицу целиком, когда упало 2 партиции из 2131
+    finished = parse_finished_tables(stdout_data)
+    failed_leaves = parse_failed_leaf_tables(
+        stdout_data + "\n" + (stderr_data or "")
+    )
+
+    # точный список упавших — в конфиг задачи: по нему кнопка
+    # «Дозагрузить упавшие» перельёт только эти партиции
+    if failed_leaves:
+        try:
+            config["failed_leaves"] = [list(p) for p in failed_leaves]
+            update_job_config(job_id, config)
+        except Exception:
+            pass
+
+    for item in items:
+        item_id = get_item_value(item, "id")
+        ischema = get_item_value(item, "schema_name")
+        itable = get_item_value(item, "table_name")
+
+        my_failed = [
+            lt for (ls, lt) in failed_leaves
+            if leaf_belongs_to_item(ls, lt, ischema, itable)
+        ]
+        my_done = [
+            lt for (ls, lt) in finished
+            if leaf_belongs_to_item(ls, lt, ischema, itable)
+        ]
+
+        if my_failed:
+            names = ", ".join(my_failed[:5])
+
+            if len(my_failed) > 5:
+                names += " …ещё {}".format(len(my_failed) - 5)
+
+            msg = "Скопировано {} партиций, не удалось {}: {}".format(
+                len(my_done), len(my_failed), names
+            )
+            safe_mark_item_failed(
+                item_id, error_message=msg[:2000],
+                duration_seconds=duration,
+            )
+        elif my_done:
+            # все партиции этой таблицы перенеслись
+            safe_mark_item_done(item_id, duration_seconds=duration)
+        else:
+            safe_mark_item_failed(
+                item_id, error_message=error_text[:2000],
+                duration_seconds=duration,
+            )
+
+    refresh_job_progress(job_id)
+    safe_mark_job_failed(job_id, full_error[:12000])
+
+
+def _resume_watch(job_id, log_path, pid, items, item_keys, config):
+    started = time.time()
+
+    log_text = _watch_gpcopy_log(job_id, log_path, item_keys, pid=pid)
+
+    if is_stop_requested(job_id):
+        safe_mark_job_cancelled(job_id, "Stop requested")
+        refresh_job_progress(job_id)
+        return
+
+    finalize_gpcopy_job(
+        job_id, items, None, log_text, "",
+        "gpcopy (переподхвачен после рестарта GPManager)",
+        time.time() - started, config,
+    )
+
+
+def resume_unfinished_gpcopy_jobs():
+    """
+    Переподхват gpcopy-задач после рестарта приложения: процесс gpcopy —
+    отдельный бинарь и рестарт GPManager его не убивает. Если процесс жив,
+    продолжаем следить за его логом; если уже завершился — дочитываем лог
+    и ставим реальные статусы вместо слепого interrupted.
+    Возвращает список job_id, которые НЕ надо помечать interrupted.
+    """
+    import threading
+
+    handled = []
+
+    try:
+        unfinished = list_unfinished_jobs()
+    except Exception:
+        return handled
+
+    for job in unfinished:
+        if job.get("job_type") != "gpcopy":
+            continue
+
+        log_path = job.get("log_file")
+        pid = job.get("pid")
+        job_id = int(job["id"])
+
+        # старые задачи без лога — обычный interrupted
+        if not log_path or not os.path.exists(log_path):
+            continue
+
+        try:
+            items = get_job_items(job_id)
+            item_keys = [
+                (
+                    get_item_value(i, "id"),
+                    get_item_value(i, "schema_name"),
+                    get_item_value(i, "table_name"),
+                )
+                for i in items
+            ]
+            config = json.loads(job.get("config_json") or "{}")
+        except Exception:
+            continue
+
+        handled.append(job_id)
+
+        if pid and pid_alive(pid):
+            threading.Thread(
+                target=_resume_watch,
+                args=(job_id, log_path, pid, items, item_keys, config),
+                daemon=True,
+            ).start()
+        else:
+            try:
+                with open(log_path, "r", encoding="utf-8",
+                          errors="replace") as f:
+                    log_text = f.read()
+            except Exception:
+                log_text = ""
+
+            finalize_gpcopy_job(
+                job_id, items, None, log_text, "",
+                "gpcopy (завершился, пока GPManager был перезапущен)",
+                0, config,
+            )
+
+    return handled
+
+
 def run_gpcopy_job(job_id):
     include_file = None
     include_json_file = None
@@ -1415,95 +1791,36 @@ def run_gpcopy_job(job_id):
             refresh_job_progress(job_id)
             return
 
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-            bufsize=1,
+        # Лог пишется в постоянный файл, процесс отвязан от родителя:
+        # рестарт GPManager не убивает gpcopy, а при старте приложение
+        # переподхватывает задачу по PID и лог-файлу.
+        log_path = _job_log_path(job_id)
+        log_handle = open(log_path, "w", encoding="utf-8", errors="replace")
+
+        popen_kwargs = {
+            "stdout": log_handle,
+            "stderr": subprocess.STDOUT,
+            "universal_newlines": True,
+        }
+
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
+        else:
+            popen_kwargs["creationflags"] = 0x00000200  # CREATE_NEW_PROCESS_GROUP
+
+        process = subprocess.Popen(cmd, **popen_kwargs)
+
+        try:
+            log_handle.close()
+        except Exception:
+            pass
+
+        set_job_runtime(job_id, pid=process.pid, log_file=log_path)
+
+        stdout_data = _watch_gpcopy_log(
+            job_id, log_path, item_keys, process=process
         )
-
-        # stderr читаем отдельным потоком, чтобы не поймать дедлок на
-        # заполнении трубы, пока в основном потоке стримим stdout
-        stderr_lines = []
-
-        def drain_stderr():
-            try:
-                for line in process.stderr:
-                    stderr_lines.append(line)
-            except Exception:
-                pass
-
-        import threading as _threading
-
-        stderr_thread = _threading.Thread(target=drain_stderr, daemon=True)
-        stderr_thread.start()
-
-        # Живой прогресс: gpcopy печатает "(done/total) tables done" по мере
-        # копирования партиций — снимаем его прямо в бар, не дожидаясь
-        # завершения таблиц целиком.
-        stdout_lines = []
-        last_pct = -1
-        last_stop_check = 0.0
-
-        # пер-табличный live-счётчик: партиция из лога -> её таблица
-        parts_done_by_item = {}
-        dirty_items = set()
-        last_parts_flush = 0.0
-
-        def flush_parts(force=False):
-            now_ts = time.time()
-            if not force and now_ts - last_parts_flush < 2:
-                return last_parts_flush
-            for _iid in list(dirty_items):
-                try:
-                    set_item_parts(_iid, parts_done=parts_done_by_item[_iid])
-                except Exception:
-                    pass
-            dirty_items.clear()
-            return now_ts
-
-        for line in process.stdout:
-            stdout_lines.append(line)
-
-            counter = parse_progress_counter(line)
-            if counter:
-                done_n, total_n = counter
-                if total_n > 0:
-                    pct = round(done_n / float(total_n) * 100, 2)
-                    if pct != last_pct:
-                        set_job_progress(job_id, pct, done_items=done_n,
-                                         total_items=total_n)
-                        last_pct = pct
-
-            leaf = _FINISHED_TABLE_RE.search(line) or _FAILED_TABLE_RE.search(line)
-            if leaf:
-                owner = find_owner_item(
-                    leaf.group("schema"), leaf.group("table"), item_keys
-                )
-                if owner is not None:
-                    parts_done_by_item[owner] = parts_done_by_item.get(owner, 0) + 1
-                    dirty_items.add(owner)
-                    last_parts_flush = flush_parts()
-
-            # реагируем на стоп без ожидания конца лога
-            now = time.time()
-            if now - last_stop_check > 3:
-                last_stop_check = now
-                if is_stop_requested(job_id):
-                    try:
-                        process.terminate()
-                    except Exception:
-                        pass
-                    break
-
-        flush_parts(force=True)
-
-        process.wait()
-        stderr_thread.join(timeout=10)
-
-        stdout_data = "".join(stdout_lines)
-        stderr_data = "".join(stderr_lines)
+        stderr_data = ""  # stderr слит в общий лог-файл
         rc = process.returncode
 
         duration = time.time() - started
@@ -1513,97 +1830,10 @@ def run_gpcopy_job(job_id):
             refresh_job_progress(job_id)
             return
 
-        if rc == 0:
-            for item in items:
-                item_id = get_item_value(item, "id")
-                safe_mark_item_done(item_id, duration_seconds=duration)
-
-            refresh_job_progress(job_id)
-            mark_job_done(job_id)
-
-        else:
-            # по таблицам показываем выжимку строк с ошибками: слепой срез
-            # начала stderr обрывал сообщение на полуслове
-            error_lines = extract_error_lines(stdout_data, stderr_data, limit=5)
-
-            error_text = (
-                "\n".join(error_lines)
-                or stderr_data
-                or stdout_data
-                or "gpcopy failed with rc={}".format(rc)
-            )
-
-            full_error = build_failure_report(
-                command_text, rc, stdout_data, stderr_data
-            )
-
-            # авторитетная сводка самого gpcopy — в шапку отчёта
-            summary = parse_gpcopy_summary(stdout_data)
-            if summary:
-                full_error = (
-                    "gpcopy: скопировано {copied}, пропущено {skipped}, "
-                    "не удалось {failed} таблиц(ы).\n\n{rest}".format(
-                        copied=summary["copied"],
-                        skipped=summary["skipped"],
-                        failed=summary["failed"],
-                        rest=full_error,
-                    )
-                )
-
-            # gpcopy разворачивает выбранную таблицу в тысячи партиций;
-            # относим готовые/упавшие партиции к её родителю, чтобы не красить
-            # таблицу целиком, когда упало 2 партиции из 2131
-            finished = parse_finished_tables(stdout_data)
-            failed_leaves = parse_failed_leaf_tables(
-                stdout_data + "\n" + stderr_data
-            )
-
-            # точный список упавших — в конфиг задачи: по нему кнопка
-            # «Дозагрузить упавшие» перельёт только эти партиции
-            if failed_leaves:
-                try:
-                    config["failed_leaves"] = [list(p) for p in failed_leaves]
-                    update_job_config(job_id, config)
-                except Exception:
-                    pass
-
-            for item in items:
-                item_id = get_item_value(item, "id")
-                ischema = get_item_value(item, "schema_name")
-                itable = get_item_value(item, "table_name")
-
-                my_failed = [
-                    lt for (ls, lt) in failed_leaves
-                    if leaf_belongs_to_item(ls, lt, ischema, itable)
-                ]
-                my_done = [
-                    lt for (ls, lt) in finished
-                    if leaf_belongs_to_item(ls, lt, ischema, itable)
-                ]
-
-                if my_failed:
-                    names = ", ".join(my_failed[:5])
-                    if len(my_failed) > 5:
-                        names += " …ещё {}".format(len(my_failed) - 5)
-
-                    msg = "Скопировано {} партиций, не удалось {}: {}".format(
-                        len(my_done), len(my_failed), names
-                    )
-                    safe_mark_item_failed(
-                        item_id, error_message=msg[:2000],
-                        duration_seconds=duration,
-                    )
-                elif my_done:
-                    # все партиции этой таблицы перенеслись
-                    safe_mark_item_done(item_id, duration_seconds=duration)
-                else:
-                    safe_mark_item_failed(
-                        item_id, error_message=error_text[:2000],
-                        duration_seconds=duration,
-                    )
-
-            refresh_job_progress(job_id)
-            safe_mark_job_failed(job_id, full_error[:12000])
+        finalize_gpcopy_job(
+            job_id, items, rc, stdout_data, stderr_data,
+            command_text, duration, config,
+        )
 
     except Exception as e:
         err = "{}\n{}".format(str(e), traceback.format_exc())

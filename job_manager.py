@@ -588,12 +588,54 @@ def get_latest_job(job_type=None):
 
     return dict(row) if row else None
 
-def mark_interrupted_jobs_on_startup():
+def set_job_runtime(job_id, pid=None, log_file=None):
+    """PID внешнего процесса и путь к его логу — для переподхвата после рестарта."""
+    fields = []
+    params = []
+
+    if pid is not None:
+        fields.append("pid = ?")
+        params.append(int(pid))
+
+    if log_file is not None:
+        fields.append("log_file = ?")
+        params.append(str(log_file))
+
+    if not fields:
+        return
+
+    params.append(job_id)
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE jobs SET {} WHERE id = ?".format(", ".join(fields)),
+            params,
+        )
+
+
+def list_unfinished_jobs():
+    """Задачи, оставшиеся активными после рестарта приложения."""
+    with sqlite_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, job_type, status, connection_id, config_json,
+                   log_file, pid
+            FROM jobs
+            WHERE status IN ('queued', 'running', 'stopping')
+            ORDER BY id
+            """
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def mark_interrupted_jobs_on_startup(exclude_ids=None):
     """
     При старте приложения переводит зависшие jobs в interrupted.
     Нужно на случай, если Flask был перезапущен во время выполнения background thread.
+    exclude_ids — задачи, которые удалось переподхватить (не трогаем).
     """
 
+    exclude = set(int(x) for x in (exclude_ids or []))
     interrupted_job_ids = []
 
     with sqlite_cursor(commit=True) as cur:
@@ -606,7 +648,10 @@ def mark_interrupted_jobs_on_startup():
         )
 
         rows = cur.fetchall()
-        interrupted_job_ids = [int(row["id"]) for row in rows]
+        interrupted_job_ids = [
+            int(row["id"]) for row in rows
+            if int(row["id"]) not in exclude
+        ]
 
         if not interrupted_job_ids:
             return []

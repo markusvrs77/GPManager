@@ -2479,8 +2479,16 @@ def api_notification_channel_test(channel_id):
 
 if __name__ == "__main__":
     init_db()
-    
-    interrupted_jobs = mark_interrupted_jobs_on_startup()
+
+    # переподхват внешних gpcopy-процессов: рестарт GPManager их не убивает
+    from modules.gpcopy import resume_unfinished_gpcopy_jobs
+
+    resumed_jobs = resume_unfinished_gpcopy_jobs()
+
+    if resumed_jobs:
+        print("Resumed gpcopy jobs after restart:", resumed_jobs)
+
+    interrupted_jobs = mark_interrupted_jobs_on_startup(exclude_ids=resumed_jobs)
 
     if interrupted_jobs:
         print("Interrupted jobs after application startup:", interrupted_jobs)
