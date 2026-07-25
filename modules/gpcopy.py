@@ -24,6 +24,8 @@ try:
         mark_item_failed,
         mark_item_skipped,
         refresh_job_progress,
+        set_job_progress,
+        set_item_size,
         is_stop_requested,
         clear_stop_flag,
     )
@@ -40,6 +42,8 @@ except ImportError:
         mark_item_failed,
         mark_item_skipped,
         refresh_job_progress,
+        set_job_progress,
+        set_item_size,
         is_stop_requested,
         clear_stop_flag,
     )
@@ -191,6 +195,28 @@ def extract_error_lines(stdout_data, stderr_data, limit=12):
 _FINISHED_TABLE_RE = re.compile(
     r'Finished copying table\s+"(?P<db>[^"]+)"\."(?P<schema>[^"]+)"\."(?P<table>[^"]+)"'
 )
+
+
+_PROGRESS_COUNTER_RE = re.compile(
+    r"Progress:\s*\(\d+/\d+\)\s*DBs,\s*\((?P<done>\d+)/(?P<total>\d+)\)\s*tables done",
+    re.IGNORECASE,
+)
+
+
+def parse_progress_counter(line):
+    """
+    "[Progress: (0/1) DBs, (5/5216) tables done]" -> (5, 5216).
+
+    gpcopy разворачивает выбранные таблицы в тысячи партиций и в каждой
+    строке лога сообщает, сколько из них уже готово — это и есть детальный
+    live-процент, а не «дождались таблицу — дёрнули бар».
+    """
+    match = _PROGRESS_COUNTER_RE.search(line or "")
+
+    if not match:
+        return None
+
+    return (int(match.group("done")), int(match.group("total")))
 
 
 def parse_finished_tables(stdout_data):
@@ -1248,9 +1274,61 @@ def run_gpcopy_job(job_id):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             universal_newlines=True,
+            bufsize=1,
         )
 
-        stdout_data, stderr_data = process.communicate()
+        # stderr читаем отдельным потоком, чтобы не поймать дедлок на
+        # заполнении трубы, пока в основном потоке стримим stdout
+        stderr_lines = []
+
+        def drain_stderr():
+            try:
+                for line in process.stderr:
+                    stderr_lines.append(line)
+            except Exception:
+                pass
+
+        import threading as _threading
+
+        stderr_thread = _threading.Thread(target=drain_stderr, daemon=True)
+        stderr_thread.start()
+
+        # Живой прогресс: gpcopy печатает "(done/total) tables done" по мере
+        # копирования партиций — снимаем его прямо в бар, не дожидаясь
+        # завершения таблиц целиком.
+        stdout_lines = []
+        last_pct = -1
+        last_stop_check = 0.0
+
+        for line in process.stdout:
+            stdout_lines.append(line)
+
+            counter = parse_progress_counter(line)
+            if counter:
+                done_n, total_n = counter
+                if total_n > 0:
+                    pct = round(done_n / float(total_n) * 100, 2)
+                    if pct != last_pct:
+                        set_job_progress(job_id, pct, done_items=done_n,
+                                         total_items=total_n)
+                        last_pct = pct
+
+            # реагируем на стоп без ожидания конца лога
+            now = time.time()
+            if now - last_stop_check > 3:
+                last_stop_check = now
+                if is_stop_requested(job_id):
+                    try:
+                        process.terminate()
+                    except Exception:
+                        pass
+                    break
+
+        process.wait()
+        stderr_thread.join(timeout=10)
+
+        stdout_data = "".join(stdout_lines)
+        stderr_data = "".join(stderr_lines)
         rc = process.returncode
 
         duration = time.time() - started

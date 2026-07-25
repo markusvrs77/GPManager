@@ -30,6 +30,8 @@ from job_manager import (
     mark_job_failed,
     mark_job_running,
     refresh_job_progress,
+    set_item_bytes,
+    set_item_size,
 )
 
 try:
@@ -84,6 +86,71 @@ def pick_transport(source_type, dest_type):
 
 def qident(name):
     return '"' + str(name).replace('"', '""') + '"'
+
+
+def fetch_table_sizes(conn, tables):
+    """
+    {(schema, table): size_bytes} по каталогу источника.
+
+    Для партиционированной таблицы суммируем размер всего дерева
+    (pg_partition_tree, PG12/GP7). Недоступную таблицу пропускаем (0).
+    """
+    sizes = {}
+    cur = conn.cursor()
+
+    for schema, table in tables:
+        full = qident(schema) + "." + qident(table)
+
+        try:
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(pg_total_relation_size(relid)), 0)
+                FROM pg_partition_tree(%s::regclass)
+                """,
+                (full,),
+            )
+            sizes[(schema, table)] = int(cur.fetchone()[0] or 0)
+        except Exception:
+            conn.rollback()
+            try:
+                cur.execute("SELECT pg_total_relation_size(%s::regclass)", (full,))
+                sizes[(schema, table)] = int(cur.fetchone()[0] or 0)
+            except Exception:
+                conn.rollback()
+                sizes[(schema, table)] = 0
+
+    return sizes
+
+
+class _CountingReader(object):
+    """Обёртка над потоком: считает прочитанные байты и зовёт on_bytes."""
+
+    def __init__(self, stream, on_bytes):
+        self._stream = stream
+        self._on_bytes = on_bytes
+        self.total = 0
+
+    def read(self, size=-1):
+        chunk = self._stream.read(size)
+        if chunk:
+            self.total += len(chunk)
+            if self._on_bytes:
+                self._on_bytes(self.total)
+        return chunk
+
+    def readline(self, *args):
+        line = self._stream.readline(*args)
+        if line:
+            self.total += len(line)
+            if self._on_bytes:
+                self._on_bytes(self.total)
+        return line
+
+    def close(self):
+        try:
+            self._stream.close()
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------------
@@ -157,10 +224,11 @@ def ensure_dest_table(src_conn, dst_conn, schema, table, dest_is_greenplum):
 
 
 def copy_table_pipe(src_conn, dst_conn, src_schema, src_table,
-                    dst_schema, dst_table, truncate=False):
+                    dst_schema, dst_table, truncate=False, on_bytes=None):
     """
     Стримит таблицу источника в приёмник: COPY TO STDOUT → COPY FROM STDIN
     через os.pipe + reader-поток. Возвращает число перенесённых строк.
+    on_bytes(total) вызывается по мере перекачки — для live-прогресса.
     Коммитит приёмник; при ошибке откатывает и пробрасывает исключение.
     """
     src_full = qident(src_schema) + "." + qident(src_table)
@@ -195,8 +263,10 @@ def copy_table_pipe(src_conn, dst_conn, src_schema, src_table,
         t = threading.Thread(target=pump, daemon=True)
         t.start()
 
+        counted = _CountingReader(reader, on_bytes) if on_bytes else reader
+
         try:
-            dst_cur.copy_expert("COPY %s FROM STDIN" % dst_full, reader)
+            dst_cur.copy_expert("COPY %s FROM STDIN" % dst_full, counted)
         finally:
             try:
                 reader.close()
@@ -257,6 +327,22 @@ def run_copy_pipe_job(job_id):
         items = get_job_items(job_id)
         failed = 0
 
+        # веса таблиц — для взвешенного общего прогресса по объёму данных
+        try:
+            sizes = fetch_table_sizes(
+                src_conn,
+                [(it["schema_name"], it["table_name"]) for it in items],
+            )
+            for it in items:
+                set_item_size(
+                    it["id"],
+                    sizes.get((it["schema_name"], it["table_name"]), 0),
+                )
+        except Exception:
+            sizes = {}
+
+        refresh_job_progress(job_id)
+
         for item in items:
             if is_stop_requested(job_id):
                 for rest in items:
@@ -269,6 +355,16 @@ def run_copy_pipe_job(job_id):
             mark_item_running(item["id"])
             refresh_job_progress(job_id)
 
+            # live-прогресс внутри таблицы: обновляем не чаще раза в ~2 МБ,
+            # чтобы не заваливать SQLite апдейтами на больших таблицах
+            state = {"last": 0}
+
+            def on_bytes(total, _item_id=item["id"]):
+                if total - state["last"] >= 2 * 1024 * 1024:
+                    state["last"] = total
+                    set_item_bytes(_item_id, total)
+                    refresh_job_progress(job_id)
+
             try:
                 ensure_dest_table(
                     src_conn, dst_conn,
@@ -280,6 +376,7 @@ def run_copy_pipe_job(job_id):
                     item["schema_name"], item["table_name"],
                     item["schema_name"], item["table_name"],
                     truncate=truncate,
+                    on_bytes=on_bytes,
                 )
                 mark_item_done(item["id"])
             except Exception as e:

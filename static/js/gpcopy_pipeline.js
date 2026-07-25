@@ -29,6 +29,13 @@
     }
 
     function fmtN(n) { return Number(n || 0).toLocaleString("ru-RU"); }
+    function fmtBytes(b) {
+        b = Number(b || 0);
+        if (b >= 1024 * 1024 * 1024) { return (b / (1024 * 1024 * 1024)).toFixed(1) + " ГБ"; }
+        if (b >= 1024 * 1024) { return (b / (1024 * 1024)).toFixed(1) + " МБ"; }
+        if (b >= 1024) { return (b / 1024).toFixed(0) + " КБ"; }
+        return b + " Б";
+    }
 
     /* ---------------- state ---------------- */
 
@@ -1927,7 +1934,19 @@
                 items.slice(0, 300).map(function (it) {
                     var name = (it.schema_name || "") + "." + (it.table_name || "");
                     var msg = it.message || it.error_message || "";
-                    return '<div class="gpp-key-row"><span>' + esc(name) +
+                    var size = Number(it.size_bytes || 0);
+                    var moved = Number(it.bytes_done || 0);
+                    var vol = "";
+                    if (size > 0) {
+                        if (it.status === "running") {
+                            var p = Math.min(100, Math.round(moved / size * 100));
+                            vol = ' <span class="cols">· ' + fmtBytes(moved) + " / " +
+                                fmtBytes(size) + " (" + p + "%)</span>";
+                        } else if (it.status === "done") {
+                            vol = ' <span class="cols">· ' + fmtBytes(size) + "</span>";
+                        }
+                    }
+                    return '<div class="gpp-key-row"><span>' + esc(name) + vol +
                         (msg ? ' <span class="cols err">· ' + esc(String(msg)) +
                             "</span>" : "") +
                         "</span>" + runBadge(it.status) + "</div>";

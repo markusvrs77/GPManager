@@ -124,6 +124,23 @@ def test_failure_report_keeps_stderr_when_stdout_is_huge():
     assert "copying table t0\n" not in report
 
 
+def test_parse_progress_counter():
+    """Детальный live-процент берём из счётчика '(done/total) tables done'."""
+    import modules.gpcopy as g
+
+    assert g.parse_progress_counter(
+        "20260724:15:42:14 gpcopy:-[INFO]:-[Worker 2] "
+        "[Progress: (0/1) DBs, (5/5216) tables done] Finished copying table"
+    ) == (5, 5216)
+
+    assert g.parse_progress_counter(
+        "[Progress: (1/1) DBs, (5216/5216) tables done]"
+    ) == (5216, 5216)
+
+    assert g.parse_progress_counter("just an info line") is None
+    assert g.parse_progress_counter("") is None
+
+
 def test_parse_finished_tables():
     """Скопированные до падения таблицы не должны попадать в failed."""
     import modules.gpcopy as g

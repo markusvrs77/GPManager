@@ -143,7 +143,9 @@ def get_job_items(job_id):
                 started_at,
                 finished_at,
                 duration_seconds,
-                error_message
+                error_message,
+                COALESCE(size_bytes, 0) AS size_bytes,
+                COALESCE(bytes_done, 0) AS bytes_done
             FROM job_items
             WHERE job_id = ?
             ORDER BY id
@@ -351,6 +353,79 @@ def mark_item_skipped(item_id, reason):
         )
 
 
+def _weighted_progress(cur, job_id):
+    """
+    Прогресс по объёму данных, если у элементов проставлен size_bytes.
+    Готовые/пропущенные/упавшие таблицы дают полный вес, текущая — свои
+    bytes_done. Возвращает процент или None (тогда считаем по числу таблиц).
+    """
+    cur.execute(
+        """
+        SELECT
+            SUM(COALESCE(size_bytes, 0)) AS total_bytes,
+            SUM(
+                CASE
+                    WHEN status IN ('done', 'skipped', 'failed', 'interrupted')
+                        THEN COALESCE(size_bytes, 0)
+                    WHEN status = 'running'
+                        THEN MIN(COALESCE(bytes_done, 0), COALESCE(size_bytes, 0))
+                    ELSE 0
+                END
+            ) AS moved_bytes
+        FROM job_items
+        WHERE job_id = ?
+        """,
+        (job_id,),
+    )
+
+    row = dict(cur.fetchone())
+    total_bytes = row.get("total_bytes") or 0
+
+    if not total_bytes:
+        return None
+
+    moved = row.get("moved_bytes") or 0
+    return round(min(moved / float(total_bytes), 1.0) * 100, 2)
+
+
+def set_item_size(item_id, size_bytes):
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE job_items SET size_bytes = ? WHERE id = ?",
+            (int(size_bytes or 0), item_id),
+        )
+
+
+def set_item_bytes(item_id, bytes_done):
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE job_items SET bytes_done = ? WHERE id = ?",
+            (int(bytes_done or 0), item_id),
+        )
+
+
+def set_job_progress(job_id, progress_percent, done_items=None, total_items=None):
+    """Прямая установка прогресса (для потоковых раннеров вроде gpcopy)."""
+    fields = ["progress_percent = ?"]
+    params = [round(float(progress_percent), 2)]
+
+    if done_items is not None:
+        fields.append("done_items = ?")
+        params.append(int(done_items))
+
+    if total_items is not None:
+        fields.append("total_items = ?")
+        params.append(int(total_items))
+
+    params.append(job_id)
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE jobs SET {} WHERE id = ?".format(", ".join(fields)),
+            params,
+        )
+
+
 def refresh_job_progress(job_id):
     with sqlite_cursor(commit=True) as cur:
         cur.execute(
@@ -375,7 +450,13 @@ def refresh_job_progress(job_id):
 
         finished_items = done_items + failed_items + skipped_items
 
-        if total_items > 0:
+        # если известны размеры таблиц — считаем по объёму данных,
+        # иначе по числу завершённых таблиц (как раньше)
+        weighted = _weighted_progress(cur, job_id)
+
+        if weighted is not None:
+            progress_percent = weighted
+        elif total_items > 0:
             progress_percent = round((finished_items / float(total_items)) * 100, 2)
         else:
             progress_percent = 0

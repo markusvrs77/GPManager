@@ -273,6 +273,19 @@ def init_db():
         "ALTER TABLE connections ADD COLUMN db_type TEXT DEFAULT 'greenplum'"
     )
 
+    # вес таблицы (байты) для взвешенного прогресса и live-счётчик
+    ensure_column_exists(
+        "job_items",
+        "size_bytes",
+        "ALTER TABLE job_items ADD COLUMN size_bytes INTEGER DEFAULT 0"
+    )
+
+    ensure_column_exists(
+        "job_items",
+        "bytes_done",
+        "ALTER TABLE job_items ADD COLUMN bytes_done INTEGER DEFAULT 0"
+    )
+
 
 def get_connection_by_id(connection_id):
     """
