@@ -108,9 +108,17 @@ def _collect_segments(cur):
     """)
     down = [r for r in rows if r["status"] != "u"]
     unbalanced = [r for r in rows if r["role"] != r["preferred_role"]]
+
+    # content = -1 — координатор (master) и его standby, не сегменты данных
+    coord = [r for r in rows if int(r["content"]) < 0]
+    segs = [r for r in rows if int(r["content"]) >= 0]
+
     return {
         "total": len(rows),
-        "primaries": sum(1 for r in rows if r["role"] == "p"),
+        "masters": sum(1 for r in coord if r["role"] == "p"),
+        "standbys": sum(1 for r in coord if r["role"] == "m"),
+        "primaries": sum(1 for r in segs if r["role"] == "p"),
+        "mirrors": sum(1 for r in segs if r["role"] == "m"),
         "down": len(down),
         "unbalanced": len(unbalanced),
         "down_list": [

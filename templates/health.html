@@ -147,7 +147,10 @@
     function rSegments(s) {
         if (s.error) { return panel("Сегменты", "err", errTxt(s)); }
         var inner = "<div class='gph-chips'>" +
-            chip("Всего", s.total) + chip("Primary", s.primaries) +
+            chip("Мастер", s.masters +
+                (s.standbys ? " + standby" : " (без standby)")) +
+            chip("Primary", s.primaries) +
+            (s.mirrors ? chip("Mirror", s.mirrors) : chip("Mirror", "нет")) +
             chip("Down", s.down) + chip("Не в своей роли", s.unbalanced) + "</div>";
         if (s.down_list && s.down_list.length) {
             inner += s.down_list.map(function (d) {
