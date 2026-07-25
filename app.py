@@ -906,6 +906,24 @@ def vacuum_page():
         latest_vacuum_job=latest_vacuum_job,
     )
 
+@app.route("/api/vacuum/advisor")
+def api_vacuum_advisor():
+    """Ассистент: рекомендации VACUUM/ANALYZE по статистике таблиц."""
+    connection_id = request.args.get("connection_id", type=int)
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    try:
+        from modules.vacuum_advisor import advise
+
+        return jsonify(advise(connection_id))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
 @app.route("/api/vacuum/start", methods=["POST"])
 def api_vacuum_start():
     data = request.get_json(silent=True) or {}
