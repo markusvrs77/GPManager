@@ -180,6 +180,10 @@ def run_vacuum_analyze_job(job_id):
         items = get_job_items(job_id)
 
         for item in items:
+            # переподхват после рестарта: готовые строки не переделываем
+            if item.get("status") in ("done", "failed", "skipped"):
+                continue
+
             item_id = item["id"]
             schema_name = item["schema_name"]
             table_name = item["table_name"]

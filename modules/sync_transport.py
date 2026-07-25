@@ -344,6 +344,10 @@ def run_copy_pipe_job(job_id):
         refresh_job_progress(job_id)
 
         for item in items:
+            # переподхват после рестарта: готовые строки не переделываем
+            if item.get("status") in ("done", "failed", "skipped"):
+                continue
+
             if is_stop_requested(job_id):
                 for rest in items:
                     if rest["status"] == "pending":

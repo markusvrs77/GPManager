@@ -216,6 +216,11 @@ def run_gpcopy_sync_job(job_id):
 
         try:
             for item in items:
+                # переподхват после рестарта: готовые строки не переделываем
+                if get_item_value(item, "status") in (
+                        "done", "failed", "skipped"):
+                    continue
+
                 item_id = get_item_value(item, "id")
                 schema_name = get_item_value(item, "schema_name", "")
                 table_name = get_item_value(item, "table_name", "")

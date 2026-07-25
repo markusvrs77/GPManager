@@ -105,6 +105,24 @@ def create_job(job_type, connection_id, config):
         return job_id
 
 
+def requeue_interrupted_items(job_id):
+    """
+    Прерванные рестартом строки — обратно в очередь; done/failed/skipped
+    не трогаем. Используется при переподхвате in-process задач.
+    """
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            UPDATE job_items
+            SET status = 'queued', error_message = NULL
+            WHERE job_id = ?
+              AND status IN ('running', 'stopping', 'pending')
+            """,
+            (job_id,),
+        )
+        return cur.rowcount
+
+
 def get_job(job_id):
     with sqlite_cursor() as cur:
         cur.execute(

@@ -168,6 +168,10 @@ def run_skew_job(job_id):
         mark_job_running(job_id)
 
         for item in items:
+            # переподхват после рестарта: готовые строки не переделываем
+            if item.get("status") in ("done", "failed", "skipped"):
+                continue
+
             if is_stop_requested(job_id):
                 safe_mark_job_cancelled(job_id, "Stop requested")
                 refresh_job_progress(job_id)

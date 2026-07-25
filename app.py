@@ -2703,15 +2703,19 @@ def api_notification_channel_test(channel_id):
 if __name__ == "__main__":
     init_db()
 
-    # переподхват внешних процессов: рестарт GPManager их не убивает
+    # переподхват после рестарта: внешние бинари (gpcopy/gpbackup) живут
+    # сами — цепляемся к pid и логу; in-process задачи (vacuum, reorganize,
+    # skew, sync, copy_pipe) перезапускаем с места остановки
     from modules.gpbackup import resume_unfinished_backup_jobs
     from modules.gpcopy import resume_unfinished_gpcopy_jobs
+    from modules.job_resume import resume_inprocess_jobs
 
     resumed_jobs = resume_unfinished_gpcopy_jobs()
     resumed_jobs += resume_unfinished_backup_jobs()
+    resumed_jobs += resume_inprocess_jobs(exclude_ids=resumed_jobs)
 
     if resumed_jobs:
-        print("Resumed external-tool jobs after restart:", resumed_jobs)
+        print("Resumed jobs after restart:", resumed_jobs)
 
     interrupted_jobs = mark_interrupted_jobs_on_startup(exclude_ids=resumed_jobs)
 
