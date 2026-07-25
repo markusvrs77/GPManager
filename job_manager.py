@@ -404,6 +404,17 @@ def set_item_bytes(item_id, bytes_done):
         )
 
 
+def update_job_config(job_id, config):
+    """Перезаписывает config_json задачи (например, сохранить failed_leaves)."""
+    import json as _json
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE jobs SET config_json = ? WHERE id = ?",
+            (_json.dumps(config, ensure_ascii=False), job_id),
+        )
+
+
 def set_job_progress(job_id, progress_percent, done_items=None, total_items=None):
     """Прямая установка прогресса (для потоковых раннеров вроде gpcopy)."""
     fields = ["progress_percent = ?"]

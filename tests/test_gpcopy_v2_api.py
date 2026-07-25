@@ -150,6 +150,55 @@ def test_parse_gpcopy_summary_and_failed_leaves():
     assert g.parse_gpcopy_summary("no summary here") is None
 
 
+def test_build_retry_config():
+    """Ретрай перезаливает только упавшие партиции, целиком (--truncate)."""
+    import pytest
+
+    import modules.gpcopy as g
+
+    config = {
+        "source_connection_id": 1,
+        "dest_connection_id": 2,
+        "selected_tables": [{"schema": "dwh_stage", "table": "s01_t_bal"}],
+        "gpcopy_path": "/usr/local/bin/gpcopy",
+        "jobs": 4,
+        "no_ownership": True,
+        "append": True,
+        "truncate": False,
+        "failed_leaves": [
+            ["dwh_stage", "s01_t_bal_1_prt_995"],
+            ["dwh_stage", "s01_t_bal_1_prt_1191"],
+        ],
+    }
+
+    retry = g.build_retry_config(
+        config,
+        [("dwh_stage", "s01_t_bal_1_prt_995"),
+         ("dwh_stage", "s01_t_bal_1_prt_1191")],
+    )
+
+    assert retry["selected_tables"] == retry["expanded_tables"] == [
+        {"schema": "dwh_stage", "table": "s01_t_bal_1_prt_995"},
+        {"schema": "dwh_stage", "table": "s01_t_bal_1_prt_1191"},
+    ]
+    # партиции перезаливаются целиком, настройки подключения сохраняются
+    assert retry["truncate"] is True
+    assert retry["append"] is False
+    assert retry["no_ownership"] is True
+    assert retry["jobs"] == 4
+    assert "failed_leaves" not in retry
+    # исходный конфиг не изменён
+    assert config["append"] is True
+
+    with pytest.raises(ValueError):
+        g.build_retry_config(config, [])
+
+    with pytest.raises(ValueError):
+        g.build_retry_config(
+            {"mode": "date_filter"}, [("s", "t_1_prt_1")]
+        )
+
+
 def test_leaf_belongs_to_item():
     """Партиции относим к родителю; чужие таблицы не цепляем."""
     import modules.gpcopy as g

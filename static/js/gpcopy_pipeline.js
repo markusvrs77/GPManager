@@ -1854,6 +1854,26 @@
             };
         });
 
+        box.querySelectorAll("button[data-run-retry]").forEach(function (btn) {
+            btn.onclick = function (ev) {
+                ev.stopPropagation();
+                var id = parseInt(btn.getAttribute("data-run-retry"), 10);
+                btn.disabled = true;
+                api("/api/gpcopy/retry-failed", "POST", { job_id: id })
+                    .then(function (r) {
+                        btn.disabled = false;
+                        if (!r.ok) {
+                            toast(r.message || "Не удалось запустить дозагрузку", "error");
+                            return;
+                        }
+                        toast("Дозагрузка запущена: #" + r.job_id + " (" +
+                            fmtN(r.total_items) + " партиций)", "success");
+                        state.openRun = r.job_id;
+                        loadRuns();
+                    });
+            };
+        });
+
         box.querySelectorAll("button[data-run-stop]").forEach(function (btn) {
             btn.onclick = function (ev) {
                 ev.stopPropagation();
@@ -1915,6 +1935,12 @@
                 (j.status === "stopping" ? " disabled" : "") + ">" +
                 (j.status === "stopping" ? "останавливаю…" : "⏹ Остановить") +
                 "</button></div>";
+        }
+
+        if (j.status === "failed" && j.job_type === "gpcopy") {
+            html += '<div style="margin: 6px 0 10px;">' +
+                '<button class="gpp-btn sm" data-run-retry="' + j.id + '">' +
+                "⟳ Дозагрузить упавшие</button></div>";
         }
 
         if (j.error_message) {

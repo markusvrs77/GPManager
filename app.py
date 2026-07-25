@@ -56,6 +56,7 @@ from modules.reorganize import (
 from modules.gpcopy import (
     run_gpcopy_job,
     build_gpcopy_date_include_json_preview,
+    build_retry_config,
     get_date_columns_for_table,
     get_gpcopy_date_columns,
 )
@@ -349,6 +350,76 @@ def api_get_job(job_id):
             "job": job,
         }
     )
+
+@app.route("/api/gpcopy/retry-failed", methods=["POST"])
+def api_gpcopy_retry_failed():
+    """Новая задача только по упавшим партициям исходной gpcopy-задачи."""
+    data = request.get_json(silent=True) or {}
+    job_id = data.get("job_id")
+
+    if not job_id:
+        return jsonify({"ok": False, "message": "job_id обязателен"}), 400
+
+    job = get_job(int(job_id))
+
+    if not job:
+        return jsonify({"ok": False, "message": "Задача не найдена"}), 404
+
+    if job.get("job_type") != "gpcopy":
+        return jsonify({
+            "ok": False,
+            "message": "Дозагрузка упавших доступна только для gpcopy-задач",
+        }), 400
+
+    config = _json.loads(job.get("config_json") or "{}")
+    failed_leaves = [tuple(p) for p in (config.get("failed_leaves") or [])]
+
+    if not failed_leaves:
+        return jsonify({
+            "ok": False,
+            "message": "У задачи нет сохранённого списка упавших партиций "
+                       "(она запускалась до этой версии или упала целиком) — "
+                       "перезапусти копирование обычным способом",
+        }), 400
+
+    try:
+        retry_config = build_retry_config(config, failed_leaves)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    retry_config["retry_of_job_id"] = int(job_id)
+
+    new_job_id = create_job(
+        job_type="gpcopy",
+        connection_id=job.get("connection_id"),
+        config=retry_config,
+    )
+
+    create_job_items(
+        job_id=new_job_id,
+        items=[
+            {
+                "schema_name": schema,
+                "table_name": table,
+                "action": "GPCOPY RETRY",
+            }
+            for schema, table in failed_leaves
+        ],
+    )
+
+    threading.Thread(
+        target=run_gpcopy_job,
+        args=(new_job_id,),
+        daemon=True,
+    ).start()
+
+    return jsonify({
+        "ok": True,
+        "job_id": new_job_id,
+        "total_items": len(failed_leaves),
+        "message": "Дозагрузка {} партиций запущена".format(len(failed_leaves)),
+    })
+
 
 @app.route("/api/jobs/<int:job_id>/status")
 def api_job_status(job_id):

@@ -26,6 +26,7 @@ try:
         refresh_job_progress,
         set_job_progress,
         set_item_size,
+        update_job_config,
         is_stop_requested,
         clear_stop_flag,
     )
@@ -44,6 +45,7 @@ except ImportError:
         refresh_job_progress,
         set_job_progress,
         set_item_size,
+        update_job_config,
         is_stop_requested,
         clear_stop_flag,
     )
@@ -271,6 +273,44 @@ def parse_gpcopy_summary(text):
         "skipped": int(match.group("skipped")),
         "failed": int(match.group("failed")),
     }
+
+
+def build_retry_config(config, failed_leaves):
+    """
+    Конфиг новой задачи «дозагрузить упавшие»: полная перезаливка только
+    упавших партиций (--truncate по каждой). Чистая функция.
+    """
+    if not failed_leaves:
+        raise ValueError("Список упавших партиций пуст")
+
+    mode = (config.get("mode") or config.get("copy_mode") or "").strip()
+
+    if mode and mode != "full":
+        # для date_filter truncate партиции стёр бы данные других дат
+        raise ValueError(
+            "Дозагрузка упавших доступна только для полного копирования"
+        )
+
+    tables = [
+        {"schema": schema, "table": table}
+        for schema, table in failed_leaves
+    ]
+
+    retry = dict(config)
+    retry.pop("failed_leaves", None)
+    retry.pop("mode", None)
+    retry.pop("copy_mode", None)
+
+    retry["selected_tables"] = tables
+    retry["expanded_tables"] = tables
+
+    # партиции перезаливаем целиком
+    retry["truncate"] = True
+    retry["append"] = False
+    retry["drop"] = False
+    retry["skip_existing"] = False
+
+    return retry
 
 
 def leaf_belongs_to_item(leaf_schema, leaf_table, item_schema, item_table):
@@ -1435,6 +1475,15 @@ def run_gpcopy_job(job_id):
             failed_leaves = parse_failed_leaf_tables(
                 stdout_data + "\n" + stderr_data
             )
+
+            # точный список упавших — в конфиг задачи: по нему кнопка
+            # «Дозагрузить упавшие» перельёт только эти партиции
+            if failed_leaves:
+                try:
+                    config["failed_leaves"] = [list(p) for p in failed_leaves]
+                    update_job_config(job_id, config)
+                except Exception:
+                    pass
 
             for item in items:
                 item_id = get_item_value(item, "id")
