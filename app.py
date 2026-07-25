@@ -1943,6 +1943,73 @@ def api_backup_restore():
     return jsonify({"ok": True, "job_id": job_id, "message": "Восстановление запущено"})
 
 
+@app.route("/api/backup/sync-disk", methods=["POST"])
+def api_backup_sync_disk():
+    """Реестр <- диск: gpbackup_manager list-backups с координатора."""
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    try:
+        from modules.gpbackup import sync_disk_backups
+
+        result = sync_disk_backups(
+            int(connection_id),
+            manager_path=(data.get("gpbackup_manager_path") or "").strip() or None,
+        )
+        return jsonify({"ok": True, **result})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/backup/report", methods=["POST"])
+def api_backup_report():
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+    backup_timestamp = data.get("backup_timestamp")
+
+    if not connection_id or not backup_timestamp:
+        return jsonify({
+            "ok": False,
+            "message": "connection_id и backup_timestamp обязательны",
+        }), 400
+
+    try:
+        from modules.gpbackup import get_backup_report
+
+        report = get_backup_report(int(connection_id), str(backup_timestamp))
+        return jsonify({"ok": True, "report": report[-20000:]})
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/backup/delete", methods=["POST"])
+def api_backup_delete():
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+    backup_timestamp = data.get("backup_timestamp")
+
+    if not connection_id or not backup_timestamp:
+        return jsonify({
+            "ok": False,
+            "message": "connection_id и backup_timestamp обязательны",
+        }), 400
+
+    try:
+        from modules.gpbackup import delete_disk_backup
+
+        delete_disk_backup(int(connection_id), str(backup_timestamp))
+        return jsonify({"ok": True, "message": "Копия удалена с диска"})
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
 @app.route("/api/health/overview")
 def api_health_overview():
     connection_id = request.args.get("connection_id", type=int)
@@ -2612,13 +2679,15 @@ def api_notification_channel_test(channel_id):
 if __name__ == "__main__":
     init_db()
 
-    # переподхват внешних gpcopy-процессов: рестарт GPManager их не убивает
+    # переподхват внешних процессов: рестарт GPManager их не убивает
+    from modules.gpbackup import resume_unfinished_backup_jobs
     from modules.gpcopy import resume_unfinished_gpcopy_jobs
 
     resumed_jobs = resume_unfinished_gpcopy_jobs()
+    resumed_jobs += resume_unfinished_backup_jobs()
 
     if resumed_jobs:
-        print("Resumed gpcopy jobs after restart:", resumed_jobs)
+        print("Resumed external-tool jobs after restart:", resumed_jobs)
 
     interrupted_jobs = mark_interrupted_jobs_on_startup(exclude_ids=resumed_jobs)
 

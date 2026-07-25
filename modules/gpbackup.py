@@ -43,10 +43,16 @@ except ImportError:
 
 DEFAULT_GPBACKUP_PATH = "/usr/local/gpdb/greenplum-db/bin/gpbackup"
 DEFAULT_GPRESTORE_PATH = "/usr/local/gpdb/greenplum-db/bin/gprestore"
+DEFAULT_GPBACKUP_MANAGER_PATH = "/usr/local/gpdb/greenplum-db/bin/gpbackup_manager"
 
 BACKUP_TYPES = ("full", "metadata_only", "data_only", "incremental")
 
+MANAGER_ACTIONS = ("list-backups", "display-report", "delete-backup")
+
 _TIMESTAMP_RE = re.compile(r"Backup Timestamp\s*=\s*(\d{14})")
+
+# строка list-backups: метка, база, тип (остальные колонки не нужны)
+_MANAGER_ROW_RE = re.compile(r"^\s*(\d{14})\s+(\S+)\s+(\S+)")
 
 _IDENT_RE = re.compile(r"^[A-Za-z0-9_$.]+$")
 
@@ -239,6 +245,174 @@ def extract_backup_errors(text, limit=10):
 
 
 # ------------------------------------------------------------------
+# gpbackup_manager: реестр на диске
+# ------------------------------------------------------------------
+
+def build_manager_command(action, timestamp=None, manager_path=None):
+    """Команда gpbackup_manager. Чистая функция."""
+    if action not in MANAGER_ACTIONS:
+        raise ValueError("Неизвестная команда gpbackup_manager: {}".format(action))
+
+    cmd = [manager_path or DEFAULT_GPBACKUP_MANAGER_PATH, action]
+
+    if action in ("display-report", "delete-backup"):
+        ts = str(timestamp or "").strip()
+
+        if not re.match(r"^\d{14}$", ts):
+            raise ValueError("Нужна метка бэкапа вида YYYYMMDDHHMMSS")
+
+        cmd.append(ts)
+
+    return cmd
+
+
+def parse_manager_backups(text):
+    """
+    Вывод `gpbackup_manager list-backups` -> [{timestamp, dbname, backup_type}].
+    Типы менеджера с дефисами (metadata-only) приводим к нашим
+    с подчёркиванием (metadata_only).
+    """
+    rows = []
+
+    for line in (text or "").splitlines():
+        match = _MANAGER_ROW_RE.match(line)
+
+        if not match:
+            continue
+
+        rows.append({
+            "timestamp": match.group(1),
+            "dbname": match.group(2),
+            "backup_type": match.group(3).replace("-", "_"),
+        })
+
+    return rows
+
+
+def run_manager_command(conn_cfg, action, timestamp=None,
+                        manager_path=None, timeout=600):
+    """Синхронный запуск gpbackup_manager. -> (rc, вывод)."""
+    cmd = build_manager_command(action, timestamp, manager_path)
+    env = build_pg_env(conn_cfg)
+
+    proc = subprocess.run(
+        cmd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+        timeout=timeout,
+    )
+
+    return proc.returncode, proc.stdout or ""
+
+
+def sync_disk_backups(connection_id, manager_path=None):
+    """
+    Синхронизация реестра с диском: list-backups с координатора и
+    добавление копий, которых нет в нашем реестре (в т.ч. сделанных
+    мимо GPManager). -> {found, added}.
+    """
+    conn_cfg = get_connection_by_id(int(connection_id))
+
+    if not conn_cfg:
+        raise ValueError("Подключение не найдено")
+
+    rc, output = run_manager_command(conn_cfg, "list-backups",
+                                     manager_path=manager_path, timeout=120)
+
+    if rc != 0:
+        errors = extract_backup_errors(output)
+        raise RuntimeError(
+            "\n".join(errors) or "gpbackup_manager rc={}".format(rc)
+        )
+
+    disk = parse_manager_backups(output)
+
+    with sqlite_cursor() as cur:
+        cur.execute(
+            "SELECT backup_timestamp FROM backups WHERE connection_id = ?",
+            (int(connection_id),),
+        )
+        known = {row["backup_timestamp"] for row in cur.fetchall()}
+
+    added = 0
+
+    for entry in disk:
+        if entry["timestamp"] in known:
+            continue
+
+        backup_type = entry["backup_type"]
+
+        if backup_type not in BACKUP_TYPES:
+            backup_type = "full"
+
+        insert_backup(
+            connection_id=int(connection_id),
+            job_id=None,
+            backup_timestamp=entry["timestamp"],
+            dbname=entry["dbname"],
+            backup_type=backup_type,
+            backup_dir="",
+            status="done",
+        )
+        added += 1
+
+    return {"found": len(disk), "added": added}
+
+
+def get_backup_report(connection_id, timestamp, manager_path=None):
+    """Отчёт по копии: `gpbackup_manager display-report <ts>` -> текст."""
+    conn_cfg = get_connection_by_id(int(connection_id))
+
+    if not conn_cfg:
+        raise ValueError("Подключение не найдено")
+
+    rc, output = run_manager_command(conn_cfg, "display-report", timestamp,
+                                     manager_path=manager_path, timeout=120)
+
+    if rc != 0:
+        errors = extract_backup_errors(output)
+        raise RuntimeError(
+            "\n".join(errors) or "gpbackup_manager rc={}".format(rc)
+        )
+
+    return output
+
+
+def delete_disk_backup(connection_id, timestamp, manager_path=None):
+    """
+    Удаление копии с диска: `gpbackup_manager delete-backup <ts>`.
+    Успех -> реестровые записи с этой меткой помечаются deleted.
+    """
+    conn_cfg = get_connection_by_id(int(connection_id))
+
+    if not conn_cfg:
+        raise ValueError("Подключение не найдено")
+
+    rc, output = run_manager_command(conn_cfg, "delete-backup", timestamp,
+                                     manager_path=manager_path, timeout=1800)
+
+    if rc != 0:
+        errors = extract_backup_errors(output)
+        raise RuntimeError(
+            "\n".join(errors) or "gpbackup_manager rc={}".format(rc)
+        )
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            UPDATE backups SET status = 'deleted'
+            WHERE connection_id = ? AND backup_timestamp = ?
+            """,
+            (int(connection_id), str(timestamp)),
+        )
+
+    return output
+
+
+# ------------------------------------------------------------------
 # реестр копий
 # ------------------------------------------------------------------
 
@@ -274,6 +448,143 @@ def list_backups(limit=100):
             (int(limit),),
         )
         return [dict(row) for row in cur.fetchall()]
+
+
+# ------------------------------------------------------------------
+# финализация и переподхват после рестарта
+# ------------------------------------------------------------------
+
+def _backup_recorded_for_job(job_id):
+    with sqlite_cursor() as cur:
+        cur.execute("SELECT 1 FROM backups WHERE job_id = ? LIMIT 1", (job_id,))
+        return cur.fetchone() is not None
+
+
+def finalize_backup_job(job_id, job_type, config, items, log_text, rc,
+                        command_text):
+    """
+    Единая финализация gpbackup/gprestore: и из раннера, и при
+    переподхвате после рестарта (rc=None — код возврата неизвестен,
+    судим по логу).
+    """
+    ok = rc in (0, None) and backup_outcome(log_text) == "done"
+
+    if job_type == "gpbackup" and not _backup_recorded_for_job(job_id):
+        insert_backup(
+            connection_id=int(config.get("connection_id") or 0),
+            job_id=job_id,
+            backup_timestamp=parse_backup_timestamp(log_text),
+            dbname=config.get("dbname"),
+            backup_type=config.get("backup_type") or "full",
+            backup_dir=config.get("backup_dir") or "",
+            status="done" if ok else "failed",
+        )
+
+    if ok:
+        for item in items:
+            mark_item_done(item["id"])
+
+        refresh_job_progress(job_id)
+        mark_job_done(job_id)
+        return
+
+    errors = extract_backup_errors(log_text)
+    report = "Команда: {}\n\n{}\n\nХвост лога:\n{}".format(
+        command_text,
+        "\n".join(errors) or "(строк с ошибками не найдено)",
+        (log_text or "")[-5000:],
+    )
+
+    for item in items:
+        mark_item_failed(
+            item["id"],
+            ("\n".join(errors) or "{} rc={}".format(job_type, rc))[:2000],
+        )
+
+    refresh_job_progress(job_id)
+    mark_job_failed(job_id, report[:12000])
+
+
+def _resume_backup_watch(job_id, job_type, log_path, pid, items, config):
+    log_text = _watch_gpcopy_log(job_id, log_path, [], pid=pid)
+
+    if is_stop_requested(job_id):
+        mark_job_cancelled(job_id)
+        refresh_job_progress(job_id)
+        return
+
+    finalize_backup_job(
+        job_id, job_type, config, items, log_text, None,
+        "{} (переподхвачен после рестарта GPManager)".format(job_type),
+    )
+
+
+def resume_unfinished_backup_jobs():
+    """
+    Переподхват gpbackup/gprestore после рестарта приложения — тот же
+    паттерн, что resume_unfinished_gpcopy_jobs: бинарь живёт отдельно,
+    его лог на диске. Возвращает job_id, которые не надо помечать
+    interrupted.
+    """
+    import threading
+
+    from job_manager import list_unfinished_jobs
+
+    try:
+        from modules.gpcopy import pid_alive
+    except ImportError:
+        from gpcopy import pid_alive
+
+    handled = []
+
+    try:
+        unfinished = list_unfinished_jobs()
+    except Exception:
+        return handled
+
+    for job in unfinished:
+        job_type = job.get("job_type")
+
+        if job_type not in ("gpbackup", "gprestore"):
+            continue
+
+        log_path = job.get("log_file")
+        pid = job.get("pid")
+        job_id = int(job["id"])
+
+        if not log_path or not os.path.exists(log_path):
+            continue
+
+        try:
+            items = get_job_items(job_id)
+            config = json.loads(job.get("config_json") or "{}")
+        except Exception:
+            continue
+
+        handled.append(job_id)
+
+        if pid and pid_alive(pid):
+            threading.Thread(
+                target=_resume_backup_watch,
+                args=(job_id, job_type, log_path, pid, items, config),
+                daemon=True,
+            ).start()
+        else:
+            try:
+                with open(log_path, "r", encoding="utf-8",
+                          errors="replace") as f:
+                    log_text = f.read()
+            except Exception:
+                log_text = ""
+
+            finalize_backup_job(
+                job_id, job_type, config, items, log_text, None,
+                "{} (завершился, пока GPManager был перезапущен)".format(
+                    job_type
+                ),
+            )
+
+    return handled
 
 
 # ------------------------------------------------------------------
@@ -351,42 +662,9 @@ def run_gpbackup_job(job_id):
         env = build_pg_env(conn_cfg)
 
         def finalize(log_text, rc):
-            timestamp = parse_backup_timestamp(log_text)
-            ok = rc == 0 and backup_outcome(log_text) == "done"
-
-            insert_backup(
-                connection_id=int(config["connection_id"]),
-                job_id=job_id,
-                backup_timestamp=timestamp,
-                dbname=config.get("dbname"),
-                backup_type=config.get("backup_type") or "full",
-                backup_dir=config.get("backup_dir") or "",
-                status="done" if ok else "failed",
+            finalize_backup_job(
+                job_id, "gpbackup", config, items, log_text, rc, " ".join(cmd),
             )
-
-            if ok:
-                for item in items:
-                    mark_item_done(item["id"])
-
-                refresh_job_progress(job_id)
-                mark_job_done(job_id)
-                return
-
-            errors = extract_backup_errors(log_text)
-            report = "Команда: {}\n\n{}\n\nХвост лога:\n{}".format(
-                " ".join(cmd),
-                "\n".join(errors) or "(строк с ошибками не найдено)",
-                (log_text or "")[-5000:],
-            )
-
-            for item in items:
-                mark_item_failed(
-                    item["id"],
-                    ("\n".join(errors) or "gpbackup rc={}".format(rc))[:2000],
-                )
-
-            refresh_job_progress(job_id)
-            mark_job_failed(job_id, report[:12000])
 
         _run_external_tool(job_id, cmd, env, finalize)
 
@@ -428,31 +706,9 @@ def run_gprestore_job(job_id):
         env = build_pg_env(conn_cfg)
 
         def finalize(log_text, rc):
-            ok = rc == 0 and backup_outcome(log_text) == "done"
-
-            if ok:
-                for item in items:
-                    mark_item_done(item["id"])
-
-                refresh_job_progress(job_id)
-                mark_job_done(job_id)
-                return
-
-            errors = extract_backup_errors(log_text)
-            report = "Команда: {}\n\n{}\n\nХвост лога:\n{}".format(
-                " ".join(cmd),
-                "\n".join(errors) or "(строк с ошибками не найдено)",
-                (log_text or "")[-5000:],
+            finalize_backup_job(
+                job_id, "gprestore", config, items, log_text, rc, " ".join(cmd),
             )
-
-            for item in items:
-                mark_item_failed(
-                    item["id"],
-                    ("\n".join(errors) or "gprestore rc={}".format(rc))[:2000],
-                )
-
-            refresh_job_progress(job_id)
-            mark_job_failed(job_id, report[:12000])
 
         _run_external_tool(job_id, cmd, env, finalize)
 

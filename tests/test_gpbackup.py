@@ -7,8 +7,10 @@ from modules.gpbackup import (
     backup_outcome,
     build_gpbackup_command,
     build_gprestore_command,
+    build_manager_command,
     build_pg_env,
     parse_backup_timestamp,
+    parse_manager_backups,
 )
 
 
@@ -94,6 +96,48 @@ def test_parse_backup_timestamp_and_outcome():
 
     assert parse_backup_timestamp("no timestamp here") is None
     assert backup_outcome("[CRITICAL]:-out of space") == "failed"
+
+
+def test_parse_manager_backups():
+    out = (
+        " timestamp        database   type            object filtering   plugin   duration   date\n"
+        " 20260726093045   adb        full                                        00:12:03   Sat Jul 26 2026 09:30:45\n"
+        " 20260725010000   adb        metadata-only   include-schema              00:00:11   Fri Jul 25 2026 01:00:00\n"
+        " 20260724010000   app_db     incremental                                 00:03:40   Thu Jul 24 2026 01:00:00\n"
+        "какой-то мусор без метки\n"
+    )
+
+    rows = parse_manager_backups(out)
+
+    assert len(rows) == 3
+    assert rows[0] == {
+        "timestamp": "20260726093045", "dbname": "adb", "backup_type": "full",
+    }
+    # дефисы менеджера приводим к нашим типам с подчёркиванием
+    assert rows[1]["backup_type"] == "metadata_only"
+    assert rows[2]["dbname"] == "app_db"
+
+    assert parse_manager_backups("") == []
+
+
+def test_build_manager_command():
+    cmd = build_manager_command("list-backups")
+    assert cmd[0].endswith("gpbackup_manager")
+    assert cmd[1:] == ["list-backups"]
+
+    cmd = build_manager_command(
+        "delete-backup", timestamp="20260726093045", manager_path="/opt/gpbm",
+    )
+    assert cmd == ["/opt/gpbm", "delete-backup", "20260726093045"]
+
+    with pytest.raises(ValueError):
+        build_manager_command("delete-backup", timestamp="oops")
+
+    with pytest.raises(ValueError):
+        build_manager_command("delete-backup")                    # нет метки
+
+    with pytest.raises(ValueError):
+        build_manager_command("format-disk")                      # не из списка
 
 
 def test_build_pg_env_keeps_password_out_of_argv():

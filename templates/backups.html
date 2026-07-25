@@ -34,6 +34,13 @@
   padding: 2px 9px; flex: none; margin-left: auto; }
 .gpb-st.done { color: var(--ok); border: 1px solid var(--ok); }
 .gpb-st.failed { color: var(--crit); border: 1px solid var(--crit); }
+.gpb-st.deleted { color: var(--text-muted); border: 1px solid var(--hairline); }
+
+.gpb-report { width: 100%; margin-top: 8px; background: var(--surface-2);
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  padding: 10px 12px; font-family: var(--font-mono); font-size: 11.5px;
+  white-space: pre-wrap; word-break: break-word; max-height: 340px;
+  overflow-y: auto; }
 
 .gpb-restore { background: var(--surface-2); border: 1px solid var(--hairline);
   border-radius: var(--radius-sm); padding: 12px; margin-top: 8px; width: 100%; }
@@ -110,8 +117,12 @@
         <!-- список копий -->
         <div class="gpb-panel">
             <h6>Копии
-                <button class="btn btn-sm btn-outline-primary" style="margin-left: auto;"
-                        onclick="gpbLoad()" type="button">Обновить</button></h6>
+                <span style="margin-left: auto; display: flex; gap: 8px;">
+                <button class="btn btn-sm btn-outline-secondary" id="gpbSyncDisk"
+                        type="button"
+                        title="gpbackup_manager list-backups: подтянуть копии с диска, включая сделанные мимо GPManager">С диска</button>
+                <button class="btn btn-sm btn-outline-primary"
+                        onclick="gpbLoad()" type="button">Обновить</button></span></h6>
             <div id="gpbList"><div class="gpb-hint">Загрузка…</div></div>
         </div>
 
@@ -146,6 +157,7 @@
     }
 
     var openRestore = null;
+    var openReport = null;      // {id, text} — развёрнутый отчёт display-report
 
     window.gpbLoad = function () {
         fetch("/api/backup/list")
@@ -161,6 +173,7 @@
 
                 box.innerHTML = d.backups.map(function (b) {
                     var restorable = b.status === "done" && b.backup_timestamp;
+                    var deletable = b.status !== "deleted" && b.backup_timestamp;
                     return '<div class="gpb-row" style="flex-wrap: wrap;">' +
                         '<span class="gpb-tag">' +
                         esc(TYPE_LABELS[b.backup_type] || b.backup_type) + "</span>" +
@@ -173,15 +186,82 @@
                         (b.backup_dir ? " · " + esc(b.backup_dir) : " · каталог по умолчанию") +
                         "</div></div>" +
                         '<span class="gpb-st ' + esc(b.status) + '">' + esc(b.status) + "</span>" +
+                        (b.backup_timestamp
+                            ? ' <button class="btn btn-sm btn-outline-secondary" ' +
+                              'onclick="gpbToggleReport(' + b.id + ', \'' +
+                              esc(b.backup_timestamp) + '\', ' + b.connection_id +
+                              ')">Отчёт</button>'
+                            : "") +
                         (restorable
                             ? ' <button class="btn btn-sm btn-outline-primary" ' +
                               'onclick="gpbToggleRestore(' + b.id + ')">Восстановить</button>'
                             : "") +
+                        (deletable
+                            ? ' <button class="btn btn-sm btn-outline-danger" ' +
+                              'title="Удалить копию с диска (gpbackup_manager delete-backup)" ' +
+                              'onclick="gpbDelete(\'' + esc(b.backup_timestamp) +
+                              '\', ' + b.connection_id + ')">✕</button>'
+                            : "") +
                         (openRestore === b.id ? restoreFormHtml(b) : "") +
+                        (openReport && openReport.id === b.id
+                            ? '<div class="gpb-report">' + esc(openReport.text) + "</div>"
+                            : "") +
                         "</div>";
                 }).join("");
             })
             .catch(function () {});
+    };
+
+    window.gpbToggleReport = function (id, timestamp, connectionId) {
+        if (openReport && openReport.id === id) {
+            openReport = null;
+            gpbLoad();
+            return;
+        }
+
+        openReport = { id: id, text: "Загружаю отчёт…" };
+        gpbLoad();
+
+        fetch("/api/backup/report", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                connection_id: connectionId, backup_timestamp: timestamp,
+            }),
+        }).then(function (r) { return r.json(); }).then(function (d) {
+            if (!openReport || openReport.id !== id) { return; }
+            openReport.text = d.ok ? d.report : ("Ошибка: " + d.message);
+            gpbLoad();
+        }).catch(function (e) {
+            if (!openReport || openReport.id !== id) { return; }
+            openReport.text = "Ошибка: " + e;
+            gpbLoad();
+        });
+    };
+
+    window.gpbDelete = function (timestamp, connectionId) {
+        var text = "Удалить копию " + timestamp + " с диска? Файлы бэкапа " +
+            "будут стёрты безвозвратно (gpbackup_manager delete-backup).";
+
+        var go = function () {
+            fetch("/api/backup/delete", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    connection_id: connectionId, backup_timestamp: timestamp,
+                }),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                if (window.gpToast) {
+                    gpToast(d.ok ? "Копия удалена с диска" : d.message,
+                        d.ok ? "success" : "error");
+                } else if (!d.ok) { alert(d.message); }
+                gpbLoad();
+            });
+        };
+
+        if (window.gpConfirm) {
+            window.gpConfirm(text).then(function (yes) { if (yes) { go(); } });
+        } else if (confirm(text)) { go(); }
     };
 
     function restoreFormHtml(b) {
@@ -281,6 +361,35 @@
         }).catch(function (e) {
             btn.disabled = false;
             msg(String(e), "err");
+        });
+    });
+
+    document.getElementById("gpbSyncDisk").addEventListener("click", function () {
+        var btn = this;
+        btn.disabled = true;
+        btn.textContent = "Читаю диск…";
+
+        fetch("/api/backup/sync-disk", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                connection_id: parseInt(document.getElementById("gpbConn").value, 10),
+            }),
+        }).then(function (r) { return r.json(); }).then(function (d) {
+            btn.disabled = false;
+            btn.textContent = "С диска";
+
+            if (window.gpToast) {
+                gpToast(d.ok
+                    ? "На диске " + d.found + " копий, добавлено в реестр: " + d.added
+                    : d.message, d.ok ? "success" : "error");
+            } else if (!d.ok) { alert(d.message); }
+
+            gpbLoad();
+        }).catch(function (e) {
+            btn.disabled = false;
+            btn.textContent = "С диска";
+            if (window.gpToast) { gpToast(String(e), "error"); }
         });
     });
 
