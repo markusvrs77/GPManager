@@ -418,13 +418,24 @@ def find_owner_item(leaf_schema, leaf_table, item_keys):
     return prefix_hit
 
 
-def build_retry_config(config, failed_leaves):
+RETRY_EXISTING_MODES = ("truncate", "drop", "skip_existing", "append")
+
+
+def build_retry_config(config, failed_leaves, existing_mode="truncate"):
     """
-    Конфиг новой задачи «дозагрузить упавшие»: полная перезаливка только
-    упавших партиций (--truncate по каждой). Чистая функция.
+    Конфиг новой задачи «дозагрузить упавшие»: перезаливка только
+    упавших партиций/таблиц. Режим существующих таблиц выбирается
+    пользователем (--truncate по умолчанию). Чистая функция.
     """
     if not failed_leaves:
         raise ValueError("Список упавших партиций пуст")
+
+    existing_mode = (existing_mode or "truncate").strip()
+
+    if existing_mode not in RETRY_EXISTING_MODES:
+        raise ValueError(
+            "Неизвестный режим существующих таблиц: {}".format(existing_mode)
+        )
 
     mode = (config.get("mode") or config.get("copy_mode") or "").strip()
 
@@ -447,11 +458,9 @@ def build_retry_config(config, failed_leaves):
     retry["selected_tables"] = tables
     retry["expanded_tables"] = tables
 
-    # партиции перезаливаем целиком
-    retry["truncate"] = True
-    retry["append"] = False
-    retry["drop"] = False
-    retry["skip_existing"] = False
+    # режим существующих таблиц — как выбрано в форме
+    for flag in RETRY_EXISTING_MODES:
+        retry[flag] = flag == existing_mode
 
     return retry
 

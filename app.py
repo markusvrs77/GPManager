@@ -444,7 +444,10 @@ def api_gpcopy_retry_failed():
         }), 400
 
     try:
-        retry_config = build_retry_config(config, failed_leaves)
+        retry_config = build_retry_config(
+            config, failed_leaves,
+            existing_mode=data.get("existing_mode") or "truncate",
+        )
     except ValueError as e:
         return jsonify({"ok": False, "message": str(e)}), 400
 

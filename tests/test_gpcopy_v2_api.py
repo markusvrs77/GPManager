@@ -232,6 +232,19 @@ def test_build_retry_config():
     # исходный конфиг не изменён
     assert config["append"] is True
 
+    # выбранный режим существующих таблиц действует и на дозагрузку
+    retry_drop = g.build_retry_config(
+        config, [("dwh_stage", "s01_t_bal_1_prt_995")],
+        existing_mode="drop",
+    )
+    assert retry_drop["drop"] is True
+    assert retry_drop["truncate"] is False
+
+    with pytest.raises(ValueError):
+        g.build_retry_config(
+            config, [("s", "t")], existing_mode="explode",
+        )
+
     with pytest.raises(ValueError):
         g.build_retry_config(config, [])
 

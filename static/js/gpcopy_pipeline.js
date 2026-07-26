@@ -1867,7 +1867,13 @@
                 ev.stopPropagation();
                 var id = parseInt(btn.getAttribute("data-run-retry"), 10);
                 btn.disabled = true;
-                api("/api/gpcopy/retry-failed", "POST", { job_id: id })
+                api("/api/gpcopy/retry-failed", "POST", {
+                    job_id: id,
+                    // режим существующих таблиц из шага 2 действует
+                    // и на дозагрузку упавших
+                    existing_mode: $("gppFullExisting")
+                        ? $("gppFullExisting").value : "truncate",
+                })
                     .then(function (r) {
                         btn.disabled = false;
                         if (!r.ok) {
