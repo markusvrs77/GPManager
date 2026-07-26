@@ -148,6 +148,15 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 .gpp-bar i { display: block; height: 100%; background: var(--accent-grad); border-radius: 4px; }
 .gpp-bar i.done { background: var(--ok); }
 .gpp-bar i.fail { background: var(--crit); }
+/* индикатор «в работе» без точного процента (таблицы без партиций) */
+.gpp-bar i.ind { width: 38%; animation: gppSlide 1.1s linear infinite; }
+@keyframes gppSlide {
+  from { margin-left: -38%; }
+  to { margin-left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gpp-bar i.ind { animation: none; width: 100%; opacity: .45; }
+}
 .gpp-runs .meta { color: var(--text-muted); font-size: 12px; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; max-width: 34%; flex: none; }
 
@@ -522,5 +531,5 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=3"></script>
+<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=4"></script>
 {% endblock %}

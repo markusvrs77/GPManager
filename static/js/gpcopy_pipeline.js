@@ -2001,6 +2001,13 @@
                             pp + '%;"></i></span> <span class="cols">' + pp + "%</span>";
                     } else if (pTot > 1 && it.status === "done") {
                         vol = ' <span class="cols">· ' + fmtN(pTot) + " парт.</span>";
+                    } else if (it.status === "running") {
+                        // без партиций и байтов точного процента нет —
+                        // показываем «в работе» бегущей полоской
+                        vol = ' <span class="gpp-bar" style="display: inline-block;' +
+                            ' width: 90px; vertical-align: middle; overflow: hidden;">' +
+                            '<i class="ind"></i></span>' +
+                            ' <span class="cols">копируется</span>';
                     }
                     return '<div class="gpp-key-row"><span>' + esc(name) + vol +
                         (msg ? ' <span class="cols err">· ' + esc(String(msg)) +
