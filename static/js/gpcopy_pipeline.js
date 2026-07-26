@@ -1930,11 +1930,27 @@
             "</div>";
 
         if (isActiveStatus(j.status)) {
-            html += '<div style="margin: 6px 0 10px;">' +
+            // мини-статус по строкам: сколько прямо сейчас в работе и готово
+            var cnt = { running: 0, done: 0, failed: 0, rest: 0 };
+            items.forEach(function (it) {
+                if (cnt[it.status] !== undefined) { cnt[it.status] += 1; }
+                else { cnt.rest += 1; }
+            });
+
+            html += '<div style="margin: 6px 0 10px; display: flex;' +
+                ' align-items: center; gap: 10px; flex-wrap: wrap;">' +
                 '<button class="gpp-btn sm stop" data-run-stop="' + j.id + '"' +
                 (j.status === "stopping" ? " disabled" : "") + ">" +
                 (j.status === "stopping" ? "останавливаю…" : "⏹ Остановить") +
-                "</button></div>";
+                "</button>" +
+                '<span class="cols">running: <b>' + fmtN(cnt.running) + "</b>" +
+                ' · <span class="good">done: <b>' + fmtN(cnt.done) + "</b></span>" +
+                (cnt.failed
+                    ? ' · <span style="color: var(--crit);">failed: <b>' +
+                      fmtN(cnt.failed) + "</b></span>"
+                    : "") +
+                " · в очереди: <b>" + fmtN(cnt.rest) + "</b></span>" +
+                "</div>";
         }
 
         if (j.status === "failed" && j.job_type === "gpcopy") {
@@ -1956,8 +1972,9 @@
                 return ao - bo;
             });
 
-            html += '<div class="gpp-key-list" style="max-height: 260px;">' +
-                items.slice(0, 300).map(function (it) {
+            // весь список: и очередь, и готовые — прокрутка внутри блока
+            html += '<div class="gpp-key-list" style="max-height: 320px;">' +
+                items.map(function (it) {
                     var name = (it.schema_name || "") + "." + (it.table_name || "");
                     var msg = it.message || it.error_message || "";
                     var size = Number(it.size_bytes || 0);
@@ -1973,14 +1990,16 @@
                         } else if (it.status === "done") {
                             vol = ' <span class="cols">· ' + fmtBytes(size) + "</span>";
                         }
-                    } else if (pTot > 0 && it.status === "running") {
+                    } else if (pTot > 1 && it.status === "running") {
                         // свой индикатор таблицы: партиций готово / всего
+                        // (у таблиц без партиций pTot == 1 — бар не показываем,
+                        // их состояние видно по бейджу done/running)
                         var pp = Math.min(100, Math.round(pDone / pTot * 100));
                         vol = ' <span class="cols">· ' + fmtN(pDone) + "/" + fmtN(pTot) +
                             ' парт.</span> <span class="gpp-bar" style="display: inline-block;' +
                             ' width: 90px; vertical-align: middle;"><i style="width: ' +
                             pp + '%;"></i></span> <span class="cols">' + pp + "%</span>";
-                    } else if (pTot > 0 && it.status === "done") {
+                    } else if (pTot > 1 && it.status === "done") {
                         vol = ' <span class="cols">· ' + fmtN(pTot) + " парт.</span>";
                     }
                     return '<div class="gpp-key-row"><span>' + esc(name) + vol +
@@ -1988,9 +2007,6 @@
                             "</span>" : "") +
                         "</span>" + runBadge(it.status) + "</div>";
                 }).join("") +
-                (items.length > 300
-                    ? '<div class="gpp-hint">…и ещё ' + fmtN(items.length - 300) + "</div>"
-                    : "") +
                 "</div>";
         } else if (!j.error_message) {
             html += '<div class="gpp-hint">Деталей по таблицам нет.</div>';
