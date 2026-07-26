@@ -1807,6 +1807,11 @@
     }
 
     function renderRuns(box, jobs, stById) {
+        // перерисовка идёт каждые несколько секунд — сохраняем прокрутку
+        // списка таблиц открытой шторки, иначе скролл сбрасывается наверх
+        var prevList = box.querySelector(".gpp-run-drawer .gpp-key-list");
+        var prevScroll = prevList ? prevList.scrollTop : 0;
+
         box.innerHTML = jobs.map(function (j) {
             var running = isActiveStatus(j.status);
             var failed = j.status === "failed" || j.status === "error" ||
@@ -1845,6 +1850,9 @@
                 '<span class="meta">' + meta + "</span></div>" +
                 (open ? drawerHtml(j, st) : "");
         }).join("");
+
+        var newList = box.querySelector(".gpp-run-drawer .gpp-key-list");
+        if (newList && prevScroll) { newList.scrollTop = prevScroll; }
 
         box.querySelectorAll(".run[data-job]").forEach(function (row) {
             row.onclick = function () {

@@ -212,6 +212,52 @@ _STARTED_TABLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_WORKER_TAG_RE = re.compile(r"\[Worker\s+(?P<worker>\d+)\]")
+_ERROR_DETAIL_RE = re.compile(r"ERROR:\s*(?P<err>.+)")
+
+
+def parse_failed_table_errors(text):
+    """
+    Карта (schema, table) -> текст ошибки из лога gpcopy. Формат лога:
+      [Worker N] Finished task ... with error:
+      : ERROR: value "..." is out of range ... (SQLSTATE 22003)
+      [Worker N] ... Failed to copy table "db"."sch"."tbl" => ...
+    Детали ошибки идут без тега воркера — привязываем их к последнему
+    воркеру, объявившему 'with error'.
+    """
+    errors = {}
+    pending = {}
+    last_worker = None
+
+    for line in (text or "").splitlines():
+        wm = _WORKER_TAG_RE.search(line)
+
+        if wm and "with error" in line:
+            last_worker = wm.group("worker")
+            pending[last_worker] = ""
+            continue
+
+        failed = _FAILED_TABLE_RE.search(line)
+
+        if failed:
+            worker = wm.group("worker") if wm else last_worker
+            err = (pending.get(worker) or "").strip()
+
+            if err:
+                key = (failed.group("schema"), failed.group("table"))
+                errors.setdefault(key, err[:500])
+            continue
+
+        if last_worker is not None and not wm:
+            em = _ERROR_DETAIL_RE.search(line)
+
+            if em:
+                pending[last_worker] = (
+                    pending.get(last_worker, "") + " " + em.group("err").strip()
+                ).strip()
+
+    return errors
+
 
 _PROGRESS_COUNTER_RE = re.compile(
     r"Progress:\s*\(\d+/\d+\)\s*DBs,\s*\((?P<done>\d+)/(?P<total>\d+)\)\s*tables done",
@@ -1472,6 +1518,10 @@ def finalize_gpcopy_job(job_id, items, rc, stdout_data, stderr_data,
     failed_leaves = parse_failed_leaf_tables(
         stdout_data + "\n" + (stderr_data or "")
     )
+    # конкретная причина по каждой упавшей таблице (SQLSTATE и текст)
+    failed_errors = parse_failed_table_errors(
+        stdout_data + "\n" + (stderr_data or "")
+    )
 
     # точный список упавших — в конфиг задачи: по нему кнопка
     # «Дозагрузить упавшие» перельёт только эти партиции
@@ -1488,7 +1538,7 @@ def finalize_gpcopy_job(job_id, items, rc, stdout_data, stderr_data,
         itable = get_item_value(item, "table_name")
 
         my_failed = [
-            lt for (ls, lt) in failed_leaves
+            (ls, lt) for (ls, lt) in failed_leaves
             if leaf_belongs_to_item(ls, lt, ischema, itable)
         ]
         my_done = [
@@ -1497,14 +1547,29 @@ def finalize_gpcopy_job(job_id, items, rc, stdout_data, stderr_data,
         ]
 
         if my_failed:
-            names = ", ".join(my_failed[:5])
+            my_error = ""
 
-            if len(my_failed) > 5:
-                names += " …ещё {}".format(len(my_failed) - 5)
+            for pair in my_failed:
+                if failed_errors.get(pair):
+                    my_error = failed_errors[pair]
+                    break
 
-            msg = "Скопировано {} партиций, не удалось {}: {}".format(
-                len(my_done), len(my_failed), names
-            )
+            if len(my_failed) == 1 and my_failed[0][1] == itable:
+                # обычная таблица (не партиции) — сразу реальная причина
+                msg = "Ошибка: {}".format(my_error or error_text[:400])
+            else:
+                names = ", ".join(lt for (_, lt) in my_failed[:5])
+
+                if len(my_failed) > 5:
+                    names += " …ещё {}".format(len(my_failed) - 5)
+
+                msg = "Скопировано {} партиций, не удалось {}: {}".format(
+                    len(my_done), len(my_failed), names
+                )
+
+                if my_error:
+                    msg += " · причина: {}".format(my_error)
+
             safe_mark_item_failed(
                 item_id, error_message=msg[:2000],
                 duration_seconds=duration,
