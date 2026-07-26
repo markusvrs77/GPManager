@@ -412,6 +412,35 @@ def api_gpcopy_add_columns():
         return jsonify({"ok": False, "message": str(e)[:2000]}), 500
 
 
+@app.route("/api/gpcopy/fix-deps", methods=["POST"])
+def api_gpcopy_fix_deps():
+    """Досоздать в приёмнике зависимости: расширения, функции, sequences."""
+    data = request.get_json(silent=True) or {}
+    tables = data.get("tables") or []
+
+    if (not data.get("source_connection_id")
+            or not data.get("dest_connection_id") or not tables):
+        return jsonify({"ok": False,
+                        "message": "source, dest и tables обязательны"}), 400
+
+    try:
+        from modules.ddl_check import apply_dependency_fixes
+
+        results = apply_dependency_fixes(
+            data["source_connection_id"], data["dest_connection_id"], tables,
+        )
+        return jsonify({
+            "ok": True,
+            "results": results,
+            "created": sum(1 for r in results if r["ok"]),
+            "failed": sum(1 for r in results if not r["ok"]),
+        })
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
 @app.route("/api/gpcopy/retry-failed", methods=["POST"])
 def api_gpcopy_retry_failed():
     """Новая задача только по упавшим партициям исходной gpcopy-задачи."""

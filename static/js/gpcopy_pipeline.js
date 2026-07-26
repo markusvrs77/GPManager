@@ -2076,6 +2076,21 @@
                 fmtN(fixables.length) + " табл.)</button>";
         }
 
+        // зависимости, которых нет в приёмнике (функции/расширения/sequences)
+        var deps = ddlLast.deps || [];
+
+        if (deps.length) {
+            var DEP_LABELS = { extension: "расширение", "function": "функция",
+                               sequence: "sequence" };
+            html += '<div class="gpp-hint" style="color: var(--crit); margin-top: 8px;">' +
+                "Нет в приёмнике: " +
+                esc(deps.map(function (d) {
+                    return (DEP_LABELS[d.kind] || d.kind) + " " + d.name;
+                }).join(", ")) + "</div>" +
+                '<button class="gpp-btn sm" id="gppDdlDeps">🧩 Досоздать ' +
+                "зависимости (" + fmtN(deps.length) + ")</button>";
+        }
+
         if (bad.length) {
             html += '<div class="gpp-key-list" style="max-height: 240px; margin-top: 8px;">' +
                 bad.map(function (r) {
@@ -2131,6 +2146,49 @@
                               (d.failed ? ", ошибок: " + d.failed : "")
                             : (d.message || "Ошибка"),
                             d.ok && !d.failed ? "success" : "error");
+                        ddlRun();   // перепроверить после правок
+                    });
+                };
+
+                if (window.gpConfirm) {
+                    window.gpConfirm(text).then(function (y) { if (y) { go(); } });
+                } else if (confirm(text)) { go(); }
+            };
+        }
+
+        var depsBtn = $("gppDdlDeps");
+
+        if (depsBtn) {
+            depsBtn.onclick = function () {
+                var n = (ddlLast.deps || []).length;
+                var text = "Досоздать в приёмнике " + n + " зависимост" +
+                    (n === 1 ? "ь" : "и(ей)") +
+                    "? Расширения — CREATE EXTENSION, функции переносятся " +
+                    "из источника, sequences создаются заново.";
+
+                var go = function () {
+                    depsBtn.disabled = true;
+                    api("/api/gpcopy/fix-deps", "POST", {
+                        source_connection_id: srcId(),
+                        dest_connection_id: dstId(),
+                        tables: selTables(),
+                    }).then(function (d) {
+                        depsBtn.disabled = false;
+                        toast(d.ok
+                            ? "Создано: " + d.created +
+                              (d.failed ? ", ошибок: " + d.failed : "")
+                            : (d.message || "Ошибка"),
+                            d.ok && !d.failed ? "success" : "error");
+
+                        if (d.ok && d.failed) {
+                            var bad = (d.results || []).filter(function (r) {
+                                return !r.ok;
+                            }).map(function (r) {
+                                return r.name + ": " + r.error;
+                            }).join("\n");
+                            if (bad) { console.warn("fix-deps errors:\n" + bad); }
+                        }
+
                         ddlRun();   // перепроверить после правок
                     });
                 };
