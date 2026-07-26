@@ -2031,6 +2031,150 @@
             html + "</div>";
     }
 
+    /* ---------------- предпроверка DDL ---------------- */
+
+    var ddlLast = null;   // последний результат precheck
+
+    function ddlFixables() {
+        return (ddlLast ? ddlLast.results : []).filter(function (r) {
+            return r.missing_in_dest && r.missing_in_dest.length;
+        });
+    }
+
+    function ddlRender() {
+        var box = $("gppDdlBox");
+
+        if (!ddlLast) { box.innerHTML = ""; return; }
+
+        var s = ddlLast.summary || {};
+        var bad = (ddlLast.results || []).filter(function (r) {
+            return r.status !== "ok";
+        });
+
+        var html = '<div class="gpp-hint" style="margin-top: 0;">' +
+            'DDL: совпадают <b class="good">' + fmtN(s.ok || 0) + "</b>" +
+            " · расхождения <b" + (s.diff ? ' style="color: var(--crit);"' : "") +
+            ">" + fmtN(s.diff || 0) + "</b>" +
+            " · нет в приёмнике <b>" + fmtN(s.no_dest || 0) + "</b>" +
+            (s.no_source ? " · нет в источнике <b>" + fmtN(s.no_source) + "</b>" : "") +
+            "</div>";
+
+        var fixables = ddlFixables();
+
+        if (fixables.length) {
+            var nCols = fixables.reduce(function (a, r) {
+                return a + r.missing_in_dest.length;
+            }, 0);
+            html += '<button class="gpp-btn sm" id="gppDdlFix">➕ Создать ' +
+                "недостающие колонки (" + fmtN(nCols) + " в " +
+                fmtN(fixables.length) + " табл.)</button>";
+        }
+
+        if (bad.length) {
+            html += '<div class="gpp-key-list" style="max-height: 240px; margin-top: 8px;">' +
+                bad.map(function (r) {
+                    var det = [];
+
+                    if (r.status === "no_dest") {
+                        det.push("нет в приёмнике — gpcopy создаст её сам");
+                    }
+                    if (r.status === "no_source") {
+                        det.push("нет в источнике (проверь имя)");
+                    }
+                    (r.missing_in_dest || []).forEach(function (c) {
+                        det.push("нет колонки " + c.name + " (" + c.type + ")");
+                    });
+                    (r.type_diffs || []).forEach(function (d) {
+                        det.push(d.column + ": " + d.src + " → " + d.dst +
+                            " — тип разошёлся, поправь вручную или --drop");
+                    });
+                    if ((r.extra_in_dest || []).length) {
+                        det.push("лишние в приёмнике: " + r.extra_in_dest.join(", "));
+                    }
+
+                    return '<div class="gpp-key-row"><span>' +
+                        esc(r.schema + "." + r.table) +
+                        ' <span class="cols err">· ' + esc(det.join(" · ")) +
+                        "</span></span></div>";
+                }).join("") + "</div>";
+        } else {
+            html += '<div class="gpp-hint">Все выбранные таблицы совпадают по колонкам.</div>';
+        }
+
+        box.innerHTML = html;
+
+        var fixBtn = $("gppDdlFix");
+
+        if (fixBtn) {
+            fixBtn.onclick = function () {
+                var payload = ddlFixables().map(function (r) {
+                    return { schema: r.schema, table: r.table,
+                             columns: r.missing_in_dest };
+                });
+                var text = "Добавить недостающие колонки в " + payload.length +
+                    " таблиц(ы) приёмника (ALTER TABLE ADD COLUMN)?";
+
+                var go = function () {
+                    fixBtn.disabled = true;
+                    api("/api/gpcopy/add-columns", "POST", {
+                        dest_connection_id: dstId(), tables: payload,
+                    }).then(function (d) {
+                        fixBtn.disabled = false;
+                        toast(d.ok
+                            ? "Добавлено колонок: " + d.added +
+                              (d.failed ? ", ошибок: " + d.failed : "")
+                            : (d.message || "Ошибка"),
+                            d.ok && !d.failed ? "success" : "error");
+                        ddlRun();   // перепроверить после правок
+                    });
+                };
+
+                if (window.gpConfirm) {
+                    window.gpConfirm(text).then(function (y) { if (y) { go(); } });
+                } else if (confirm(text)) { go(); }
+            };
+        }
+    }
+
+    function ddlRun() {
+        var box = $("gppDdlBox");
+        var tables = selTables();
+
+        if (!tables.length) {
+            box.innerHTML = '<div class="gpp-hint">Сначала выбери таблицы (шаг 1).</div>';
+            return;
+        }
+
+        var btn = $("gppDdlCheck");
+        btn.disabled = true;
+        btn.textContent = "Проверяю DDL…";
+        box.innerHTML = '<div class="gpp-hint">Читаю колонки с обеих сторон…</div>';
+
+        api("/api/gpcopy/precheck", "POST", {
+            source_connection_id: srcId(), dest_connection_id: dstId(),
+            tables: tables,
+        }).then(function (d) {
+            btn.disabled = false;
+            btn.textContent = "⚖ Проверить DDL";
+
+            if (!d.ok) {
+                box.innerHTML = '<div class="gpp-hint" style="color: var(--crit);">' +
+                    esc(d.message || "Ошибка") + "</div>";
+                return;
+            }
+
+            ddlLast = d;
+            ddlRender();
+        }).catch(function (e) {
+            btn.disabled = false;
+            btn.textContent = "⚖ Проверить DDL";
+            box.innerHTML = '<div class="gpp-hint" style="color: var(--crit);">' +
+                esc(String(e)) + "</div>";
+        });
+    }
+
+    if ($("gppDdlCheck")) { $("gppDdlCheck").onclick = ddlRun; }
+
     /* ---------------- fancy connection dropdown ---------------- */
 
     function fancySelect(sel) {

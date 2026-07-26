@@ -360,6 +360,58 @@ def api_get_job(job_id):
         }
     )
 
+@app.route("/api/gpcopy/precheck", methods=["POST"])
+def api_gpcopy_precheck():
+    """Предпроверка DDL: сравнение колонок источника и приёмника."""
+    data = request.get_json(silent=True) or {}
+    tables = data.get("tables") or []
+
+    if not data.get("source_connection_id") or not data.get("dest_connection_id"):
+        return jsonify({"ok": False,
+                        "message": "source и dest подключения обязательны"}), 400
+
+    if not tables:
+        return jsonify({"ok": False, "message": "Не выбраны таблицы"}), 400
+
+    try:
+        from modules.ddl_check import precheck_tables
+
+        result = precheck_tables(
+            data["source_connection_id"], data["dest_connection_id"], tables,
+        )
+        return jsonify({"ok": True, **result})
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/gpcopy/add-columns", methods=["POST"])
+def api_gpcopy_add_columns():
+    """Досоздать в приёмнике колонки, которых не хватает до источника."""
+    data = request.get_json(silent=True) or {}
+    tables = data.get("tables") or []
+
+    if not data.get("dest_connection_id") or not tables:
+        return jsonify({"ok": False,
+                        "message": "dest_connection_id и tables обязательны"}), 400
+
+    try:
+        from modules.ddl_check import add_missing_columns
+
+        results = add_missing_columns(data["dest_connection_id"], tables)
+        return jsonify({
+            "ok": True,
+            "results": results,
+            "added": sum(r["added"] for r in results),
+            "failed": sum(1 for r in results if not r["ok"]),
+        })
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
 @app.route("/api/gpcopy/retry-failed", methods=["POST"])
 def api_gpcopy_retry_failed():
     """Новая задача только по упавшим партициям исходной gpcopy-задачи."""
