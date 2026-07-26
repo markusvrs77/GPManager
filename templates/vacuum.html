@@ -119,15 +119,25 @@
 
                 <div class="card-body">
 
-                    <label class="form-label">Операция</label>
-
-                    <select id="vacuumAction" class="form-select mb-3">
-                        <option value="VACUUM_ANALYZE">VACUUM ANALYZE</option>
-                        <option value="ANALYZE">ANALYZE</option>
-                        <option value="VACUUM">VACUUM</option>
-                        <option value="VACUUM_FULL">VACUUM FULL</option>
-                        <option value="VACUUM_FREEZE">VACUUM FREEZE</option>
-                    </select>
+                    <div class="row g-2 mb-3">
+                        <div class="col-8">
+                            <label class="form-label">Операция</label>
+                            <select id="vacuumAction" class="form-select">
+                                <option value="VACUUM_ANALYZE">VACUUM ANALYZE</option>
+                                <option value="ANALYZE">ANALYZE</option>
+                                <option value="VACUUM">VACUUM</option>
+                                <option value="VACUUM_FULL">VACUUM FULL</option>
+                                <option value="VACUUM_FREEZE">VACUUM FREEZE</option>
+                            </select>
+                        </div>
+                        <div class="col-4">
+                            <label class="form-label"
+                                   title="Сколько таблиц обрабатывать параллельно (у каждого воркера своё подключение)">
+                                Воркеры</label>
+                            <input type="number" id="vacuumWorkers"
+                                   class="form-control" value="1" min="1" max="8">
+                        </div>
+                    </div>
 
                     <button
                         type="button"
@@ -212,7 +222,7 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/object_tree.js') }}?v=30"></script>
-<script src="{{ url_for('static', filename='js/vacuum.js') }}?v=2"></script>
-<script src="{{ url_for('static', filename='js/vacuum_advisor.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/vacuum.js') }}?v=3"></script>
+<script src="{{ url_for('static', filename='js/vacuum_advisor.js') }}?v=3"></script>
 
 {% endblock %}

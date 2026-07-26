@@ -1017,12 +1017,18 @@ def api_vacuum_start():
                 }
             ), 400
 
+        try:
+            workers = int(data.get("workers") or 1)
+        except Exception:
+            workers = 1
+
         job_id = create_job(
             job_type="vacuum_analyze",
             connection_id=int(connection_id),
             config={
                 "source": "web",
                 "action": action,
+                "workers": max(1, min(workers, 8)),
                 "tables": unique_tables,
             },
         )

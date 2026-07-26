@@ -80,6 +80,9 @@ async function startVacuumJob() {
         body: JSON.stringify({
             connection_id: connectionId,
             action: action,
+            workers: parseInt(
+                (document.getElementById("vacuumWorkers") || {}).value, 10
+            ) || 1,
             tables: tables,
         }),
     });

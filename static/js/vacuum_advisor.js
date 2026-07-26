@@ -160,6 +160,9 @@
             body: JSON.stringify({
                 connection_id: conn,
                 action: "VACUUM_ANALYZE",   // запас на таблицы без action
+                workers: parseInt(
+                    (document.getElementById("vacuumWorkers") || {}).value, 10
+                ) || 1,
                 tables: tables,
             }),
         }).then(function (r) { return r.json(); }).then(function (d) {
