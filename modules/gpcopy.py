@@ -204,6 +204,14 @@ _FINISHED_TABLE_RE = re.compile(
     r'Finished copying table\s+"(?P<db>[^"]+)"\."(?P<schema>[^"]+)"\."(?P<table>[^"]+)"'
 )
 
+# строка старта копирования таблицы (форматы разных версий gpcopy);
+# проверяется только после Finished/Failed, чтобы их не перехватывать
+_STARTED_TABLE_RE = re.compile(
+    r'(?:Start\w*\s+copy\w*|Copy(?:ing)?)\s+(?:table\s+)?'
+    r'"(?P<db>[^"]+)"\."(?P<schema>[^"]+)"\."(?P<table>[^"]+)"',
+    re.IGNORECASE,
+)
+
 
 _PROGRESS_COUNTER_RE = re.compile(
     r"Progress:\s*\(\d+/\d+\)\s*DBs,\s*\((?P<done>\d+)/(?P<total>\d+)\)\s*tables done",
@@ -1243,7 +1251,17 @@ def _watch_gpcopy_log(job_id, log_path, item_keys, process=None, pid=None):
     finished_by_item = {}      # только успешные партиции
     failed_leaf_items = set()  # таблицы, у которых была упавшая партиция
     marked_done = set()
+    started_items = set()      # таблицы, чьё копирование реально началось
     dirty_items = set()
+
+    def mark_started(owner):
+        if owner in started_items or owner in marked_done:
+            return
+        started_items.add(owner)
+        try:
+            mark_item_running(owner)
+        except Exception:
+            pass
 
     # сколько партиций у каждой таблицы — чтобы переводить строку в done
     # сразу, как только все её партиции перелиты (не дожидаясь финала)
@@ -1298,6 +1316,9 @@ def _watch_gpcopy_log(job_id, log_path, item_keys, process=None, pid=None):
             if owner is not None:
                 parts_done_by_item[owner] = parts_done_by_item.get(owner, 0) + 1
                 dirty_items.add(owner)
+                # партиция дошла — таблица точно в работе (fallback,
+                # если стартовые строки этой версии gpcopy не распознались)
+                mark_started(owner)
 
                 if finished_m:
                     finished_by_item[owner] = finished_by_item.get(owner, 0) + 1
@@ -1318,6 +1339,19 @@ def _watch_gpcopy_log(job_id, log_path, item_keys, process=None, pid=None):
                         pass
 
                 flush_parts()
+
+            return
+
+        # старт копирования таблицы -> строка переходит queued -> running
+        started = _STARTED_TABLE_RE.search(line)
+
+        if started:
+            owner = find_owner_item(
+                started.group("schema"), started.group("table"), item_keys
+            )
+
+            if owner is not None:
+                mark_started(owner)
 
     # файл мог ещё не появиться (первая запись gpcopy)
     for _ in range(20):
@@ -1490,6 +1524,14 @@ def finalize_gpcopy_job(job_id, items, rc, stdout_data, stderr_data,
 
 def _resume_watch(job_id, log_path, pid, items, item_keys, config):
     started = time.time()
+
+    # зависшие с прошлого запуска running -> queued; реальные running
+    # и done проставит replay лога ниже
+    try:
+        from job_manager import requeue_interrupted_items
+        requeue_interrupted_items(job_id)
+    except Exception:
+        pass
 
     log_text = _watch_gpcopy_log(job_id, log_path, item_keys, pid=pid)
 
@@ -1786,10 +1828,9 @@ def run_gpcopy_job(job_id):
 
         command_text = " ".join(cmd)
 
-        for item in items:
-            item_id = get_item_value(item, "id")
-            mark_item_running(item_id)
-
+        # строки остаются queued: running получают только таблицы,
+        # чьё копирование gpcopy реально начал (видно по строкам лога) —
+        # иначе вся очередь выглядит как «копируется»
         refresh_job_progress(job_id)
 
         # ключи для атрибуции партиций из лога к таблицам задачи
