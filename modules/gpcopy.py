@@ -1240,7 +1240,23 @@ def _watch_gpcopy_log(job_id, log_path, item_keys, process=None, pid=None):
     state = {"last_pct": -1, "last_stop": 0.0, "flush_ts": 0.0}
 
     parts_done_by_item = {}
+    finished_by_item = {}      # только успешные партиции
+    failed_leaf_items = set()  # таблицы, у которых была упавшая партиция
+    marked_done = set()
     dirty_items = set()
+
+    # сколько партиций у каждой таблицы — чтобы переводить строку в done
+    # сразу, как только все её партиции перелиты (не дожидаясь финала)
+    parts_total_by_item = {}
+
+    if item_keys:
+        try:
+            for _it in get_job_items(job_id):
+                parts_total_by_item[get_item_value(_it, "id")] = int(
+                    get_item_value(_it, "parts_total") or 0
+                )
+        except Exception:
+            pass
 
     def flush_parts(force=False):
         now_ts = time.time()
@@ -1271,7 +1287,8 @@ def _watch_gpcopy_log(job_id, log_path, item_keys, process=None, pid=None):
                                      total_items=total_n)
                     state["last_pct"] = pct
 
-        leaf = _FINISHED_TABLE_RE.search(line) or _FAILED_TABLE_RE.search(line)
+        finished_m = _FINISHED_TABLE_RE.search(line)
+        leaf = finished_m or _FAILED_TABLE_RE.search(line)
 
         if leaf:
             owner = find_owner_item(
@@ -1281,6 +1298,25 @@ def _watch_gpcopy_log(job_id, log_path, item_keys, process=None, pid=None):
             if owner is not None:
                 parts_done_by_item[owner] = parts_done_by_item.get(owner, 0) + 1
                 dirty_items.add(owner)
+
+                if finished_m:
+                    finished_by_item[owner] = finished_by_item.get(owner, 0) + 1
+                else:
+                    failed_leaf_items.add(owner)
+
+                # все партиции таблицы успешно перелиты -> строка done сразу
+                total = parts_total_by_item.get(owner) or 0
+
+                if (owner not in marked_done
+                        and owner not in failed_leaf_items
+                        and total > 0
+                        and finished_by_item.get(owner, 0) >= total):
+                    try:
+                        safe_mark_item_done(owner)
+                        marked_done.add(owner)
+                    except Exception:
+                        pass
+
                 flush_parts()
 
     # файл мог ещё не появиться (первая запись gpcopy)
