@@ -52,9 +52,11 @@ html[data-sb="mini"] .gp-sb .brand .bname { opacity: 0; }
 .gp-sb .sb-sec-hd.sub { padding: 7px 12px 5px 22px; }
 
 /* вложенность видна отступами: тулкит внутри направления,
-   его меню — ещё правее */
-.gp-sb .sb-sec-body.sub { padding-left: 16px; }
-html[data-sb="mini"] .gp-sb .sb-sec-body.sub { padding-left: 0; }
+   его меню — ещё правее, с направляющей линией уровня */
+.gp-sb .sb-sec-body.sub { margin-left: 26px; padding-left: 10px;
+  border-left: 1px solid var(--hairline); }
+html[data-sb="mini"] .gp-sb .sb-sec-body.sub { margin-left: 0;
+  padding-left: 0; border-left: none; }
 .gp-sb .sb-sec-hd.sub .sec-ttl { font-size: 11.5px; color: var(--text-muted); }
 .gp-sb .sb-sec-hd.sub:hover .sec-ttl { color: var(--a2); }
 
