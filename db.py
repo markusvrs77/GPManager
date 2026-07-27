@@ -289,6 +289,14 @@ def init_db():
         "ALTER TABLE connections ADD COLUMN db_type TEXT DEFAULT 'greenplum'"
     )
 
+    # роль коннектора: source | dest | both (для деления на
+    # «источники» и «назначения» и фильтрации в синхронизации)
+    ensure_column_exists(
+        "connections",
+        "role",
+        "ALTER TABLE connections ADD COLUMN role TEXT DEFAULT 'both'"
+    )
+
     # вес таблицы (байты) для взвешенного прогресса и live-счётчик
     ensure_column_exists(
         "job_items",

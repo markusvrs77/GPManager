@@ -63,6 +63,13 @@
   background: var(--accent-grad); }
 .cx-form .fgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px 14px; margin-bottom: 14px; }
+
+.cx-sec { font-size: 11.5px; font-weight: 800; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-muted); margin: 4px 0 12px;
+  display: flex; align-items: center; gap: 9px; }
+.cx-sec::before { content: ""; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent-grad); flex: none; }
+.cx-empty { color: var(--text-muted); font-size: 13px; padding: 8px 2px; }
 @media (max-width: 900px) { .cx-form .fgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>
 
@@ -89,6 +96,14 @@
                         <option value="postgres">PostgreSQL</option>
                         <option value="mysql">MySQL (скоро)</option>
                         <option value="oracle">Oracle (скоро)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Роль</label>
+                    <select name="role" class="form-select">
+                        <option value="both">Источник и назначение</option>
+                        <option value="source">Только источник</option>
+                        <option value="dest">Только назначение</option>
                     </select>
                 </div>
                 <div>
@@ -125,15 +140,16 @@
         </form>
     </div>
 
-    <!-- карточки кластеров -->
-    <div class="cx-grid">
-        {% for c in connections %}
+    {% macro cx_card(c) %}
         <div class="cx-card">
             {% set dbt = c.db_type or 'greenplum' %}
+            {% set crole = c.role or 'both' %}
             <div class="cx-top">
                 <span class="cx-logo">{{ {'greenplum': 'GP', 'postgres': 'PG', 'mysql': 'MY', 'oracle': 'OR'}[dbt] }}</span>
                 <span class="cx-nm">{{ c.name }}</span>
-                <span class="cx-id">{{ {'greenplum': 'Greenplum', 'postgres': 'PostgreSQL', 'mysql': 'MySQL', 'oracle': 'Oracle'}[dbt] }} · #{{ c.id }}</span>
+                <span class="cx-id">{{ {'greenplum': 'Greenplum', 'postgres': 'PostgreSQL', 'mysql': 'MySQL', 'oracle': 'Oracle'}[dbt] }}
+                    · {{ {'both': 'универсальный', 'source': 'источник', 'dest': 'назначение'}[crole] }}
+                    · #{{ c.id }}</span>
             </div>
             <div class="cx-meta">
                 <div class="r"><span class="k">Host</span>
@@ -157,6 +173,25 @@
                 </form>
             </div>
         </div>
+    {% endmacro %}
+
+    <!-- источники: читаем из них (универсальные — в обеих группах) -->
+    <h6 class="cx-sec">Источники</h6>
+    <div class="cx-grid">
+        {% for c in connections if (c.role or 'both') != 'dest' %}
+            {{ cx_card(c) }}
+        {% else %}
+            <div class="cx-empty">Пока нет коннекторов-источников.</div>
+        {% endfor %}
+    </div>
+
+    <!-- назначения: пишем в них -->
+    <h6 class="cx-sec">Назначения</h6>
+    <div class="cx-grid">
+        {% for c in connections if (c.role or 'both') != 'source' %}
+            {{ cx_card(c) }}
+        {% else %}
+            <div class="cx-empty">Пока нет коннекторов-назначений.</div>
         {% endfor %}
 
         <button type="button" class="cx-add" id="cxAddBtn">

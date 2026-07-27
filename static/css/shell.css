@@ -34,6 +34,11 @@ html[data-sb="mini"] .gp-sb .brand .bname { opacity: 0; }
 .gp-sb nav { padding: 6px 10px; display: flex; flex-direction: column;
   gap: 2px; flex: 1; overflow-y: auto; overflow-x: hidden; }
 
+/* ---- аудит: ссылки контента под тему (не браузерный синий) ---- */
+.gp-shell-content a:not(.btn) { color: var(--a2); text-decoration: none; }
+.gp-shell-content a:not(.btn):hover { color: var(--a1);
+  text-decoration: underline; }
+
 /* ---- направления-шторки: DB Operations / Data Flow, внутри тулкиты ---- */
 .gp-sb .sb-sec-hd { display: flex; align-items: center; gap: 10px;
   width: 100%; border: none; background: transparent; cursor: pointer;
