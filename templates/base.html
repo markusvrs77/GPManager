@@ -16,6 +16,9 @@
             if (localStorage.getItem('gp-sb-mini') === '1') {
                 document.documentElement.setAttribute('data-sb', 'mini');
             }
+            if (localStorage.getItem('gp-sec-gpm') === '0') {
+                document.documentElement.setAttribute('data-sec-gpm', 'closed');
+            }
         } catch (e) {}
     })();
     </script>
@@ -53,10 +56,14 @@
 
 <div class="gp-shell">
     <aside class="gp-sb">
-        <a class="brand" href="/">
+        <!-- направление-шторка: клик сворачивает/раскрывает своё меню;
+             новые направления добавляются такими же секциями -->
+        <button class="brand sb-sec-hd" id="gpSecGpmHd" type="button"
+                aria-expanded="true" aria-controls="gpSecGpm">
             <span class="gp-logo">GP</span><span class="bname">GPManager</span>
-        </a>
-        <nav>
+            <span class="sec-chev" aria-hidden="true">▾</span>
+        </button>
+        <nav class="sb-sec-body" id="gpSecGpm">
             <div class="nav-group">Обзор</div>
             <a href="/" class="{% if p in ['/', '/dashboard'] %}active{% endif %}">
                 <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg></span>
@@ -164,6 +171,27 @@
         });
     }
     sbUpdate();
+
+    // шторка направления «GPManager»
+    var secHd = document.getElementById('gpSecGpmHd');
+
+    if (secHd) {
+        secHd.addEventListener('click', function () {
+            var closed = root.getAttribute('data-sec-gpm') === 'closed';
+
+            if (closed) { root.removeAttribute('data-sec-gpm'); }
+            else { root.setAttribute('data-sec-gpm', 'closed'); }
+
+            secHd.setAttribute('aria-expanded', closed ? 'true' : 'false');
+            try {
+                localStorage.setItem('gp-sec-gpm', closed ? '1' : '0');
+            } catch (e) {}
+        });
+        secHd.setAttribute(
+            'aria-expanded',
+            root.getAttribute('data-sec-gpm') === 'closed' ? 'false' : 'true'
+        );
+    }
 
     // бейдж активных задач синхронизации
     function pollSyncBadge() {
