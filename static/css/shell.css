@@ -49,7 +49,12 @@ html[data-sb="mini"] .gp-sb .brand .bname { opacity: 0; }
   transition: transform var(--dur-fast); flex: none; }
 
 .gp-sb .sb-sec-hd.top { padding: 10px 12px 6px; }
-.gp-sb .sb-sec-hd.sub { padding: 7px 12px 5px 18px; }
+.gp-sb .sb-sec-hd.sub { padding: 7px 12px 5px 22px; }
+
+/* вложенность видна отступами: тулкит внутри направления,
+   его меню — ещё правее */
+.gp-sb .sb-sec-body.sub { padding-left: 16px; }
+html[data-sb="mini"] .gp-sb .sb-sec-body.sub { padding-left: 0; }
 .gp-sb .sb-sec-hd.sub .sec-ttl { font-size: 11.5px; color: var(--text-muted); }
 .gp-sb .sb-sec-hd.sub:hover .sec-ttl { color: var(--a2); }
 
@@ -68,7 +73,7 @@ html[data-sb="mini"] .gp-sb .brand .bname { opacity: 0; }
 
 /* заглушки будущих тулкитов */
 .gp-sb .sb-stub { display: flex; align-items: center; gap: 10px;
-  padding: 6px 12px 6px 18px; font-size: 12.5px; color: var(--text-muted);
+  padding: 6px 12px 6px 22px; font-size: 12.5px; color: var(--text-muted);
   opacity: .62; cursor: default; white-space: nowrap; overflow: hidden; }
 .gp-sb .sb-stub .soon { margin-left: auto; font-size: 9.5px; font-weight: 800;
   letter-spacing: .06em; text-transform: uppercase; padding: 1px 7px;
