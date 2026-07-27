@@ -25,7 +25,7 @@ html[data-sb="mini"] .gp-sb { width: 68px; }
   box-shadow: 0 6px 18px color-mix(in srgb, var(--a1) 50%, transparent); }
 .gp-sb .brand .bname { font-weight: 800; font-size: 15.5px;
   letter-spacing: .2px; transition: opacity var(--dur-fast); }
-.gp-sb .brand .bname::after { content: "Greenplum toolkit"; display: block;
+.gp-sb .brand .bname::after { content: "multi-DB manager"; display: block;
   font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
   text-transform: uppercase; color: var(--text-muted); margin-top: 1px; }
 html[data-sb="mini"] .gp-sb .brand .bname { opacity: 0; }
@@ -33,15 +33,58 @@ html[data-sb="mini"] .gp-sb .brand .bname { opacity: 0; }
 .gp-sb nav { padding: 6px 10px; display: flex; flex-direction: column;
   gap: 2px; flex: 1; overflow-y: auto; overflow-x: hidden; }
 
-/* ---- направления-шторки: заголовок = бренд, тело = его меню ---- */
-.gp-sb .sb-sec-hd { width: 100%; border: none; background: transparent;
-  cursor: pointer; text-align: left; color: inherit; font: inherit; }
-.gp-sb .sb-sec-hd:hover .bname { color: var(--a2); }
+/* ---- направления-шторки: DB Operations / Data Flow, внутри тулкиты ---- */
+.gp-sb .sb-sec-hd { display: flex; align-items: center; gap: 10px;
+  width: 100%; border: none; background: transparent; cursor: pointer;
+  text-align: left; color: inherit; font: inherit; min-width: 0;
+  border-radius: var(--radius-sm); }
+.gp-sb .sb-sec-hd:hover .sec-ttl { color: var(--a2); }
+.gp-sb .sb-sec-hd .ic { width: 19px; height: 19px; flex: none;
+  color: var(--text-muted); }
+.gp-sb .sb-sec-hd .ic svg { width: 100%; height: 100%; }
+.gp-sb .sec-ttl { font-weight: 800; font-size: 12.5px; letter-spacing: .06em;
+  text-transform: uppercase; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
 .gp-sb .sec-chev { margin-left: auto; font-size: 12px; color: var(--text-muted);
   transition: transform var(--dur-fast); flex: none; }
-html[data-sec-gpm="closed"] .gp-sb .sec-chev { transform: rotate(-90deg); }
-html[data-sec-gpm="closed"] .gp-sb .sb-sec-body { display: none; }
-html[data-sb="mini"] .gp-sb .sec-chev { display: none; }
+
+.gp-sb .sb-sec-hd.top { padding: 10px 12px 6px; }
+.gp-sb .sb-sec-hd.sub { padding: 7px 12px 5px 18px; }
+.gp-sb .sb-sec-hd.sub .sec-ttl { font-size: 11.5px; color: var(--text-muted); }
+.gp-sb .sb-sec-hd.sub:hover .sec-ttl { color: var(--a2); }
+
+/* мини-логотип тулкита / будущего сервиса */
+.gp-sb .tk-logo { width: 22px; height: 22px; border-radius: 7px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9.5px; font-weight: 800; color: #fff;
+  background: var(--accent-grad); }
+.gp-sb .tk-logo.pg { background: #336791; }
+.gp-sb .tk-logo.ora { background: #c74634; }
+.gp-sb .tk-logo.my { background: #00758f; }
+.gp-sb .tk-logo.kf { background: #444a54; }
+.gp-sb .tk-logo.dz { background: #7db243; }
+.gp-sb .tk-logo.lr { background: #8a6d3b; }
+.gp-sb .tk-logo.pl { background: #5b6ee1; }
+
+/* заглушки будущих тулкитов */
+.gp-sb .sb-stub { display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px 6px 18px; font-size: 12.5px; color: var(--text-muted);
+  opacity: .62; cursor: default; white-space: nowrap; overflow: hidden; }
+.gp-sb .sb-stub .soon { margin-left: auto; font-size: 9.5px; font-weight: 800;
+  letter-spacing: .06em; text-transform: uppercase; padding: 1px 7px;
+  border: 1px solid var(--hairline); border-radius: var(--radius-pill); }
+
+/* свёрнутые состояния секций */
+html[data-sec-dbops="closed"] #secBody-dbops { display: none; }
+html[data-sec-dbops="closed"] #secHd-dbops .sec-chev { transform: rotate(-90deg); }
+html[data-sec-gpt="closed"] #secBody-gpt { display: none; }
+html[data-sec-gpt="closed"] #secHd-gpt .sec-chev { transform: rotate(-90deg); }
+html[data-sec-flow="closed"] #secBody-flow { display: none; }
+html[data-sec-flow="closed"] #secHd-flow .sec-chev { transform: rotate(-90deg); }
+
+html[data-sb="mini"] .gp-sb .sec-chev,
+html[data-sb="mini"] .gp-sb .sec-ttl,
+html[data-sb="mini"] .gp-sb .sb-stub { display: none; }
 
 .gp-sb .nav-group { font-size: 10px; font-weight: 800; letter-spacing: .14em;
   text-transform: uppercase; color: var(--text-muted); opacity: .8;

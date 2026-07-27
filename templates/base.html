@@ -16,9 +16,12 @@
             if (localStorage.getItem('gp-sb-mini') === '1') {
                 document.documentElement.setAttribute('data-sb', 'mini');
             }
-            if (localStorage.getItem('gp-sec-gpm') === '0') {
-                document.documentElement.setAttribute('data-sec-gpm', 'closed');
-            }
+            ['dbops', 'gpt', 'flow'].forEach(function (k) {
+                if (localStorage.getItem('gp-sec-' + k) === '0') {
+                    document.documentElement.setAttribute(
+                        'data-sec-' + k, 'closed');
+                }
+            });
         } catch (e) {}
     })();
     </script>
@@ -56,14 +59,27 @@
 
 <div class="gp-shell">
     <aside class="gp-sb">
-        <!-- направление-шторка: клик сворачивает/раскрывает своё меню;
-             новые направления добавляются такими же секциями -->
-        <button class="brand sb-sec-hd" id="gpSecGpmHd" type="button"
-                aria-expanded="true" aria-controls="gpSecGpm">
+        <a class="brand" href="/">
             <span class="gp-logo">GP</span><span class="bname">GPManager</span>
+        </a>
+
+        <!-- Направление: DB Operations — тулкиты СУБД -->
+        <button class="sb-sec-hd top" id="secHd-dbops" data-sec="dbops"
+                type="button" aria-expanded="true" aria-controls="secBody-dbops">
+            <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span>
+            <span class="sec-ttl">DB Operations</span>
             <span class="sec-chev" aria-hidden="true">▾</span>
         </button>
-        <nav class="sb-sec-body" id="gpSecGpm">
+        <div class="sb-sec-body" id="secBody-dbops">
+
+            <!-- Тулкит: Greenplum (текущий функционал GPManager) -->
+            <button class="sb-sec-hd sub" id="secHd-gpt" data-sec="gpt"
+                    type="button" aria-expanded="true" aria-controls="secBody-gpt">
+                <span class="tk-logo">GP</span>
+                <span class="sec-ttl">Greenplum Toolkit</span>
+                <span class="sec-chev" aria-hidden="true">▾</span>
+            </button>
+            <nav class="sb-sec-body sub" id="secBody-gpt">
             <div class="nav-group">Обзор</div>
             <a href="/" class="{% if p in ['/', '/dashboard'] %}active{% endif %}">
                 <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg></span>
@@ -94,7 +110,35 @@
             <a href="/backups" class="{% if p.startswith('/backups') %}active{% endif %}">
                 <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg></span>
                 <span class="lbl">Резервные копии</span></a>
-        </nav>
+            </nav>
+
+            <!-- будущие тулкиты этого направления -->
+            <div class="sb-stub"><span class="tk-logo pg">PG</span>
+                Postgres Toolkit <span class="soon">скоро</span></div>
+            <div class="sb-stub"><span class="tk-logo ora">OR</span>
+                Oracle Toolkit <span class="soon">скоро</span></div>
+            <div class="sb-stub"><span class="tk-logo my">MY</span>
+                MySQL Toolkit <span class="soon">скоро</span></div>
+        </div>
+
+        <!-- Направление: Data Flow — потоки данных -->
+        <button class="sb-sec-hd top" id="secHd-flow" data-sec="flow"
+                type="button" aria-expanded="true" aria-controls="secBody-flow">
+            <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
+            <span class="sec-ttl">Data Flow</span>
+            <span class="sec-chev" aria-hidden="true">▾</span>
+        </button>
+        <div class="sb-sec-body" id="secBody-flow">
+            <div class="sb-stub"><span class="tk-logo kf">KF</span>
+                Kafka <span class="soon">скоро</span></div>
+            <div class="sb-stub"><span class="tk-logo dz">DZ</span>
+                Debezium <span class="soon">скоро</span></div>
+            <div class="sb-stub"><span class="tk-logo lr">LR</span>
+                OpenLogReplicator <span class="soon">скоро</span></div>
+            <div class="sb-stub"><span class="tk-logo pl">PL</span>
+                Pipelines <span class="soon">скоро</span></div>
+        </div>
+
         <div class="sb-foot">
             <button class="sb-collapse" id="gpSbToggle" type="button"
                     aria-label="Свернуть или развернуть меню">
@@ -172,26 +216,28 @@
     }
     sbUpdate();
 
-    // шторка направления «GPManager»
-    var secHd = document.getElementById('gpSecGpmHd');
+    // шторки направлений (DB Operations, тулкиты, Data Flow)
+    document.querySelectorAll('.sb-sec-hd[data-sec]').forEach(function (hd) {
+        var key = hd.getAttribute('data-sec');
+        var attr = 'data-sec-' + key;
 
-    if (secHd) {
-        secHd.addEventListener('click', function () {
-            var closed = root.getAttribute('data-sec-gpm') === 'closed';
+        hd.setAttribute(
+            'aria-expanded',
+            root.getAttribute(attr) === 'closed' ? 'false' : 'true'
+        );
 
-            if (closed) { root.removeAttribute('data-sec-gpm'); }
-            else { root.setAttribute('data-sec-gpm', 'closed'); }
+        hd.addEventListener('click', function () {
+            var closed = root.getAttribute(attr) === 'closed';
 
-            secHd.setAttribute('aria-expanded', closed ? 'true' : 'false');
+            if (closed) { root.removeAttribute(attr); }
+            else { root.setAttribute(attr, 'closed'); }
+
+            hd.setAttribute('aria-expanded', closed ? 'true' : 'false');
             try {
-                localStorage.setItem('gp-sec-gpm', closed ? '1' : '0');
+                localStorage.setItem('gp-sec-' + key, closed ? '1' : '0');
             } catch (e) {}
         });
-        secHd.setAttribute(
-            'aria-expanded',
-            root.getAttribute('data-sec-gpm') === 'closed' ? 'false' : 'true'
-        );
-    }
+    });
 
     // бейдж активных задач синхронизации
     function pollSyncBadge() {
