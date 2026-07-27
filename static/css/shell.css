@@ -66,6 +66,7 @@ html[data-sb="mini"] .gp-sb .sb-sec-body.sub { margin-left: 0;
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 9.5px; font-weight: 800; color: #fff;
   background: var(--accent-grad); }
+.gp-sb .tk-logo.gp { background: #2f9e44; }
 .gp-sb .tk-logo.pg { background: #336791; }
 .gp-sb .tk-logo.ora { background: #c74634; }
 .gp-sb .tk-logo.my { background: #00758f; }
