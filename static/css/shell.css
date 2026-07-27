@@ -23,6 +23,7 @@ html[data-sb="mini"] .gp-sb { width: 68px; }
   align-items: center; justify-content: center; font-weight: 800;
   font-size: 13px; flex: none;
   box-shadow: 0 6px 18px color-mix(in srgb, var(--a1) 50%, transparent); }
+.gp-sb .brand .gp-logo svg { width: 21px; height: 21px; display: block; }
 .gp-sb .brand .bname { font-weight: 800; font-size: 15.5px;
   letter-spacing: .2px; transition: opacity var(--dur-fast); }
 .gp-sb .brand .bname::after { content: "multi-DB manager"; display: block;
