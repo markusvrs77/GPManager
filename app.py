@@ -678,9 +678,36 @@ def api_jobs_recent():
     job_types = [t.strip() for t in types_arg.split(",") if t.strip()] or None
     limit = request.args.get("limit", 20, type=int)
 
+    jobs = list_recent_jobs(job_types, limit)
+
+    # источник → назначение для ленты запусков; config_json наружу
+    # не отдаём (там огромные списки таблиц)
+    try:
+        conn_names = {c["id"]: c["name"] for c in list_connections()}
+    except Exception:
+        conn_names = {}
+
+    for j in jobs:
+        try:
+            cfg = _json.loads(j.pop("config_json", None) or "{}")
+        except Exception:
+            cfg = {}
+
+        src = cfg.get("source_connection_id") or j.get("connection_id")
+        dst = cfg.get("dest_connection_id")
+
+        try:
+            j["source_name"] = conn_names.get(int(src)) if src else None
+        except Exception:
+            j["source_name"] = None
+        try:
+            j["dest_name"] = conn_names.get(int(dst)) if dst else None
+        except Exception:
+            j["dest_name"] = None
+
     return jsonify({
         "ok": True,
-        "jobs": list_recent_jobs(job_types, limit),
+        "jobs": jobs,
     })
 
 

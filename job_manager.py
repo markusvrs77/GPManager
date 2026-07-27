@@ -800,7 +800,8 @@ def list_recent_jobs(job_types=None, limit=20):
             progress_percent,
             started_at,
             finished_at,
-            error_message
+            error_message,
+            config_json
         FROM jobs
     """
     params = []

@@ -1834,7 +1834,16 @@
             }
 
             var statusTxt = running ? (pct + "%") : esc(j.status);
-            var meta = esc(j.started_at || "");
+
+            // кто источник и кто назначение («—», если подключение удалено)
+            var route = "";
+            if (j.dest_name) {
+                route = esc(j.source_name || "—") + " → " + esc(j.dest_name);
+            } else if (j.source_name) {
+                route = esc(j.source_name);
+            }
+
+            var meta = (route ? route + " · " : "") + esc(j.started_at || "");
             if (failed && j.error_message) {
                 meta += " · " + esc(String(j.error_message).slice(0, 60));
             }
@@ -1933,7 +1942,15 @@
         var s = (st && st.summary) || {};
         var items = ((st && st.items) || []).slice();
 
+        var dRoute = "";
+        if (j.dest_name) {
+            dRoute = esc(j.source_name || "—") + " → " + esc(j.dest_name);
+        } else if (j.source_name) {
+            dRoute = esc(j.source_name);
+        }
+
         var html = '<div class="meta-line">' + runBadge(j.status) + " " +
+            (dRoute ? "<b>" + dRoute + "</b> · " : "") +
             esc(j.started_at || "") +
             (j.finished_at ? " → " + esc(j.finished_at) : "") +
             " · объектов: " + fmtN(s.total || j.total_items) +
