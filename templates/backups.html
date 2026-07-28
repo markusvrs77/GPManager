@@ -160,7 +160,7 @@
     var openReport = null;      // {id, text} — развёрнутый отчёт display-report
 
     window.gpbLoad = function () {
-        fetch("/api/backup/list")
+        fetch("/api/backup/list?tool=gpbackup")
             .then(function (r) { return r.json(); })
             .then(function (d) {
                 var box = document.getElementById("gpbList");

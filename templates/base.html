@@ -16,7 +16,7 @@
             if (localStorage.getItem('gp-sb-mini') === '1') {
                 document.documentElement.setAttribute('data-sb', 'mini');
             }
-            ['dbops', 'gpt', 'flow'].forEach(function (k) {
+            ['dbops', 'gpt', 'pgt', 'flow'].forEach(function (k) {
                 if (localStorage.getItem('gp-sec-' + k) === '0') {
                     document.documentElement.setAttribute(
                         'data-sec-' + k, 'closed');
@@ -51,6 +51,8 @@
     {% set page_title, page_crumb = 'Maintenance', 'реорганизация и перекос' %}
 {% elif p.startswith('/backups') %}
     {% set page_title, page_crumb = 'Резервные копии', 'gpbackup / gprestore' %}
+{% elif p.startswith('/pg/backups') %}
+    {% set page_title, page_crumb = 'Резервные копии PostgreSQL', 'pg_dump / pg_restore' %}
 {% elif p.startswith('/health') %}
     {% set page_title, page_crumb = 'Здоровье БД', 'аналитика без нагрузки' %}
 {% else %}
@@ -120,9 +122,20 @@
                 <span class="lbl">Резервные копии</span></a>
             </nav>
 
+            <!-- Тулкит: PostgreSQL -->
+            <button class="sb-sec-hd sub" id="secHd-pgt" data-sec="pgt"
+                    type="button" aria-expanded="true" aria-controls="secBody-pgt">
+                <span class="tk-logo pg">PG</span>
+                <span class="sec-ttl">Postgres Toolkit</span>
+                <span class="sec-chev" aria-hidden="true">▾</span>
+            </button>
+            <nav class="sb-sec-body sub" id="secBody-pgt">
+                <a href="/pg/backups" class="{% if p.startswith('/pg/backups') %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg></span>
+                    <span class="lbl">Резервные копии</span></a>
+            </nav>
+
             <!-- будущие тулкиты этого направления -->
-            <div class="sb-stub"><span class="tk-logo pg">PG</span>
-                Postgres Toolkit <span class="soon">скоро</span></div>
             <div class="sb-stub"><span class="tk-logo ora">OR</span>
                 Oracle Toolkit <span class="soon">скоро</span></div>
             <div class="sb-stub"><span class="tk-logo my">MY</span>

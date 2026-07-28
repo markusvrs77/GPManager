@@ -297,6 +297,13 @@ def init_db():
         "ALTER TABLE connections ADD COLUMN role TEXT DEFAULT 'both'"
     )
 
+    # инструмент, которым сделана копия: gpbackup | pg_dump
+    ensure_column_exists(
+        "backups",
+        "tool",
+        "ALTER TABLE backups ADD COLUMN tool TEXT DEFAULT 'gpbackup'"
+    )
+
     # вес таблицы (байты) для взвешенного прогресса и live-счётчик
     ensure_column_exists(
         "job_items",

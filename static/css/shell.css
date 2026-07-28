@@ -93,6 +93,8 @@ html[data-sec-dbops="closed"] #secBody-dbops { display: none; }
 html[data-sec-dbops="closed"] #secHd-dbops .sec-chev { transform: rotate(-90deg); }
 html[data-sec-gpt="closed"] #secBody-gpt { display: none; }
 html[data-sec-gpt="closed"] #secHd-gpt .sec-chev { transform: rotate(-90deg); }
+html[data-sec-pgt="closed"] #secBody-pgt { display: none; }
+html[data-sec-pgt="closed"] #secHd-pgt .sec-chev { transform: rotate(-90deg); }
 html[data-sec-flow="closed"] #secBody-flow { display: none; }
 html[data-sec-flow="closed"] #secHd-flow .sec-chev { transform: rotate(-90deg); }
 

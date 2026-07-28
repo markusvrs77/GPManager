@@ -417,36 +417,42 @@ def delete_disk_backup(connection_id, timestamp, manager_path=None):
 # ------------------------------------------------------------------
 
 def insert_backup(connection_id, job_id, backup_timestamp, dbname,
-                  backup_type, backup_dir, status):
+                  backup_type, backup_dir, status, tool="gpbackup"):
     with sqlite_cursor(commit=True) as cur:
         cur.execute(
             """
             INSERT INTO backups (
                 connection_id, job_id, backup_timestamp,
-                dbname, backup_type, backup_dir, status
+                dbname, backup_type, backup_dir, status, tool
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 connection_id, job_id, backup_timestamp,
-                dbname, backup_type, backup_dir, status,
+                dbname, backup_type, backup_dir, status, tool,
             ),
         )
         return cur.lastrowid
 
 
-def list_backups(limit=100):
+def list_backups(limit=100, tool=None):
+    sql = """
+        SELECT b.*, COALESCE(b.tool, 'gpbackup') AS tool,
+               c.name AS connection_name
+        FROM backups b
+        LEFT JOIN connections c ON c.id = b.connection_id
+    """
+    params = []
+
+    if tool:
+        sql += " WHERE COALESCE(b.tool, 'gpbackup') = ?"
+        params.append(tool)
+
+    sql += " ORDER BY b.id DESC LIMIT ?"
+    params.append(int(limit))
+
     with sqlite_cursor() as cur:
-        cur.execute(
-            """
-            SELECT b.*, c.name AS connection_name
-            FROM backups b
-            LEFT JOIN connections c ON c.id = b.connection_id
-            ORDER BY b.id DESC
-            LIMIT ?
-            """,
-            (int(limit),),
-        )
+        cur.execute(sql, params)
         return [dict(row) for row in cur.fetchall()]
 
 

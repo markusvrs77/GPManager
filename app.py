@@ -104,6 +104,11 @@ from modules.gpbackup import (
 gpm_scheduler.register_runner("gpbackup", run_gpbackup_job)
 gpm_scheduler.register_runner("gprestore", run_gprestore_job)
 
+from modules.pg_backup import run_pg_dump_job, run_pg_restore_job
+
+gpm_scheduler.register_runner("pg_dump", run_pg_dump_job)
+gpm_scheduler.register_runner("pg_restore", run_pg_restore_job)
+
 
 app = Flask(__name__)
 
@@ -1961,7 +1966,131 @@ def backups_page():
 
 @app.route("/api/backup/list")
 def api_backup_list():
-    return jsonify({"ok": True, "backups": list_backup_records()})
+    tool = (request.args.get("tool") or "").strip() or None
+    return jsonify({"ok": True, "backups": list_backup_records(tool=tool)})
+
+
+@app.route("/pg/backups")
+def pg_backups_page():
+    pg_connections = [
+        c for c in list_connections()
+        if (c.get("db_type") or "greenplum") == "postgres"
+    ]
+    return render_template("pg_backups.html", connections=pg_connections)
+
+
+@app.route("/api/pg/backup/start", methods=["POST"])
+def api_pg_backup_start():
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    from modules.connections import get_connection_by_id as _cfg
+    from modules.pg_backup import build_pg_dump_command, make_timestamp
+
+    conn_cfg = _cfg(int(connection_id))
+
+    if not conn_cfg:
+        return jsonify({"ok": False, "message": "Подключение не найдено"}), 400
+
+    config = {
+        "connection_id": int(connection_id),
+        "dbname": conn_cfg.get("database_name") or conn_cfg.get("database"),
+        "backup_dir": (data.get("backup_dir") or "").strip(),
+        "backup_timestamp": make_timestamp(),
+        "include_schemas": data.get("include_schemas") or "",
+        "include_tables": data.get("include_tables") or "",
+        "compression_level": data.get("compression_level"),
+        "data_only": bool(data.get("data_only")),
+        "schema_only": bool(data.get("schema_only")),
+        "pg_dump_path": (data.get("pg_dump_path") or "").strip(),
+    }
+
+    try:
+        build_pg_dump_command(dict(config))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    job_id = create_job(
+        job_type="pg_dump",
+        connection_id=int(connection_id),
+        config=config,
+    )
+
+    create_job_items(
+        job_id=job_id,
+        items=[{
+            "schema_name": config["dbname"] or "",
+            "table_name": "pg_dump {}".format(config["backup_timestamp"]),
+            "action": "PG_DUMP",
+        }],
+    )
+
+    threading.Thread(target=run_pg_dump_job, args=(job_id,),
+                     daemon=True).start()
+
+    return jsonify({"ok": True, "job_id": job_id, "message": "Дамп запущен"})
+
+
+@app.route("/api/pg/backup/restore", methods=["POST"])
+def api_pg_backup_restore():
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+
+    if not connection_id or not data.get("backup_timestamp") \
+            or not data.get("dbname"):
+        return jsonify({
+            "ok": False,
+            "message": "connection_id, backup_timestamp и dbname обязательны",
+        }), 400
+
+    from modules.pg_backup import (
+        build_pg_restore_command,
+        dump_file_path,
+    )
+
+    config = {
+        "connection_id": int(connection_id),
+        "dump_file": dump_file_path(
+            (data.get("backup_dir") or "").strip(),
+            str(data.get("dbname")),
+            str(data.get("backup_timestamp")),
+        ),
+        "target_db": (data.get("target_db") or data.get("dbname") or "").strip(),
+        "create_db": bool(data.get("create_db")),
+        "clean": bool(data.get("clean")),
+        "data_only": bool(data.get("data_only")),
+        "jobs": data.get("jobs") or 1,
+        "pg_restore_path": (data.get("pg_restore_path") or "").strip(),
+    }
+
+    try:
+        build_pg_restore_command(dict(config))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    job_id = create_job(
+        job_type="pg_restore",
+        connection_id=int(connection_id),
+        config=config,
+    )
+
+    create_job_items(
+        job_id=job_id,
+        items=[{
+            "schema_name": config["target_db"],
+            "table_name": "pg_restore {}".format(data.get("backup_timestamp")),
+            "action": "PG_RESTORE",
+        }],
+    )
+
+    threading.Thread(target=run_pg_restore_job, args=(job_id,),
+                     daemon=True).start()
+
+    return jsonify({"ok": True, "job_id": job_id,
+                    "message": "Восстановление запущено"})
 
 
 @app.route("/api/backup/start", methods=["POST"])
@@ -2817,8 +2946,11 @@ if __name__ == "__main__":
     from modules.gpcopy import resume_unfinished_gpcopy_jobs
     from modules.job_resume import resume_inprocess_jobs
 
+    from modules.pg_backup import resume_unfinished_pg_jobs
+
     resumed_jobs = resume_unfinished_gpcopy_jobs()
     resumed_jobs += resume_unfinished_backup_jobs()
+    resumed_jobs += resume_unfinished_pg_jobs()
     resumed_jobs += resume_inprocess_jobs(exclude_ids=resumed_jobs)
 
     if resumed_jobs:
