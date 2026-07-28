@@ -46,11 +46,17 @@ def get_object_tree(connection_id: int):
         conn.close()
 
     schemas_map = {}
+    seen = set()
 
     for row in rows:
         schema_name = row["schema_name"]
         table_name = row["table_name"]
         relkind = row["relkind"]
+
+        # страховка от дублей независимо от каталога кластера
+        if (schema_name, table_name) in seen:
+            continue
+        seen.add((schema_name, table_name))
 
         if schema_name not in schemas_map:
             schemas_map[schema_name] = []
