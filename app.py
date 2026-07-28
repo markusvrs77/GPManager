@@ -295,27 +295,17 @@ def api_skew_start():
         }), 400
 
     try:
+        # items создаёт сам create_job из config.tables (action = SKEW);
+        # раньше здесь был второй create_job_items - каждая таблица
+        # попадала в задачу дважды и анализировалась повторно
         job_id = create_job(
             job_type="skew",
             connection_id=int(connection_id),
             config={
                 "connection_id": int(connection_id),
+                "action": "SKEW",
                 "tables": tables,
             },
-        )
-
-        create_job_items(
-            job_id=job_id,
-            items=[
-                {
-                    "schema_name": item.get("schema") or item.get("schema_name"),
-                    "table_name": item.get("table") or item.get("table_name"),
-                    "action": "SKEW",
-                }
-                for item in tables
-                if (item.get("schema") or item.get("schema_name"))
-                and (item.get("table") or item.get("table_name"))
-            ],
         )
 
         import threading
