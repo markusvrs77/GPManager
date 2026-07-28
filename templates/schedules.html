@@ -17,16 +17,20 @@
                     <input type="text" id="schName" class="form-control mb-3" placeholder="nightly-gpcopy">
 
                     <label class="form-label">Тип задачи</label>
-                    <select id="schJobType" class="form-select mb-3" onchange="onJobTypeChange()">
+                    <select id="schJobType" class="form-select mb-3"
+                            onchange="onJobTypeChange()" data-toolkit="{{ toolkit }}">
+                        {% if toolkit == 'pg' %}
+                        <option value="pg_dump">Дамп PostgreSQL (pg_dump)</option>
+                        {% else %}
                         <option value="gpcopy">Копирование (gpcopy)</option>
                         <option value="gpcopy_date">Диапазон дат</option>
                         <option value="gpcopy_increment">Инкремент (watermark)</option>
                         <option value="gpcopy_partition_diff">Партиции (diff)</option>
                         <option value="gpbackup">Резервная копия (gpbackup)</option>
-                        <option value="pg_dump">Дамп PostgreSQL (pg_dump)</option>
                         <option value="vacuum">Vacuum / Analyze</option>
                         <option value="reorganize">Реорганизация</option>
                         <option value="skew">Анализ перекоса</option>
+                        {% endif %}
                     </select>
 
                     <div id="schBackupDirBox" class="mb-3" style="display:none">

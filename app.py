@@ -1979,6 +1979,44 @@ def pg_backups_page():
     return render_template("pg_backups.html", connections=pg_connections)
 
 
+@app.route("/api/pg/databases")
+def api_pg_databases():
+    """Список БД на сервере PG-подключения (для выбора базы дампа)."""
+    connection_id = request.args.get("connection_id", type=int)
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    try:
+        from modules.gpcopy import open_psycopg2_connection_by_cfg
+        from modules.connections import get_connection_by_id as _cfg
+
+        conn_cfg = _cfg(connection_id)
+
+        if not conn_cfg:
+            return jsonify({"ok": False, "message": "Подключение не найдено"}), 400
+
+        conn = open_psycopg2_connection_by_cfg(conn_cfg)
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT datname FROM pg_database "
+                    "WHERE NOT datistemplate ORDER BY datname"
+                )
+                dbs = [r[0] for r in cur.fetchall()]
+        finally:
+            conn.close()
+
+        return jsonify({
+            "ok": True,
+            "databases": dbs,
+            "default": conn_cfg.get("database_name"),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:1000]}), 500
+
+
 @app.route("/api/pg/backup/start", methods=["POST"])
 def api_pg_backup_start():
     data = request.get_json(silent=True) or {}
@@ -1997,7 +2035,9 @@ def api_pg_backup_start():
 
     config = {
         "connection_id": int(connection_id),
-        "dbname": conn_cfg.get("database_name") or conn_cfg.get("database"),
+        # база дампа: можно выбрать любую на сервере подключения
+        "dbname": (data.get("dbname") or "").strip()
+        or conn_cfg.get("database_name") or conn_cfg.get("database"),
         "backup_dir": (data.get("backup_dir") or "").strip(),
         "backup_timestamp": make_timestamp(),
         "include_schemas": data.get("include_schemas") or "",
@@ -2291,9 +2331,16 @@ def api_health_overview():
 
 @app.route("/schedules")
 def schedules_page():
+    # у каждого тулкита свои расписания: gp (по умолчанию) | pg
+    toolkit = (request.args.get("toolkit") or "gp").strip().lower()
+
+    if toolkit not in ("gp", "pg"):
+        toolkit = "gp"
+
     return render_template(
         "schedules.html",
         connections=list_connections(),
+        toolkit=toolkit,
     )
 
 

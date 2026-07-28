@@ -175,16 +175,29 @@ const SCH_LABELS = {
     pg_dump: "Дамп PG"
 };
 
+// расписания разделены по тулкитам: у Postgres Toolkit свои
+const PG_FAMILY = ["pg_dump", "pg_restore"];
+
+function currentToolkit() {
+    const sel = document.getElementById("schJobType");
+    return (sel && sel.dataset.toolkit) || "gp";
+}
+
 async function loadSchedules() {
     const body = document.getElementById("schedulesBody");
     const data = await api("/api/schedules");
 
-    if (!data.ok || !data.schedules.length) {
+    let schedules = data.ok ? (data.schedules || []) : [];
+    schedules = schedules.filter((s) => currentToolkit() === "pg"
+        ? PG_FAMILY.includes(s.job_type)
+        : !PG_FAMILY.includes(s.job_type));
+
+    if (!schedules.length) {
         body.innerHTML = '<div class="text-muted">Пока нет расписаний — создай первое слева.</div>';
         return;
     }
 
-    body.innerHTML = data.schedules.map((s) => {
+    body.innerHTML = schedules.map((s) => {
         const id = parseInt(s.id, 10);
         return '<div class="sch-item' + (s.enabled ? "" : " off") + '">' +
             '<div class="sch-main">' +

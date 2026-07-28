@@ -70,6 +70,11 @@
                 {% endfor %}
             </select>
 
+            <label class="form-label">База данных</label>
+            <select id="pgbDb" class="form-select form-select-sm mb-3">
+                <option value="">(база подключения)</option>
+            </select>
+
             <label class="form-label">Что дампить</label>
             <select id="pgbType" class="form-select form-select-sm mb-3">
                 <option value="full">Всё (схема + данные)</option>
@@ -101,10 +106,23 @@
                 Создать дамп
             </button>
 
-            <div class="d-flex gap-2 mt-2 align-items-center">
-                <input id="pgbCron" class="form-control form-control-sm"
-                       value="0 2 * * *" title="cron-выражение"
-                       style="max-width: 130px; font-family: var(--font-mono);">
+            <div class="d-flex gap-2 mt-2 align-items-center flex-wrap">
+                <select id="pgbFreq" class="form-select form-select-sm"
+                        style="max-width: 130px;">
+                    <option value="daily">Ежедневно</option>
+                    <option value="weekly">Еженедельно</option>
+                    <option value="hourly">Ежечасно</option>
+                </select>
+                <select id="pgbDow" class="form-select form-select-sm"
+                        style="max-width: 90px; display: none;">
+                    <option value="1">Пн</option><option value="2">Вт</option>
+                    <option value="3">Ср</option><option value="4">Чт</option>
+                    <option value="5">Пт</option><option value="6">Сб</option>
+                    <option value="0">Вс</option>
+                </select>
+                <input type="time" id="pgbTime" value="02:00"
+                       class="form-control form-control-sm"
+                       style="max-width: 110px;">
                 <button class="btn btn-sm btn-outline-primary flex-grow-1"
                         id="pgbSchedule" type="button"
                         title="Создать расписание с настройками формы выше">
@@ -284,6 +302,7 @@
                 body: JSON.stringify({
                     connection_id:
                         parseInt(document.getElementById("pgbConn").value, 10),
+                    dbname: document.getElementById("pgbDb").value,
                     backup_dir: document.getElementById("pgbDir").value,
                     include_schemas: document.getElementById("pgbSchemas").value,
                     include_tables: document.getElementById("pgbTables").value,
@@ -307,6 +326,64 @@
         });
     }
 
+    // список БД сервера для выбранного подключения
+    function pgbLoadDbs() {
+        var connSel = document.getElementById("pgbConn");
+        var dbSel = document.getElementById("pgbDb");
+
+        if (!connSel || !dbSel) { return; }
+
+        var def = (connSel.options[connSel.selectedIndex] || {})
+            .getAttribute("data-db") || "";
+
+        dbSel.innerHTML = '<option value="">(база подключения: ' +
+            esc(def) + ")</option>";
+
+        fetch("/api/pg/databases?connection_id=" +
+              encodeURIComponent(connSel.value))
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (!d.ok) { return; }
+                dbSel.innerHTML = (d.databases || []).map(function (db) {
+                    return '<option value="' + esc(db) + '"' +
+                        (db === d.default ? " selected" : "") + ">" +
+                        esc(db) + "</option>";
+                }).join("");
+            })
+            .catch(function () {});
+    }
+
+    var connSelEl = document.getElementById("pgbConn");
+
+    if (connSelEl) {
+        connSelEl.addEventListener("change", pgbLoadDbs);
+        pgbLoadDbs();
+    }
+
+    // календарное время -> cron
+    function pgbCronExpr() {
+        var freq = document.getElementById("pgbFreq").value;
+        var hm = (document.getElementById("pgbTime").value || "02:00").split(":");
+        var h = parseInt(hm[0], 10) || 0;
+        var m = parseInt(hm[1], 10) || 0;
+
+        if (freq === "hourly") { return m + " * * * *"; }
+        if (freq === "weekly") {
+            return m + " " + h + " * * " +
+                document.getElementById("pgbDow").value;
+        }
+        return m + " " + h + " * * *";
+    }
+
+    var freqSel = document.getElementById("pgbFreq");
+
+    if (freqSel) {
+        freqSel.addEventListener("change", function () {
+            document.getElementById("pgbDow").style.display =
+                freqSel.value === "weekly" ? "" : "none";
+        });
+    }
+
     // расписание с текущими настройками формы (ночной дамп)
     var schedBtn = document.getElementById("pgbSchedule");
 
@@ -325,10 +402,11 @@
                 body: JSON.stringify({
                     name: ("pg_dump " + connName.split("/")[0]).trim(),
                     job_type: "pg_dump",
-                    cron_expr: document.getElementById("pgbCron").value.trim(),
+                    cron_expr: pgbCronExpr(),
                     overlap_policy: "skip",
                     config: {
                         connection_id: parseInt(connSel.value, 10),
+                        dbname: document.getElementById("pgbDb").value,
                         backup_dir: document.getElementById("pgbDir").value,
                         include_schemas:
                             document.getElementById("pgbSchemas").value,

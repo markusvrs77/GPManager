@@ -112,10 +112,23 @@
                 Создать бэкап
             </button>
 
-            <div class="d-flex gap-2 mt-2 align-items-center">
-                <input id="gpbCron" class="form-control form-control-sm"
-                       value="0 2 * * *" title="cron-выражение"
-                       style="max-width: 130px; font-family: var(--font-mono);">
+            <div class="d-flex gap-2 mt-2 align-items-center flex-wrap">
+                <select id="gpbFreq" class="form-select form-select-sm"
+                        style="max-width: 130px;">
+                    <option value="daily">Ежедневно</option>
+                    <option value="weekly">Еженедельно</option>
+                    <option value="hourly">Ежечасно</option>
+                </select>
+                <select id="gpbDow" class="form-select form-select-sm"
+                        style="max-width: 90px; display: none;">
+                    <option value="1">Пн</option><option value="2">Вт</option>
+                    <option value="3">Ср</option><option value="4">Чт</option>
+                    <option value="5">Пт</option><option value="6">Сб</option>
+                    <option value="0">Вс</option>
+                </select>
+                <input type="time" id="gpbTime" value="02:00"
+                       class="form-control form-control-sm"
+                       style="max-width: 110px;">
                 <button class="btn btn-sm btn-outline-primary flex-grow-1"
                         id="gpbSchedule" type="button"
                         title="Создать расписание с настройками формы выше">
@@ -404,6 +417,34 @@
         });
     });
 
+    // календарное время -> cron (ежедневно/еженедельно/ежечасно)
+    function gpbCronExpr() {
+        var freq = document.getElementById("gpbFreq").value;
+        var hm = (document.getElementById("gpbTime").value || "02:00").split(":");
+        var h = parseInt(hm[0], 10) || 0;
+        var m = parseInt(hm[1], 10) || 0;
+
+        if (freq === "hourly") { return m + " * * * *"; }
+        if (freq === "weekly") {
+            return m + " " + h + " * * " +
+                document.getElementById("gpbDow").value;
+        }
+        return m + " " + h + " * * *";
+    }
+
+    var freqSel = document.getElementById("gpbFreq");
+
+    if (freqSel) {
+        freqSel.addEventListener("change", function () {
+            document.getElementById("gpbDow").style.display =
+                freqSel.value === "weekly" ? "" : "none";
+            // для ежечасного важны только минуты
+            document.getElementById("gpbTime").title =
+                freqSel.value === "hourly"
+                    ? "Каждый час в указанную минуту" : "Время запуска";
+        });
+    }
+
     // расписание с текущими настройками формы (например, ночной бэкап)
     var schedBtn = document.getElementById("gpbSchedule");
 
@@ -421,7 +462,7 @@
                 body: JSON.stringify({
                     name: ("gpbackup " + connName.split("/")[0]).trim(),
                     job_type: "gpbackup",
-                    cron_expr: document.getElementById("gpbCron").value.trim(),
+                    cron_expr: gpbCronExpr(),
                     overlap_policy: "skip",
                     config: {
                         connection_id: parseInt(connSel.value, 10),
