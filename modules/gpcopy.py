@@ -1639,7 +1639,8 @@ def resume_unfinished_gpcopy_jobs():
         return handled
 
     for job in unfinished:
-        if job.get("job_type") != "gpcopy":
+        # partition_diff пишет тот же лог gpcopy - переподхват общий
+        if job.get("job_type") not in ("gpcopy", "gpcopy_partition_diff"):
             continue
 
         log_path = job.get("log_file")

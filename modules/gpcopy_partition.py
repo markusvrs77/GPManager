@@ -17,13 +17,15 @@ from psycopg2.extras import RealDictCursor
 
 try:
     from job_manager import (
-        get_job, mark_job_running, mark_job_done, is_stop_requested,
-        clear_stop_flag,
+        get_job, get_job_items, mark_job_running, mark_job_done,
+        is_stop_requested, clear_stop_flag, mark_job_cancelled,
+        refresh_job_progress, set_item_parts, set_job_runtime,
     )
 except ImportError:
     from modules.job_manager import (
-        get_job, mark_job_running, mark_job_done, is_stop_requested,
-        clear_stop_flag,
+        get_job, get_job_items, mark_job_running, mark_job_done,
+        is_stop_requested, clear_stop_flag, mark_job_cancelled,
+        refresh_job_progress, set_item_parts, set_job_runtime,
     )
 
 try:
@@ -36,14 +38,16 @@ try:
         quote_ident, build_gpcopy_command, open_psycopg2_connection_by_cfg,
         get_conn_dbname, get_conn_host, get_conn_port, get_conn_user,
         make_include_table_file, safe_mark_job_failed, get_item_value,
-        DEFAULT_GPCOPY_PATH,
+        DEFAULT_GPCOPY_PATH, _job_log_path, _watch_gpcopy_log,
+        finalize_gpcopy_job, find_owner_item,
     )
 except ImportError:
     from gpcopy import (
         quote_ident, build_gpcopy_command, open_psycopg2_connection_by_cfg,
         get_conn_dbname, get_conn_host, get_conn_port, get_conn_user,
         make_include_table_file, safe_mark_job_failed, get_item_value,
-        DEFAULT_GPCOPY_PATH,
+        DEFAULT_GPCOPY_PATH, _job_log_path, _watch_gpcopy_log,
+        finalize_gpcopy_job, find_owner_item,
     )
 
 
@@ -364,14 +368,45 @@ def run_gpcopy_partition_diff_job(job_id):
                     copy_items.append({"schema_name": s, "table_name": t})
 
         if is_stop_requested(job_id):
-            from job_manager import mark_job_cancelled
             mark_job_cancelled(job_id)
             return
 
+        items = get_job_items(job_id)
+        item_keys = [
+            (
+                get_item_value(i, "id"),
+                get_item_value(i, "schema_name"),
+                get_item_value(i, "table_name"),
+            )
+            for i in items
+        ]
+
         if not copy_items:
             # Всё совпадает — копировать нечего, это успех.
+            from job_manager import mark_item_skipped
+
+            for i in items:
+                mark_item_skipped(
+                    get_item_value(i, "id"), "Партиции совпадают"
+                )
+
+            refresh_job_progress(job_id)
             mark_job_done(job_id)
             return
+
+        # сколько партиций льём в каждую таблицу — для live-баров
+        parts_by_item = {}
+
+        for ci in copy_items:
+            owner = find_owner_item(
+                ci["schema_name"], ci["table_name"], item_keys
+            )
+
+            if owner is not None:
+                parts_by_item[owner] = parts_by_item.get(owner, 0) + 1
+
+        for item_id, total in parts_by_item.items():
+            set_item_parts(item_id, parts_total=total)
 
         source_db = get_conn_dbname(source_cfg)
         include_file = make_include_table_file(copy_items, source_db)
@@ -394,18 +429,43 @@ def run_gpcopy_partition_diff_job(job_id):
             truncate=True,
         )
 
-        process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            universal_newlines=True,
-        )
-        stdout_data, stderr_data = process.communicate()
-        rc = process.returncode
+        # общий каркас gpcopy: detached-процесс + лог + live-статусы,
+        # переживает рестарт Opsentri (pid + log_file в задаче)
+        log_path = _job_log_path(job_id)
+        log_handle = open(log_path, "w", encoding="utf-8", errors="replace")
 
-        if rc == 0:
-            mark_job_done(job_id)
+        popen_kwargs = {
+            "stdout": log_handle,
+            "stderr": subprocess.STDOUT,
+            "universal_newlines": True,
+        }
+
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
         else:
-            error_text = stderr_data or stdout_data or "gpcopy rc={}".format(rc)
-            safe_mark_job_failed(job_id, error_text[:4000])
+            popen_kwargs["creationflags"] = 0x00000200
+
+        process = subprocess.Popen(cmd, **popen_kwargs)
+
+        try:
+            log_handle.close()
+        except Exception:
+            pass
+
+        set_job_runtime(job_id, pid=process.pid, log_file=log_path)
+
+        log_text = _watch_gpcopy_log(job_id, log_path, item_keys,
+                                     process=process)
+
+        if is_stop_requested(job_id):
+            mark_job_cancelled(job_id)
+            refresh_job_progress(job_id)
+            return
+
+        finalize_gpcopy_job(
+            job_id, items, process.returncode, log_text, "",
+            " ".join(cmd), time.time() - started, config,
+        )
 
     except Exception as e:
         err = "{}\n{}".format(e, traceback.format_exc())
