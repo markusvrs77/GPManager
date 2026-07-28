@@ -489,10 +489,16 @@ document.addEventListener("DOMContentLoaded", function () {
 let lastDistributionRecommendation = null;
 
 function getOneSelectedTable() {
-    const checked = document.querySelectorAll(".table-checkbox:checked");
+    // таблица из дерева объектов ИЛИ из списка «Таблицы с перекосом»
+    const checked = document.querySelectorAll(
+        ".table-checkbox:checked, .problem-skew-checkbox:checked"
+    );
 
     if (checked.length === 0) {
-        showReorganizeMessage("Выбери одну таблицу для recommendation.", "warning");
+        showReorganizeMessage(
+            "Выбери одну таблицу (в дереве или в списке перекошенных).",
+            "warning"
+        );
         return null;
     }
 
