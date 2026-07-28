@@ -289,6 +289,11 @@ def run_pg_dump_job(job_id):
                 conn_cfg.get("database_name") or conn_cfg.get("database")
             )
 
+        # запуск по расписанию: метка генерируется на момент запуска,
+        # чтобы каждый прогон писал новый файл
+        if not config.get("backup_timestamp"):
+            config["backup_timestamp"] = make_timestamp()
+
         cmd, _out = build_pg_dump_command(config)
         return cmd
 

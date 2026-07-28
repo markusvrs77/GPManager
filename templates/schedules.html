@@ -23,10 +23,17 @@
                         <option value="gpcopy_increment">Инкремент (watermark)</option>
                         <option value="gpcopy_partition_diff">Партиции (diff)</option>
                         <option value="gpbackup">Резервная копия (gpbackup)</option>
+                        <option value="pg_dump">Дамп PostgreSQL (pg_dump)</option>
                         <option value="vacuum">Vacuum / Analyze</option>
                         <option value="reorganize">Реорганизация</option>
                         <option value="skew">Анализ перекоса</option>
                     </select>
+
+                    <div id="schBackupDirBox" class="mb-3" style="display:none">
+                        <label class="form-label">Каталог бэкапа</label>
+                        <input type="text" id="schBackupDir" class="form-control"
+                               placeholder="/data/backups (для pg_dump обязателен)">
+                    </div>
 
                     <div id="schWatermarkBox" class="mb-3" style="display:none">
                         <label class="form-label">Watermark-колонка (increment)</label>
@@ -175,5 +182,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/schedules.js') }}"></script>
+<script src="{{ url_for('static', filename='js/schedules.js') }}?v=2"></script>
 {% endblock %}

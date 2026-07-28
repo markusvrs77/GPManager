@@ -100,6 +100,17 @@
             <button class="btn btn-primary w-100" id="pgbStart" type="button">
                 Создать дамп
             </button>
+
+            <div class="d-flex gap-2 mt-2 align-items-center">
+                <input id="pgbCron" class="form-control form-control-sm"
+                       value="0 2 * * *" title="cron-выражение"
+                       style="max-width: 130px; font-family: var(--font-mono);">
+                <button class="btn btn-sm btn-outline-primary flex-grow-1"
+                        id="pgbSchedule" type="button"
+                        title="Создать расписание с настройками формы выше">
+                    ⏰ Запланировать
+                </button>
+            </div>
             <div class="pgb-msg" id="pgbMsg"></div>
             {% endif %}
         </div>
@@ -291,6 +302,53 @@
                 setTimeout(pgbLoad, 1500);
             }).catch(function (e) {
                 startBtn.disabled = false;
+                msg(String(e), "err");
+            });
+        });
+    }
+
+    // расписание с текущими настройками формы (ночной дамп)
+    var schedBtn = document.getElementById("pgbSchedule");
+
+    if (schedBtn) {
+        schedBtn.addEventListener("click", function () {
+            var connSel = document.getElementById("pgbConn");
+            var connName = (connSel.options[connSel.selectedIndex] || {})
+                .text || "";
+            var t = document.getElementById("pgbType").value;
+
+            schedBtn.disabled = true;
+
+            fetch("/api/schedules", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: ("pg_dump " + connName.split("/")[0]).trim(),
+                    job_type: "pg_dump",
+                    cron_expr: document.getElementById("pgbCron").value.trim(),
+                    overlap_policy: "skip",
+                    config: {
+                        connection_id: parseInt(connSel.value, 10),
+                        backup_dir: document.getElementById("pgbDir").value,
+                        include_schemas:
+                            document.getElementById("pgbSchemas").value,
+                        include_tables:
+                            document.getElementById("pgbTables").value,
+                        compression_level: parseInt(
+                            document.getElementById("pgbCompression").value,
+                            10) || null,
+                        schema_only: t === "schema_only",
+                        data_only: t === "data_only",
+                    },
+                }),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                schedBtn.disabled = false;
+                msg(d.ok
+                    ? "Расписание создано — управление на вкладке «Расписания»."
+                    : (d.message || "Ошибка создания расписания"),
+                    d.ok ? "ok" : "err");
+            }).catch(function (e) {
+                schedBtn.disabled = false;
                 msg(String(e), "err");
             });
         });

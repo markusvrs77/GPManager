@@ -111,6 +111,17 @@
             <button class="btn btn-primary w-100" id="gpbStart" type="button">
                 Создать бэкап
             </button>
+
+            <div class="d-flex gap-2 mt-2 align-items-center">
+                <input id="gpbCron" class="form-control form-control-sm"
+                       value="0 2 * * *" title="cron-выражение"
+                       style="max-width: 130px; font-family: var(--font-mono);">
+                <button class="btn btn-sm btn-outline-primary flex-grow-1"
+                        id="gpbSchedule" type="button"
+                        title="Создать расписание с настройками формы выше">
+                    ⏰ Запланировать
+                </button>
+            </div>
             <div class="gpb-msg" id="gpbMsg"></div>
         </div>
 
@@ -392,6 +403,53 @@
             if (window.gpToast) { gpToast(String(e), "error"); }
         });
     });
+
+    // расписание с текущими настройками формы (например, ночной бэкап)
+    var schedBtn = document.getElementById("gpbSchedule");
+
+    if (schedBtn) {
+        schedBtn.addEventListener("click", function () {
+            var connSel = document.getElementById("gpbConn");
+            var connName = (connSel.options[connSel.selectedIndex] || {})
+                .text || "";
+
+            schedBtn.disabled = true;
+
+            fetch("/api/schedules", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: ("gpbackup " + connName.split("/")[0]).trim(),
+                    job_type: "gpbackup",
+                    cron_expr: document.getElementById("gpbCron").value.trim(),
+                    overlap_policy: "skip",
+                    config: {
+                        connection_id: parseInt(connSel.value, 10),
+                        backup_type: document.getElementById("gpbType").value,
+                        backup_dir: document.getElementById("gpbDir").value,
+                        include_schemas:
+                            document.getElementById("gpbSchemas").value,
+                        include_tables:
+                            document.getElementById("gpbTables").value,
+                        jobs: parseInt(
+                            document.getElementById("gpbJobs").value, 10) || 1,
+                        compression_level: parseInt(
+                            document.getElementById("gpbCompression").value,
+                            10) || null,
+                    },
+                }),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                schedBtn.disabled = false;
+                msg(d.ok
+                    ? "Расписание создано — управление на вкладке «Расписания»."
+                    : (d.message || "Ошибка создания расписания"),
+                    d.ok ? "ok" : "err");
+            }).catch(function (e) {
+                schedBtn.disabled = false;
+                msg(String(e), "err");
+            });
+        });
+    }
 
     gpbLoad();
     setInterval(gpbLoad, 15000);

@@ -25,6 +25,8 @@ function onJobTypeChange() {
     const type = document.getElementById("schJobType").value;
     document.getElementById("schDateWindow").style.display =
         type === "gpcopy_date" ? "" : "none";
+    document.getElementById("schBackupDirBox").style.display =
+        (type === "gpbackup" || type === "pg_dump") ? "" : "none";
     document.getElementById("schWatermarkBox").style.display =
         type === "gpcopy_increment" ? "" : "none";
     document.getElementById("schDestConnBox").style.display =
@@ -99,6 +101,19 @@ async function createSchedule() {
         tables: parseTables(document.getElementById("schTables").value),
     };
 
+    // бэкапы: каталог + include-списки строками, без пар schema.table
+    if (jobType === "gpbackup" || jobType === "pg_dump") {
+        delete config.tables;
+        config.backup_dir =
+            (document.getElementById("schBackupDir").value || "").trim();
+        config.include_tables = document.getElementById("schTables").value;
+
+        if (jobType === "pg_dump" && !config.backup_dir) {
+            errEl.textContent = "Для pg_dump укажи каталог бэкапа";
+            return;
+        }
+    }
+
     if (jobType === "gpcopy_date") {
         const dw = currentDateWindow();
         if (!dw.column) { errEl.textContent = "Укажи date column"; return; }
@@ -156,7 +171,8 @@ const SCH_LABELS = {
     reorganize: "Реорганизация",
     skew: "Перекос",
     gpbackup: "Бэкап",
-    gprestore: "Восстановление"
+    gprestore: "Восстановление",
+    pg_dump: "Дамп PG"
 };
 
 async function loadSchedules() {
