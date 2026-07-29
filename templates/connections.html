@@ -83,21 +83,25 @@
     <div class="cx-form" id="cxForm" {% if not error %}hidden{% endif %}>
         <h6 id="cxFormTitle">Новое подключение</h6>
         <form method="post" action="/connections/add">
+            <input type="hidden" name="toolkit" value="{{ toolkit or 'gp' }}">
             <div class="fgrid">
                 <div>
                     <label class="form-label">Название</label>
                     <input type="text" name="name" class="form-control"
-                           placeholder="Мой кластер" required>
+                           placeholder="{% if toolkit == 'pg' %}PostgreSQL OLTP{% else %}Мой кластер{% endif %}" required>
                 </div>
+                {% if toolkit == 'pg' %}
+                <input type="hidden" name="db_type" value="postgres">
+                {% else %}
                 <div>
                     <label class="form-label">Тип СУБД</label>
                     <select name="db_type" id="cxDbType" class="form-select">
                         <option value="greenplum">Greenplum</option>
-                        <option value="postgres">PostgreSQL</option>
                         <option value="mysql">MySQL (скоро)</option>
                         <option value="oracle">Oracle (скоро)</option>
                     </select>
                 </div>
+                {% endif %}
                 <div>
                     <label class="form-label">Роль</label>
                     <select name="role" class="form-select">
@@ -109,7 +113,7 @@
                 <div>
                     <label class="form-label">Host</label>
                     <input type="text" name="host" class="form-control"
-                           placeholder="10.10.0.1" required>
+                           placeholder="{% if toolkit == 'pg' %}10.10.0.2{% else %}10.10.0.1{% endif %}" required>
                 </div>
                 <div>
                     <label class="form-label">Port</label>
@@ -119,12 +123,12 @@
                 <div>
                     <label class="form-label">База данных</label>
                     <input type="text" name="database_name" class="form-control"
-                           placeholder="mydb" required>
+                           placeholder="{% if toolkit == 'pg' %}app_db{% else %}mydb{% endif %}" required>
                 </div>
                 <div>
                     <label class="form-label">Пользователь</label>
                     <input type="text" name="username" class="form-control"
-                           placeholder="db_user" required>
+                           placeholder="{% if toolkit == 'pg' %}postgres{% else %}db_user{% endif %}" required>
                 </div>
                 <div>
                     <label class="form-label">Пароль</label>
@@ -167,6 +171,7 @@
                 <form method="post" action="/connections/delete/{{ c.id }}"
                       style="display: inline;"
                       data-gp-confirm="Удалить подключение «{{ c.name }}»? Действие необратимо.">
+                    <input type="hidden" name="toolkit" value="{{ toolkit or 'gp' }}">
                     <button class="btn btn-sm btn-outline-danger" type="submit">
                         Удалить
                     </button>

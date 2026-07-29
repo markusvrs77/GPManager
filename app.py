@@ -133,31 +133,60 @@ def dashboard_page():
 
 @app.route("/connections")
 def connections_page():
-    connections = list_connections()
+    # у каждого тулкита свои подключения: pg - только PostgreSQL,
+    # gp (по умолчанию) - все остальные
+    toolkit = (request.args.get("toolkit") or "gp").strip().lower()
+
+    if toolkit not in ("gp", "pg"):
+        toolkit = "gp"
+
+    connections = [
+        c for c in list_connections()
+        if ((c.get("db_type") or "greenplum") == "postgres") == (toolkit == "pg")
+    ]
+
     return render_template(
         "connections.html",
         connections=connections,
+        toolkit=toolkit,
     )
 
 
 @app.route("/connections/add", methods=["POST"])
 def add_connection():
+    data = request.form.to_dict()
+    # возвращаемся на страницу того тулкита, откуда добавляли
+    toolkit = (data.pop("toolkit", "") or "gp").strip().lower()
+
+    if toolkit not in ("gp", "pg"):
+        toolkit = "gp"
+
+    if toolkit == "pg":
+        data["db_type"] = "postgres"
+
     try:
-        create_connection(request.form.to_dict())
-        return redirect(url_for("connections_page"))
+        create_connection(data)
+        return redirect(url_for("connections_page", toolkit=toolkit))
     except Exception as e:
-        connections = list_connections()
+        connections = [
+            c for c in list_connections()
+            if ((c.get("db_type") or "greenplum") == "postgres")
+            == (toolkit == "pg")
+        ]
         return render_template(
             "connections.html",
             connections=connections,
+            toolkit=toolkit,
             error=str(e),
         )
 
 
 @app.route("/connections/delete/<int:connection_id>", methods=["POST"])
 def remove_connection(connection_id):
+    toolkit = (request.form.get("toolkit") or "gp").strip().lower()
     delete_connection(connection_id)
-    return redirect(url_for("connections_page"))
+    return redirect(url_for("connections_page",
+                            toolkit=toolkit if toolkit == "pg" else None))
 
 
 @app.route("/objects")
