@@ -1701,7 +1701,16 @@
 
     /* ---------------- runs feed ---------------- */
 
-    var RUN_TYPES = "gpcopy,gpcopy_date,gpcopy_increment,gpcopy_partition_diff,gpcopy_sync,copy_pipe";
+    // лента запусков тоже своя у каждого тулкита: PG - только COPY-перенос
+    var RUN_TYPES = (function () {
+        var modes = document.getElementById("gppModes");
+        var tk = (modes && modes.dataset && modes.dataset.toolkit) || "gp";
+
+        return tk === "pg"
+            ? "copy_pipe"
+            : "gpcopy,gpcopy_date,gpcopy_increment,gpcopy_partition_diff," +
+              "gpcopy_sync,copy_pipe";
+    })();
 
     function progressRing(pct) {
         var r = 19;
@@ -2464,8 +2473,10 @@
 
         // connections — запоминаем выбор в localStorage, чтобы добавление
         // нового коннектора не подменяло источник/назначение
-        var SRC_KEY = "gpp-src-conn";
-        var DST_KEY = "gpp-dst-conn";
+        // у каждого тулкита свои подключения — и своя память выбора
+        var TK = (($("gppModes") || {}).dataset || {}).toolkit || "gp";
+        var SRC_KEY = "gpp-src-conn-" + TK;
+        var DST_KEY = "gpp-dst-conn-" + TK;
 
         function hasOption(sel, val) {
             return Array.prototype.some.call(sel.options, function (o) {

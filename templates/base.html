@@ -46,7 +46,11 @@
         {% set page_title, page_crumb = 'Подключения', 'кластеры и базы данных' %}
     {% endif %}
 {% elif p.startswith('/gpcopy') %}
-    {% set page_title, page_crumb = 'Синхронизация данных', 'перенос между кластерами' %}
+    {% if request.args.get('toolkit') == 'pg' %}
+        {% set page_title, page_crumb = 'Синхронизация данных', 'перенос между серверами PostgreSQL' %}
+    {% else %}
+        {% set page_title, page_crumb = 'Синхронизация данных', 'перенос между кластерами' %}
+    {% endif %}
 {% elif p.startswith('/schedules') %}
     {% set page_title, page_crumb = 'Расписания', 'планировщик задач' %}
 {% elif p.startswith('/vacuum') %}
@@ -106,7 +110,7 @@
             <a href="/connections" class="{% if p.startswith('/connections') and request.args.get('toolkit') != 'pg' %}active{% endif %}">
                 <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span>
                 <span class="lbl">Подключения</span></a>
-            <a href="{{ url_for('gpcopy_page') }}" class="{% if p.startswith('/gpcopy') %}active{% endif %}">
+            <a href="{{ url_for('gpcopy_page') }}" class="{% if p.startswith('/gpcopy') and request.args.get('toolkit') != 'pg' %}active{% endif %}">
                 <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
                 <span class="lbl">Синхронизация данных</span>
                 <span class="nav-badge" id="gpNavSyncBadge" style="display: none;"></span></a>
@@ -137,6 +141,9 @@
                 <a href="/connections?toolkit=pg" class="{% if p.startswith('/connections') and request.args.get('toolkit') == 'pg' %}active{% endif %}">
                     <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span>
                     <span class="lbl">Подключения</span></a>
+                <a href="/gpcopy?toolkit=pg" class="{% if p.startswith('/gpcopy') and request.args.get('toolkit') == 'pg' %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
+                    <span class="lbl">Синхронизация данных</span></a>
                 <a href="/pg/backups" class="{% if p.startswith('/pg/backups') %}active{% endif %}">
                     <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg></span>
                     <span class="lbl">Резервные копии</span></a>

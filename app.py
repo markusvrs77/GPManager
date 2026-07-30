@@ -1224,9 +1224,22 @@ def update_job_status(job_id, status, error_message=None):
 
 @app.route("/gpcopy")
 def gpcopy_page():
+    # синхронизация строго внутри тулкита: pg - только PostgreSQL,
+    # gp (по умолчанию) - Greenplum и прочие не-PG
+    toolkit = (request.args.get("toolkit") or "gp").strip().lower()
+
+    if toolkit not in ("gp", "pg"):
+        toolkit = "gp"
+
+    connections = [
+        c for c in list_connections()
+        if ((c.get("db_type") or "greenplum") == "postgres") == (toolkit == "pg")
+    ]
+
     return render_template(
         "gpcopy_pipeline.html",
-        connections=list_connections(),
+        connections=connections,
+        toolkit=toolkit,
     )
 
 
