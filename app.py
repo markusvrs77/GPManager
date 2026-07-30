@@ -2352,6 +2352,44 @@ def api_backup_delete():
         return jsonify({"ok": False, "message": str(e)[:2000]}), 500
 
 
+@app.route("/grants")
+def grants_page():
+    toolkit = (request.args.get("toolkit") or "gp").strip().lower()
+
+    if toolkit not in ("gp", "pg"):
+        toolkit = "gp"
+
+    connections = [
+        c for c in list_connections()
+        if ((c.get("db_type") or "greenplum") == "postgres") == (toolkit == "pg")
+    ]
+
+    return render_template(
+        "grants.html",
+        connections=connections,
+        toolkit=toolkit,
+    )
+
+
+@app.route("/api/grants/overview")
+def api_grants_overview():
+    """Срез прав: пользователи, гранты на таблицы, граф связей."""
+    connection_id = request.args.get("connection_id", type=int)
+    force = request.args.get("force") == "1"
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    try:
+        from modules.grants import collect_grants
+
+        return jsonify(collect_grants(connection_id, force=force))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
 @app.route("/api/health/overview")
 def api_health_overview():
     connection_id = request.args.get("connection_id", type=int)

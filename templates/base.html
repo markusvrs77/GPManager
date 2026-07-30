@@ -51,6 +51,8 @@
     {% else %}
         {% set page_title, page_crumb = 'Синхронизация данных', 'перенос между кластерами' %}
     {% endif %}
+{% elif p.startswith('/grants') %}
+    {% set page_title, page_crumb = 'Пользователи и гранты', 'права на объекты' %}
 {% elif p.startswith('/schedules') %}
     {% set page_title, page_crumb = 'Расписания', 'планировщик задач' %}
 {% elif p.startswith('/vacuum') %}
@@ -114,6 +116,9 @@
                 <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
                 <span class="lbl">Синхронизация данных</span>
                 <span class="nav-badge" id="gpNavSyncBadge" style="display: none;"></span></a>
+            <a href="/grants" class="{% if p.startswith('/grants') and request.args.get('toolkit') != 'pg' %}active{% endif %}">
+                <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="4"/><path d="M2 21v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2"/><path d="M19 8v6M16 11h6"/></svg></span>
+                <span class="lbl">Пользователи и гранты</span></a>
 
             <div class="nav-group">Обслуживание</div>
             <a href="/schedules" class="{% if p.startswith('/schedules') and request.args.get('toolkit') != 'pg' %}active{% endif %}">
