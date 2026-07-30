@@ -845,9 +845,8 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
             n.pinned = detail;     // в детальном режиме таблицы стоят твёрдо
         });
 
-        if (!detail) { return; }
-
-        // пользователи — на внутреннем кольце, рядом с «главной» схемой
+        // пользователи — гроздьями возле «главной» схемы, в несколько
+        // радиусов: так они не сбиваются в кучу и подписи читаются
         var mainSchema = {};
 
         G.links.forEach(function (l) {
@@ -888,18 +887,31 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
             (groups[key] = groups[key] || []).push(u);
         });
 
-        var Ru = R * 0.45;
+        // базовый радиус кольца пользователей и сектор на одну схему
+        var Ru = R * (detail ? 0.42 : 0.46);
+        var sector = (Math.PI * 2 / schemas.length) * 0.86;
+        var STEP = 46;      // расстояние между соседями в ряду
+        var ROW = 52;       // зазор между радиусами
 
-        Object.keys(groups).forEach(function (schema) {
-            var list = groups[schema];
-            var base = angleOf[schema] !== undefined ? angleOf[schema] : 0;
-            var spread = Math.min(0.9, 0.16 * list.length);
+        Object.keys(groups).sort().forEach(function (schema) {
+            var list = groups[schema].slice().sort(function (a, b) {
+                return (b.deg || 0) - (a.deg || 0);
+            });
+            var base = angleOf[schema] !== undefined
+                ? angleOf[schema]
+                : Math.PI;                     // «прочие» — внизу круга
+
+            // сколько узлов влезает в один ряд без наложения подписей
+            var perRow = Math.max(2, Math.floor(sector * Ru / STEP));
 
             list.forEach(function (u, i) {
-                var t = list.length === 1 ? 0
-                    : (i / (list.length - 1) - 0.5) * spread;
+                var row = Math.floor(i / perRow);
+                var inRow = i % perRow;
+                var count = Math.min(perRow, list.length - row * perRow);
+                var rad = Ru + row * ROW;
+                var t = count === 1 ? 0
+                    : (inRow / (count - 1) - 0.5) * sector;
                 var ang = base + t;
-                var rad = Ru * (0.82 + 0.3 * ((i % 3) / 3));
 
                 u.x = Math.cos(ang) * rad;
                 u.y = Math.sin(ang) * rad;
@@ -917,23 +929,20 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
     function fitView() {
         if (!G.nodes.length || state.view !== "graph") { return; }
 
-        // по процентилям, чтобы одиночные выбросы не сжимали весь граф
-        var xs = G.nodes.map(function (n) { return n.x; }).sort(function (a, b) {
-            return a - b; });
-        var ys = G.nodes.map(function (n) { return n.y; }).sort(function (a, b) {
-            return a - b; });
+        // раскладка детерминированная — вписываем целиком, с запасом
+        // под подписи
+        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
-        function q(arr, p) {
-            return arr[Math.min(arr.length - 1,
-                                Math.max(0, Math.round((arr.length - 1) * p)))];
-        }
-
-        var minX = q(xs, 0.03), maxX = q(xs, 0.97);
-        var minY = q(ys, 0.03), maxY = q(ys, 0.97);
+        G.nodes.forEach(function (n) {
+            if (n.x < minX) { minX = n.x; }
+            if (n.y < minY) { minY = n.y; }
+            if (n.x > maxX) { maxX = n.x; }
+            if (n.y > maxY) { maxY = n.y; }
+        });
 
         var w = Math.max(1, maxX - minX);
         var h = Math.max(1, maxY - minY);
-        var pad = 80;
+        var pad = 130;
 
         G.scale = Math.max(0.15, Math.min(2.2,
             Math.min((G.w - pad) / w, (G.h - pad) / h)));
@@ -1234,9 +1243,9 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
             var priority = n === sel || n === G.hover ||
                 (near && near[n.id]) || isSchema;
 
-            // таблицы подписываем только при увеличении или в фокусе
+            // таблицы подписываем только при увеличении или в фокусе;
+            // пользователей — всегда, лишние отсеет проверка наложения
             if (!priority && n.type === "table" && G.scale < 1.6) { return; }
-            if (!priority && n.type === "user" && G.scale < 0.7) { return; }
 
             var size = (isSchema ? 11.5 : 10.5) / G.scale;
 
