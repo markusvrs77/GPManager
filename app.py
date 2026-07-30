@@ -2390,6 +2390,26 @@ def api_grants_overview():
         return jsonify({"ok": False, "message": str(e)[:2000]}), 500
 
 
+@app.route("/api/grants/schema-matrix")
+def api_grants_schema_matrix():
+    """Матрица «пользователи × таблицы» внутри одной схемы (drill)."""
+    connection_id = request.args.get("connection_id", type=int)
+    schema = (request.args.get("schema") or "").strip()
+
+    if not connection_id or not schema:
+        return jsonify({"ok": False,
+                        "message": "connection_id и schema обязательны"}), 400
+
+    try:
+        from modules.grants import collect_schema_matrix
+
+        return jsonify(collect_schema_matrix(connection_id, schema))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
 @app.route("/api/health/overview")
 def api_health_overview():
     connection_id = request.args.get("connection_id", type=int)

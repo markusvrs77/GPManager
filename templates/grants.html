@@ -201,6 +201,27 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
   border-bottom: 1px solid var(--hairline); }
 .gr-mx-legend i { display: inline-block; width: 12px; height: 12px;
   border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+
+.gr-mx-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 10px 14px; border-bottom: 1px solid var(--hairline);
+  font-size: 12.5px; }
+.gr-mx-crumb { font-weight: 700; }
+.gr-mx-crumb.back { color: var(--a2); cursor: pointer; }
+.gr-mx-crumb.back:hover { text-decoration: underline; }
+.gr-mx-sw { display: flex; align-items: center; gap: 7px; cursor: pointer;
+  color: var(--text-muted); margin: 0; }
+.gr-mx-hint { opacity: .7; }
+.gr-mx-note { margin-left: auto; color: var(--text-muted); }
+table.gr-mx tbody th .grp { display: inline-block; font-size: 9.5px;
+  font-weight: 800; letter-spacing: .04em; text-transform: uppercase;
+  padding: 1px 6px; margin-left: 6px; border-radius: var(--radius-pill);
+  border: 1px solid color-mix(in srgb, var(--a1) 45%, transparent);
+  color: var(--a2); }
+table.gr-mx tbody th .mem { display: block; font-size: 10.5px;
+  color: var(--text-muted); font-weight: 400; white-space: normal;
+  max-width: 210px; }
+table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: .04em; }
 </style>
 
 <div class="gr">
@@ -237,15 +258,15 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
         </div>
         <span class="gr-link" id="grExpandAll">развернуть все</span>
         <div class="gr-chips" id="grView">
-            <span class="gr-chip on" data-v="list">список</span>
+            <span class="gr-chip on" data-v="matrix">матрица</span>
+            <span class="gr-chip" data-v="list">список</span>
             <span class="gr-chip" data-v="graph">граф</span>
-            <span class="gr-chip" data-v="matrix">матрица</span>
         </div>
         <button class="btn btn-sm btn-outline-primary" id="grRefresh"
                 type="button">обновить срез</button>
     </div>
 
-    <div class="gr-panel" id="grListPanel">
+    <div class="gr-panel" id="grListPanel" style="display: none;">
         <div class="gr-head">
             <span style="width: 12px;"></span>
             <span class="sp">Пользователь</span>
@@ -257,7 +278,16 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
             пользователей, их гранты на таблицы и связи.</div></div>
     </div>
 
-    <div class="gr-panel" id="grMatrixPanel" style="display: none;">
+    <div class="gr-panel" id="grMatrixPanel">
+        <div class="gr-mx-bar">
+            <span class="gr-mx-crumb" id="grMxCrumb">все схемы</span>
+            <label class="gr-mx-sw"><input type="checkbox" id="grMxRoles"
+                   class="form-check-input"> склеить одинаковые права
+                <span class="gr-mx-hint">(де-факто роли)</span></label>
+            <label class="gr-mx-sw"><input type="checkbox" id="grMxSeriate"
+                   class="form-check-input" checked> сортировать по похожести</label>
+            <span class="gr-mx-note" id="grMxNote"></span>
+        </div>
         <div id="grMatrix"><div class="gr-empty">Загрузка…</div></div>
     </div>
 
@@ -709,6 +739,9 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
             G.nodes.forEach(function (n) { G.byId[n.id] = n; });
         }
 
+        // в агрегированном режиме пользователи свободны, в детальном —
+        // раскладка детерминированная (иначе 400 связей на узел рвут граф)
+        G.nodes.forEach(function (n) { n.pinned = false; });
         layoutSchemaRing();
         renderDrill();
         G.alpha = 1;
@@ -718,8 +751,10 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
         // вписываем в кадр, когда раскладка успокоится
         clearTimeout(G.fitT1);
         clearTimeout(G.fitT2);
+        clearTimeout(G.fitT3);
         G.fitT1 = setTimeout(fitView, 900);
         G.fitT2 = setTimeout(fitView, 2400);
+        G.fitT3 = setTimeout(fitView, 4600);
     }
 
     // схемы закрепляем по кругу: пользователи собираются вокруг «своих»,
@@ -737,7 +772,15 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
             return;
         }
 
+        // радиус круга схем: в режиме таблиц разводим так, чтобы орбиты
+        // соседних схем не пересекались
         var R = Math.max(190, o.spr * 2.1);
+
+        if (G.level === "table" || G.drill) {
+            var need = orbitRadius(o) * 1.25 /
+                Math.max(0.08, Math.sin(Math.PI / schemas.length));
+            R = Math.max(R, need);
+        }
 
         schemas.forEach(function (n, i) {
             var ang = (i / schemas.length) * Math.PI * 2 - Math.PI / 2;
@@ -747,6 +790,106 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
             n.vy = 0;
             n.pinned = true;
         });
+
+        var detail = G.level === "table" || G.drill;
+
+        // таблицы — внутри орбиты своей схемы, а не в общей куче
+        var perSchema = {};
+        var counters = {};
+
+        G.nodes.forEach(function (n) {
+            if (n.type === "table" && n.schema) {
+                perSchema[n.schema] = (perSchema[n.schema] || 0) + 1;
+            }
+        });
+
+        G.nodes.forEach(function (n) {
+            if (n.type !== "table" || !n.schema) { return; }
+
+            var s = G.byId["schema:" + n.schema];
+
+            if (!s) { return; }
+
+            var total = perSchema[n.schema] || 1;
+            var k = counters[n.schema] = (counters[n.schema] || 0) + 1;
+            // спираль золотого угла: равномерное заполнение круга схемы
+            var ang = k * 2.39996;
+            var rad = orbitRadius(o) * 0.92 * Math.sqrt(k / (total + 0.5));
+
+            n.x = s.x + Math.cos(ang) * rad;
+            n.y = s.y + Math.sin(ang) * rad;
+            n.vx = 0;
+            n.vy = 0;
+            n.pinned = detail;     // в детальном режиме таблицы стоят твёрдо
+        });
+
+        if (!detail) { return; }
+
+        // пользователи — на внутреннем кольце, рядом с «главной» схемой
+        var mainSchema = {};
+
+        G.links.forEach(function (l) {
+            if (l.schemaLink) { return; }
+
+            var user = l.a.type === "user" ? l.a : (l.b.type === "user" ? l.b : null);
+            var other = l.a.type === "user" ? l.b : l.a;
+
+            if (!user) { return; }
+
+            var schema = other.type === "schema" ? other.label : other.schema;
+
+            if (!schema) { return; }
+
+            var m = mainSchema[user.id] = mainSchema[user.id] || {};
+            m[schema] = (m[schema] || 0) + 1;
+        });
+
+        var angleOf = {};
+
+        schemas.forEach(function (n, i) {
+            angleOf[n.label] = (i / schemas.length) * Math.PI * 2 - Math.PI / 2;
+        });
+
+        var users = G.nodes.filter(function (n) { return n.type === "user"; });
+        var groups = {};
+
+        users.forEach(function (u) {
+            var m = mainSchema[u.id] || {};
+            var best = null;
+            var bestN = -1;
+
+            Object.keys(m).forEach(function (s) {
+                if (m[s] > bestN) { bestN = m[s]; best = s; }
+            });
+
+            var key = best || "—";
+            (groups[key] = groups[key] || []).push(u);
+        });
+
+        var Ru = R * 0.45;
+
+        Object.keys(groups).forEach(function (schema) {
+            var list = groups[schema];
+            var base = angleOf[schema] !== undefined ? angleOf[schema] : 0;
+            var spread = Math.min(0.9, 0.16 * list.length);
+
+            list.forEach(function (u, i) {
+                var t = list.length === 1 ? 0
+                    : (i / (list.length - 1) - 0.5) * spread;
+                var ang = base + t;
+                var rad = Ru * (0.82 + 0.3 * ((i % 3) / 3));
+
+                u.x = Math.cos(ang) * rad;
+                u.y = Math.sin(ang) * rad;
+                u.vx = 0;
+                u.vy = 0;
+                u.pinned = true;
+            });
+        });
+    }
+
+    function orbitRadius(o) {
+        return Math.max(60, o.spr * 0.8);
     }
 
     function fitView() {
@@ -818,14 +961,64 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
             var ddx = nb.x - na.x;
             var ddy = nb.y - na.y;
             var dd = Math.sqrt(ddx * ddx + ddy * ddy) || 0.01;
-            var target = l.schemaLink ? Math.max(40, o.spr * 0.6) : o.orb;
-            var sf = (dd - target) * (l.schemaLink ? 0.02 : 0.008);
+            var target = l.schemaLink ? orbitRadius(o) * 0.55 : o.orb;
+            var sf = (dd - target) * (l.schemaLink ? 0.05 : 0.008);
 
             sf = Math.max(-6, Math.min(6, sf));
             ddx = ddx / dd * sf;
             ddy = ddy / dd * sf;
-            na.vx += ddx; na.vy += ddy;
-            nb.vx -= ddx; nb.vy -= ddy;
+
+            // связь «пользователь -> таблица» тянет пользователя, а не
+            // таблицу: таблицы остаются в своей схеме
+            var tableAnchored = na.type === "table" || nb.type === "table";
+
+            if (l.schemaLink || !tableAnchored) {
+                // нормируем по числу связей, иначе «многосвязные» узлы
+                // улетают к границе
+                var ka = 1 / Math.sqrt(Math.max(1, na.deg));
+                var kb = 1 / Math.sqrt(Math.max(1, nb.deg));
+
+                na.vx += ddx * ka; na.vy += ddy * ka;
+                nb.vx -= ddx * kb; nb.vy -= ddy * kb;
+            } else {
+                var user = na.type === "table" ? nb : na;
+                var tbl = na.type === "table" ? na : nb;
+                var sign = na.type === "table" ? -1 : 1;
+                var ku = 1.5 / Math.sqrt(Math.max(1, user.deg));
+
+                user.vx -= sign * ddx * ku;
+                user.vy -= sign * ddy * ku;
+                tbl.vx += sign * ddx * 0.06;
+                tbl.vy += sign * ddy * 0.06;
+            }
+        });
+
+        // таблицы держим внутри орбиты своей схемы
+        var orb = orbitRadius(o);
+
+        nodes.forEach(function (n) {
+            if (n.type !== "table" || !n.schema) { return; }
+
+            var s = G.byId["schema:" + n.schema];
+
+            if (!s || G.drag === n) { return; }
+
+            var dx2 = n.x - s.x;
+            var dy2 = n.y - s.y;
+            var d2 = Math.sqrt(dx2 * dx2 + dy2 * dy2) || 0.01;
+
+            if (d2 > orb) {
+                // мягко возвращаем к границе орбиты
+                var pull = Math.min(8, (d2 - orb) * 0.25);
+
+                n.vx -= (dx2 / d2) * pull;
+                n.vy -= (dy2 / d2) * pull;
+
+                if (d2 > orb * 1.6) {          // совсем далеко — ставим на край
+                    n.x = s.x + (dx2 / d2) * orb;
+                    n.y = s.y + (dy2 / d2) * orb;
+                }
+            }
         });
 
         nodes.forEach(function (nd) {
@@ -927,8 +1120,8 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
                 if (n.type !== "schema") { return; }
 
                 c.beginPath();
-                c.arc(n.x, n.y, Math.max(50, o.spr * 0.75), 0, Math.PI * 2);
-                c.strokeStyle = "rgba(148,163,184,0.13)";
+                c.arc(n.x, n.y, orbitRadius(o), 0, Math.PI * 2);
+                c.strokeStyle = "rgba(148,163,184,0.18)";
                 c.setLineDash([4, 6]);
                 c.lineWidth = 1 / G.scale;
                 c.stroke();
@@ -1306,16 +1499,40 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
 
     /* ---------------- матрица пользователи × схемы ---------------- */
 
-    function renderMatrix() {
+    var MX = { drill: null, schemaData: null, openGroup: {} };
+
+    function mxCellColor(tables, writeTables) {
+        var ratio = writeTables / Math.max(1, tables);
+        var strength = 0.3 + 0.45 * Math.min(1, Math.log(tables + 1) / 5);
+
+        if (ratio === 0) { return "rgba(99,102,241," + strength + ")"; }
+        if (ratio >= 0.99) { return "rgba(239,68,68,.75)"; }
+        return "rgba(245,158,11,.75)";
+    }
+
+    function mxLegend(detail) {
+        return '<div class="gr-mx-legend">' +
+            '<span><i style="background: rgba(99,102,241,.75);"></i>' +
+            "только чтение</span>" +
+            '<span><i style="background: rgba(245,158,11,.8);"></i>' +
+            "есть запись</span>" +
+            '<span><i style="background: rgba(239,68,68,.8);"></i>' +
+            (detail ? "truncate / delete" : "запись во всех таблицах") +
+            "</span><span>" +
+            (detail
+                ? "в ячейке — буквы прав (S I U D T R G); клик по строке — " +
+                  "открыть пользователя в списке"
+                : "в ячейке — число таблиц с грантами; клик — раскрыть схему " +
+                  "до таблиц") +
+            "</span></div>";
+    }
+
+    /* --- уровень 1: пользователи × схемы --- */
+
+    function renderMatrixSchemas() {
         var box = $("grMatrix");
         var d = state.data;
-
-        if (!d || !d.graph) { return; }
-
-        var links = d.graph.user_schema_links || [];
-        var schemas = (d.graph.schema_nodes || []).map(function (n) {
-            return n.label;
-        });
+        var links = (d.graph && d.graph.user_schema_links) || [];
 
         if (!links.length) {
             box.innerHTML = '<div class="gr-empty">Грантов не найдено.</div>';
@@ -1324,6 +1541,7 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
 
         var cell = {};
         var rowTotal = {};
+        var rowWrite = {};
 
         links.forEach(function (l) {
             var user = l.source.replace(/^user:/, "");
@@ -1331,74 +1549,255 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
 
             cell[user + "|" + schema] = l;
             rowTotal[user] = (rowTotal[user] || 0) + l.tables;
+            rowWrite[user] = (rowWrite[user] || 0) + l.write_tables;
         });
+
+        var order = (d.matrix_order || {});
+        var seriate = $("grMxSeriate").checked;
+        var cols = seriate && order.cols && order.cols.length
+            ? order.cols.slice()
+            : Object.keys(cell).map(function (k) {
+                return k.split("|")[1]; }).filter(function (v, i, a) {
+                    return a.indexOf(v) === i; }).sort();
 
         var risk = {};
         (d.users || []).forEach(function (u) { risk[u.name] = u.risk.level; });
 
         var q = state.q.toLowerCase();
-        var users = Object.keys(rowTotal).filter(function (u) {
-            if (state.filter === "write" &&
-                    !links.some(function (l) {
-                        return l.source === "user:" + u && l.write;
-                    })) { return false; }
-            if (state.filter === "read" &&
-                    links.some(function (l) {
-                        return l.source === "user:" + u && l.write;
-                    })) { return false; }
-            return !q || u.toLowerCase().indexOf(q) >= 0;
-        }).sort(function (a, b) { return rowTotal[b] - rowTotal[a]; });
 
-        box.innerHTML =
-            '<div class="gr-mx-legend">' +
-            "<span><i style=\"background: rgba(99,102,241,.75);\"></i>" +
-            "только чтение</span>" +
-            "<span><i style=\"background: rgba(245,158,11,.8);\"></i>" +
-            "есть запись</span>" +
-            "<span><i style=\"background: rgba(239,68,68,.8);\"></i>" +
-            "запись во всех таблицах</span>" +
-            "<span>в ячейке — число таблиц с грантами; " +
-            "клик — открыть схему в графе</span></div>" +
+        function passUser(u) {
+            if (state.filter === "write" && !rowWrite[u]) { return false; }
+            if (state.filter === "read" && rowWrite[u]) { return false; }
+            return !q || u.toLowerCase().indexOf(q) >= 0;
+        }
+
+        // строки: либо пользователи, либо склеенные де-факто роли
+        var rows = [];
+
+        if ($("grMxRoles").checked) {
+            (d.role_groups || []).forEach(function (g, gi) {
+                var users = g.users.filter(passUser);
+
+                if (!users.length) { return; }
+
+                rows.push({
+                    key: "g" + gi, users: users, size: g.size,
+                    label: users[0] + (g.size > 1
+                        ? " + ещё " + (g.size - 1) : ""),
+                    group: g.size > 1, total: g.tables, write: g.write_tables,
+                    risk: risk[users[0]] || "low"
+                });
+            });
+        } else {
+            var names = (seriate && order.rows && order.rows.length
+                ? order.rows.slice()
+                : Object.keys(rowTotal).sort(function (a, b) {
+                    return rowTotal[b] - rowTotal[a]; }));
+
+            names.filter(passUser).forEach(function (u) {
+                rows.push({
+                    key: u, users: [u], size: 1, label: u, group: false,
+                    total: rowTotal[u] || 0, write: rowWrite[u] || 0,
+                    risk: risk[u] || "low"
+                });
+            });
+        }
+
+        if (!rows.length) {
+            box.innerHTML = '<div class="gr-empty">Под фильтр никто не ' +
+                "подходит.</div>";
+            return;
+        }
+
+        $("grMxNote").textContent = fmtN(rows.length) + " строк · " +
+            fmtN(cols.length) + " схем";
+
+        box.innerHTML = mxLegend(false) +
             '<div class="gr-mx-wrap"><table class="gr-mx"><thead><tr>' +
-            '<th class="u">Пользователь · всего</th>' +
-            schemas.map(function (s) {
-                return "<th>" + esc(s) + "</th>";
+            '<th class="u">Пользователь · таблиц</th>' +
+            cols.map(function (s) {
+                return '<th data-col="' + esc(s) + '" ' +
+                    'style="cursor: pointer;" title="раскрыть схему">' +
+                    esc(s) + "</th>";
             }).join("") + "</tr></thead><tbody>" +
-            users.map(function (u) {
-                return "<tr><th><span class=\"rk " +
-                    esc(risk[u] || "low") + "\"></span>" + esc(u) +
+            rows.map(function (r) {
+                // ячейка группы = суммарный профиль (у всех он одинаковый)
+                var first = r.users[0];
+
+                return '<tr data-row="' + esc(r.key) + '"><th>' +
+                    '<span class="rk ' + esc(r.risk) + '"></span>' +
+                    esc(r.label) +
                     ' <span style="color: var(--text-muted); font-weight: 400;">· ' +
-                    fmtN(rowTotal[u]) + "</span></th>" +
-                    schemas.map(function (s) {
-                        var l = cell[u + "|" + s];
+                    fmtN(r.total) + "</span>" +
+                    (r.group ? ' <span class="grp">' + r.size +
+                        "&nbsp;польз.</span>" : "") +
+                    (r.group && MX.openGroup[r.key]
+                        ? '<span class="mem">' + esc(r.users.join(", ")) +
+                          "</span>"
+                        : "") +
+                    "</th>" +
+                    cols.map(function (s) {
+                        var l = cell[first + "|" + s];
 
                         if (!l) { return "<td>·</td>"; }
 
-                        var ratio = l.write_tables / Math.max(1, l.tables);
-                        var bg = ratio === 0
-                            ? "rgba(99,102,241," + (0.28 + 0.5 *
-                                Math.min(1, Math.log(l.tables + 1) / 5)) + ")"
-                            : (ratio >= 0.99
-                                ? "rgba(239,68,68,.72)"
-                                : "rgba(245,158,11,.72)");
-
-                        return '<td class="c" style="background: ' + bg +
-                            '" title="' + esc(u + " → " + s) + ": " +
+                        return '<td class="c" style="background: ' +
+                            mxCellColor(l.tables, l.write_tables) +
+                            '" title="' + esc(first + " → " + s) + ": " +
                             fmtN(l.tables) + " табл., с записью " +
-                            fmtN(l.write_tables) + '" data-schema="' +
+                            fmtN(l.write_tables) + '" data-cell="' +
                             esc(s) + '">' + fmtN(l.tables) + "</td>";
                     }).join("") + "</tr>";
             }).join("") + "</tbody></table></div>";
 
-        box.querySelectorAll("[data-schema]").forEach(function (td) {
-            td.style.cursor = "pointer";
-            td.onclick = function () {
-                G.drill = td.getAttribute("data-schema");
-                G.level = "table";
-                setLevelChip();
-                document.querySelector('#grView [data-v="graph"]').click();
+        // клик по столбцу или ячейке — drill в схему
+        box.querySelectorAll("[data-col], [data-cell]").forEach(function (el) {
+            el.style.cursor = "pointer";
+            el.onclick = function (ev) {
+                ev.stopPropagation();
+                openSchemaMatrix(el.getAttribute("data-col") ||
+                                 el.getAttribute("data-cell"));
             };
         });
+
+        // клик по строке-группе — показать состав
+        box.querySelectorAll("tbody th").forEach(function (th) {
+            th.style.cursor = "pointer";
+            th.onclick = function () {
+                var key = th.parentElement.getAttribute("data-row");
+                MX.openGroup[key] = !MX.openGroup[key];
+                renderMatrixSchemas();
+            };
+        });
+    }
+
+    /* --- уровень 2: пользователи × таблицы одной схемы --- */
+
+    function openSchemaMatrix(schema) {
+        MX.drill = schema;
+        MX.schemaData = null;
+        renderMatrix();
+
+        fetch("/api/grants/schema-matrix?connection_id=" +
+              encodeURIComponent(state.conn) +
+              "&schema=" + encodeURIComponent(schema))
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (!d.ok) {
+                    $("grMatrix").innerHTML = '<div class="gr-empty" ' +
+                        'style="color: var(--crit);">' + esc(d.message) +
+                        "</div>";
+                    return;
+                }
+
+                MX.schemaData = d;
+                renderMatrix();
+            })
+            .catch(function (e) {
+                $("grMatrix").innerHTML = '<div class="gr-empty" ' +
+                    'style="color: var(--crit);">' + esc(String(e)) + "</div>";
+            });
+    }
+
+    var PRIV_SHORT = {
+        SELECT: "S", INSERT: "I", UPDATE: "U", DELETE: "D",
+        TRUNCATE: "T", REFERENCES: "R", TRIGGER: "G"
+    };
+
+    function renderMatrixTables() {
+        var box = $("grMatrix");
+        var d = MX.schemaData;
+
+        if (!d) {
+            box.innerHTML = '<div class="gr-empty">Читаю права схемы ' +
+                esc(MX.drill) + "…</div>";
+            return;
+        }
+
+        var q = state.q.toLowerCase();
+        var rows = (d.rows || []).filter(function (u) {
+            if (state.filter === "write" || state.filter === "read") {
+                var hasWrite = (d.cols || []).some(function (t) {
+                    var c = d.cells[u + "|" + t];
+                    return c && c.write;
+                });
+
+                if (state.filter === "write" && !hasWrite) { return false; }
+                if (state.filter === "read" && hasWrite) { return false; }
+            }
+
+            return !q || u.toLowerCase().indexOf(q) >= 0;
+        });
+
+        var cols = (d.cols || []).filter(function (t) {
+            return !q || t.toLowerCase().indexOf(q) >= 0 ||
+                rows.some(function (u) {
+                    return u.toLowerCase().indexOf(q) >= 0; });
+        });
+
+        $("grMxNote").textContent = fmtN(rows.length) + " пользователей · " +
+            fmtN(cols.length) + " таблиц" +
+            (d.tables_total > cols.length
+                ? " (из " + fmtN(d.tables_total) + ")" : "");
+
+        if (!rows.length || !cols.length) {
+            box.innerHTML = mxLegend(true) +
+                '<div class="gr-empty">Под фильтр ничего не подходит.</div>';
+            return;
+        }
+
+        box.innerHTML = mxLegend(true) +
+            '<div class="gr-mx-wrap"><table class="gr-mx"><thead><tr>' +
+            '<th class="u">Пользователь</th>' +
+            cols.map(function (t) {
+                return "<th>" + esc(t) + "</th>";
+            }).join("") + "</tr></thead><tbody>" +
+            rows.map(function (u) {
+                return "<tr><th>" + esc(u) + "</th>" +
+                    cols.map(function (t) {
+                        var c = d.cells[u + "|" + t];
+
+                        if (!c) { return "<td>·</td>"; }
+
+                        var bg = c.danger ? "rgba(239,68,68,.75)"
+                            : (c.write ? "rgba(245,158,11,.75)"
+                                       : "rgba(99,102,241,.6)");
+                        var letters = c.privileges.map(function (p) {
+                            return PRIV_SHORT[p] || p[0];
+                        }).join("");
+
+                        return '<td class="c p" style="background: ' + bg +
+                            '" title="' + esc(u + " → " + MX.drill + "." + t) +
+                            ": " + esc(c.privileges.join(", ")) +
+                            (c.via_role ? " (через роль " + esc(c.via_role) + ")"
+                                        : " (напрямую)") +
+                            '">' + esc(letters) + "</td>";
+                    }).join("") + "</tr>";
+            }).join("") + "</tbody></table></div>";
+    }
+
+    function renderMatrix() {
+        var d = state.data;
+
+        if (!d || !d.graph) { return; }
+
+        var crumb = $("grMxCrumb");
+
+        if (MX.drill) {
+            crumb.className = "gr-mx-crumb back";
+            crumb.textContent = "← все схемы · " + MX.drill;
+            crumb.onclick = function () {
+                MX.drill = null;
+                MX.schemaData = null;
+                renderMatrix();
+            };
+            renderMatrixTables();
+        } else {
+            crumb.className = "gr-mx-crumb";
+            crumb.textContent = "все схемы";
+            crumb.onclick = null;
+            renderMatrixSchemas();
+        }
     }
 
     /* ---------------- загрузка ---------------- */
@@ -1500,6 +1899,8 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
                 $("grMatrixPanel").style.display = matrix ? "" : "none";
                 $("grListPanel").style.display = (graph || matrix)
                     ? "none" : "";
+                $("grExpandAll").style.display = (graph || matrix)
+                    ? "none" : "";
 
                 if (graph) {
                     resizeCanvas();
@@ -1522,6 +1923,13 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
             }, 200);
         });
 
+        ["grMxRoles", "grMxSeriate"].forEach(function (id) {
+            $(id).addEventListener("change", function () {
+                MX.openGroup = {};
+                renderMatrix();
+            });
+        });
+
         $("grExpandAll").onclick = function () {
             state.expandAll = !state.expandAll;
             $("grExpandAll").textContent = state.expandAll
@@ -1534,6 +1942,9 @@ table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
 
     initBar();
     initGraph();
+    // матрица — основной вид: он читается на любых объёмах
+    state.view = "matrix";
+    $("grExpandAll").style.display = "none";
 
     var first = document.querySelector("#grConns [data-conn]");
 

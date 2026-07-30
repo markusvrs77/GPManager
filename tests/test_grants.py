@@ -10,6 +10,8 @@ from modules.grants import (
     build_revoke_sql,
     classify_risk,
     expand_effective_grants,
+    group_by_access_profile,
+    seriate_matrix,
     sort_privileges,
 )
 
@@ -129,6 +131,53 @@ def test_build_graph_nodes_and_links():
 
     # схемы отдаются полным списком (для агрегированного режима)
     assert {n["label"] for n in small["schema_nodes"]} == {"dwh", "stg"}
+
+
+def test_seriate_matrix_groups_similar_rows():
+    # u1 и u3 имеют одинаковый профиль -> должны встать рядом
+    cells = {
+        ("u1", "dwh"): 10, ("u1", "stg"): 2,
+        ("u2", "stg"): 5,
+        ("u3", "dwh"): 8, ("u3", "stg"): 1,
+        ("u4", "dwh"): 3,
+    }
+
+    rows, cols = seriate_matrix(["u2", "u4", "u1", "u3"], ["stg", "dwh"], cells)
+
+    # столбцы — по суммарному весу: dwh (21) впереди stg (8)
+    assert cols == ["dwh", "stg"]
+    # похожие строки рядом, «широкие» профили сверху
+    assert rows[:2] == ["u1", "u3"]
+    assert set(rows) == {"u1", "u2", "u3", "u4"}
+    assert rows.index("u4") < rows.index("u2")   # dwh-строка выше stg-строки
+
+
+def test_group_by_access_profile():
+    agg = {
+        ("a", "dwh"): {"tables": 5, "write_tables": 1},
+        ("b", "dwh"): {"tables": 5, "write_tables": 1},
+        ("c", "dwh"): {"tables": 5, "write_tables": 0},
+        ("d", "stg"): {"tables": 2, "write_tables": 0},
+        ("d", "dwh"): {"tables": 5, "write_tables": 1},
+    }
+
+    groups = group_by_access_profile(agg)
+
+    # a и b — одинаковый профиль -> одна де-факто роль
+    assert groups[0]["users"] == ["a", "b"]
+    assert groups[0]["size"] == 2
+    assert groups[0]["tables"] == 5
+    assert groups[0]["write_tables"] == 1
+
+    others = {tuple(g["users"]) for g in groups[1:]}
+    assert ("c",) in others and ("d",) in others
+
+    # у d профиль из двух схем
+    d = [g for g in groups if g["users"] == ["d"]][0]
+    assert sorted(d["schemas"]) == ["dwh", "stg"]
+    assert d["tables"] == 7
+
+    assert group_by_access_profile({}) == []
 
 
 def test_build_overview_end_to_end():

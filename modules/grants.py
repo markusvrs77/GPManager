@@ -176,6 +176,79 @@ def build_revoke_sql(schema, table, privileges, grantee):
     )
 
 
+def seriate_matrix(row_keys, col_keys, cells):
+    """
+    Сериация бинарной матрицы: столбцы по «популярности», строки по
+    битовому коду присутствия. Похожие строки встают рядом, и блоки
+    одинакового доступа видны глазом. Чистая функция.
+
+    cells: {(row, col): вес}
+    -> (row_order, col_order)
+    """
+    col_weight = {}
+
+    for (row, col), weight in cells.items():
+        col_weight[col] = col_weight.get(col, 0) + (weight or 1)
+
+    col_order = sorted(col_keys,
+                       key=lambda c: (-col_weight.get(c, 0), str(c)))
+    index = {c: i for i, c in enumerate(col_order)}
+    n = len(col_order)
+
+    def row_code(row):
+        bits = 0
+
+        for col in col_order:
+            if (row, col) in cells:
+                bits |= 1 << (n - index[col])
+
+        return bits
+
+    row_order = sorted(row_keys, key=lambda r: (-row_code(r), str(r)))
+
+    return row_order, col_order
+
+
+def group_by_access_profile(agg):
+    """
+    Пользователи с одинаковым профилем доступа — это де-факто роль.
+    Склеиваем их в группы, чтобы вместо 71 строки читать 10.
+    Чистая функция.
+
+    agg: {(user, schema): {"tables": n, "write_tables": m}}
+    -> [{"users": [...], "size": n, "schemas": [...], "tables": n,
+         "write_tables": m}]
+    """
+    by_user = {}
+
+    for (user, schema), v in (agg or {}).items():
+        by_user.setdefault(user, {})[schema] = (v["tables"], v["write_tables"])
+
+    groups = {}
+
+    for user, profile in by_user.items():
+        signature = tuple(sorted(
+            (schema, counts[0], counts[1])
+            for schema, counts in profile.items()
+        ))
+        groups.setdefault(signature, []).append(user)
+
+    out = []
+
+    for signature, users in groups.items():
+        out.append({
+            "users": sorted(users),
+            "size": len(users),
+            "schemas": [s for s, _t, _w in signature],
+            "tables": sum(t for _s, t, _w in signature),
+            "write_tables": sum(w for _s, _t, w in signature),
+        })
+
+    out.sort(key=lambda g: (-g["size"], -g["tables"], g["users"][0]))
+
+    return out
+
+
 def build_graph(users, max_tables=MAX_GRAPH_TABLES, agg=None,
                 schema_tables=None):
     """
@@ -534,13 +607,133 @@ def build_overview(raw):
         "review": sum(1 for u in users if u["risk"]["level"] == "high"),
     }
 
+    # порядок строк/столбцов матрицы: похожие профили доступа рядом
+    matrix_cells = {
+        (name, schema): v["tables"] for (name, schema), v in agg_full.items()
+    }
+    row_order, col_order = seriate_matrix(
+        sorted(set(n for n, _s in agg_full)),
+        sorted(set(s for _n, s in agg_full)),
+        matrix_cells,
+    )
+
     return {
         "summary": summary,
         "users": users,
+        "matrix_order": {"rows": row_order, "cols": col_order},
+        "role_groups": group_by_access_profile(agg_full),
         "graph": build_graph(
             [u for u in users if u["tables_count"]],
             agg=agg_full, schema_tables=schema_tables_full,
         ),
+    }
+
+
+def collect_schema_matrix(connection_id, schema, max_tables=400):
+    """
+    Матрица «пользователи × таблицы» внутри одной схемы (drill из общей
+    матрицы). Данных мало — читаем напрямую, без кэша и без обрезки
+    по пользователям.
+    """
+    conn_cfg = get_connection_by_id(int(connection_id))
+
+    if not conn_cfg:
+        raise ValueError("Подключение не найдено")
+
+    schema = str(schema or "").strip()
+
+    if not schema:
+        raise ValueError("Схема обязательна")
+
+    conn = open_psycopg2_connection_by_cfg(conn_cfg)
+
+    try:
+        cur = conn.cursor()
+        cur.execute("SET statement_timeout = '20s'")
+
+        members = _rows(cur, """
+            SELECT m.rolname AS member, r.rolname AS role_name
+            FROM pg_auth_members am
+            JOIN pg_roles m ON m.oid = am.member
+            JOIN pg_roles r ON r.oid = am.roleid
+        """)
+
+        grants = _rows(cur, """
+            SELECT c.relname AS table_name,
+                   CASE WHEN a.grantee = 0 THEN 'PUBLIC'
+                        ELSE pg_get_userbyid(a.grantee) END AS grantee,
+                   a.privilege_type
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            CROSS JOIN LATERAL aclexplode(c.relacl) a
+            WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+              AND c.relacl IS NOT NULL
+              AND n.nspname = %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid
+              )
+        """, (schema,))
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    membership = {}
+
+    for m in members:
+        membership.setdefault(m["member"], []).append(m["role_name"])
+
+    direct = {}
+
+    for g in grants:
+        rows = direct.setdefault(g["grantee"], {})
+        entry = rows.setdefault(("", g["table_name"]), {
+            "schema": "", "table": g["table_name"],
+            "privileges": set(), "grantable": set(),
+        })
+        entry["privileges"].add(g["privilege_type"])
+
+    effective = expand_effective_grants(
+        {k: list(v.values()) for k, v in direct.items()}, membership
+    )
+
+    cells = {}
+    table_weight = {}
+
+    for user, tables_map in effective.items():
+        for (_s, table), acc in tables_map.items():
+            privs = sort_privileges(acc["privileges"])
+            cells[user + "|" + table] = {
+                "privileges": privs,
+                "write": any(p in WRITE_PRIVS for p in privs),
+                "danger": any(p in DANGEROUS_PRIVS for p in privs),
+                "via_role": None if "direct" in acc["sources"]
+                else acc["sources"][0],
+            }
+            table_weight[table] = table_weight.get(table, 0) + 1
+
+    tables = [t for t, _w in sorted(table_weight.items(),
+                                    key=lambda kv: -kv[1])[:max_tables]]
+    users = sorted(effective)
+
+    cell_keys = {}
+
+    for key in cells:
+        user, table = key.split("|", 1)
+
+        if table in table_weight:
+            cell_keys[(user, table)] = 1
+
+    row_order, col_order = seriate_matrix(users, tables, cell_keys)
+
+    return {
+        "ok": True,
+        "schema": schema,
+        "rows": row_order,
+        "cols": col_order,
+        "cells": cells,
+        "tables_total": len(table_weight),
     }
 
 
