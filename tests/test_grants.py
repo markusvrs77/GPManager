@@ -7,6 +7,7 @@ from modules.grants import (
     build_graph,
     build_grant_sql,
     build_overview,
+    build_sankey,
     build_revoke_sql,
     classify_risk,
     expand_effective_grants,
@@ -178,6 +179,41 @@ def test_group_by_access_profile():
     assert d["tables"] == 7
 
     assert group_by_access_profile({}) == []
+
+
+def test_build_sankey_flows_and_others():
+    user_src = {
+        ("u1", "ro"): 10, ("u1", "напрямую"): 2,
+        ("u2", "ro"): 5,
+        ("u3", "rw"): 1,
+    }
+    src_schema = {
+        ("ro", "dwh"): 15, ("напрямую", "dwh"): 2, ("rw", "stg"): 1,
+    }
+
+    s = build_sankey(user_src, src_schema)
+    by_id = {n["id"]: n for n in s["nodes"]}
+
+    # три колонки: пользователи -> источники -> схемы
+    assert by_id["u:u1"]["column"] == 0
+    assert by_id["r:ro"]["column"] == 1
+    assert by_id["s:dwh"]["column"] == 2
+    assert by_id["r:напрямую"]["direct"] is True
+
+    # объёмы сходятся
+    assert by_id["u:u1"]["value"] == 12
+    assert by_id["s:dwh"]["value"] == 17
+
+    flow = {(l["source"], l["target"]): l["value"] for l in s["links"]}
+    assert flow[("u:u1", "r:ro")] == 10
+    assert flow[("r:ro", "s:dwh")] == 15
+
+    # мелкие узлы сворачиваются в «прочие»
+    small = build_sankey(user_src, src_schema, top_users=1, top_schemas=1)
+    labels = {n["label"] for n in small["nodes"]}
+    assert "прочие пользователи" in labels
+    assert "прочие схемы" in labels
+    assert small["users_total"] == 3
 
 
 def test_build_overview_end_to_end():

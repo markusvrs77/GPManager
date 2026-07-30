@@ -222,6 +222,17 @@ table.gr-mx tbody th .mem { display: block; font-size: 10.5px;
   max-width: 210px; }
 table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
   letter-spacing: .04em; }
+
+/* --- поток (sankey) --- */
+#grFlow { padding: 8px 6px 14px; overflow-x: auto; }
+#grFlow svg { display: block; width: 100%; height: auto; }
+#grFlow .lk { fill: none; transition: stroke-opacity var(--dur-fast); }
+#grFlow .nd rect { rx: 3; }
+#grFlow .nd text { font-size: 11px; fill: #cbd5e1; }
+#grFlow .nd.dim rect, #grFlow .nd.dim text { opacity: .3; }
+#grFlow .nd text.val { fill: var(--text-muted); font-size: 10px; }
+#grFlow .col-title { font-size: 10px; font-weight: 800; letter-spacing: .09em;
+  fill: var(--text-muted); text-transform: uppercase; }
 </style>
 
 <div class="gr">
@@ -259,6 +270,7 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
         <span class="gr-link" id="grExpandAll">развернуть все</span>
         <div class="gr-chips" id="grView">
             <span class="gr-chip on" data-v="matrix">матрица</span>
+            <span class="gr-chip" data-v="flow">поток</span>
             <span class="gr-chip" data-v="list">список</span>
             <span class="gr-chip" data-v="graph">граф</span>
         </div>
@@ -289,6 +301,16 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
             <span class="gr-mx-note" id="grMxNote"></span>
         </div>
         <div id="grMatrix"><div class="gr-empty">Загрузка…</div></div>
+    </div>
+
+    <div class="gr-panel" id="grFlowPanel" style="display: none;">
+        <div class="gr-mx-bar">
+            <span class="gr-mx-crumb">пользователь → через что → схема</span>
+            <span class="gr-mx-hint">толщина потока — число таблиц;
+                наведи на узел, чтобы подсветить его путь</span>
+            <span class="gr-mx-note" id="grFlowNote"></span>
+        </div>
+        <div id="grFlow"><div class="gr-empty">Загрузка…</div></div>
     </div>
 
     <div class="gr-panel" id="grGraphPanel" style="display: none;">
@@ -1704,6 +1726,25 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
         TRUNCATE: "T", REFERENCES: "R", TRIGGER: "G"
     };
 
+    // локальный граф: фокус на конкретном пользователе (окружение узла)
+    function focusUserInGraph(name) {
+        G.level = "schema";
+        G.drill = null;
+        setLevelChip();
+        $("grGSelOnly").checked = true;
+        document.querySelector('#grView [data-v="graph"]').click();
+
+        setTimeout(function () {
+            var n = G.byId["user:" + name];
+
+            if (!n) { return; }
+
+            G.sel = n;
+            renderSelected();
+            fitView();
+        }, 350);
+    }
+
     function renderMatrixTables() {
         var box = $("grMatrix");
         var d = MX.schemaData;
@@ -1753,7 +1794,8 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
                 return "<th>" + esc(t) + "</th>";
             }).join("") + "</tr></thead><tbody>" +
             rows.map(function (u) {
-                return "<tr><th>" + esc(u) + "</th>" +
+                return '<tr><th data-user-focus="' + esc(u) +
+                    '" title="показать окружение в графе">' + esc(u) + "</th>" +
                     cols.map(function (t) {
                         var c = d.cells[u + "|" + t];
 
@@ -1774,6 +1816,13 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
                             '">' + esc(letters) + "</td>";
                     }).join("") + "</tr>";
             }).join("") + "</tbody></table></div>";
+
+        box.querySelectorAll("[data-user-focus]").forEach(function (th) {
+            th.style.cursor = "pointer";
+            th.onclick = function () {
+                focusUserInGraph(th.getAttribute("data-user-focus"));
+            };
+        });
     }
 
     function renderMatrix() {
@@ -1798,6 +1847,172 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
             crumb.onclick = null;
             renderMatrixSchemas();
         }
+    }
+
+    /* ---------------- поток (sankey) ---------------- */
+
+    function renderFlow() {
+        var box = $("grFlow");
+        var s = state.data && state.data.sankey;
+
+        if (!s || !s.nodes || !s.nodes.length) {
+            box.innerHTML = '<div class="gr-empty">Потоков не найдено.</div>';
+            return;
+        }
+
+        var W = Math.max(760, box.clientWidth || 900);
+        var PAD = 18;
+        var NODE_W = 13;
+        var GAP = 6;
+        var colX = [PAD + 130, W / 2 - NODE_W / 2, W - PAD - 130 - NODE_W];
+
+        // высота пропорциональна суммарному объёму в самой «толстой» колонке
+        var byCol = [[], [], []];
+
+        s.nodes.forEach(function (n) { byCol[n.column].push(n); });
+        byCol.forEach(function (list) {
+            list.sort(function (a, b) { return b.value - a.value; });
+        });
+
+        var maxSum = Math.max.apply(null, byCol.map(function (list) {
+            return list.reduce(function (a, n) { return a + n.value; }, 0);
+        }));
+        var maxCount = Math.max.apply(null, byCol.map(function (l) {
+            return l.length;
+        }));
+
+        var H = Math.max(360, Math.min(760, maxCount * 26));
+        var usable = H - 40 - (maxCount - 1) * GAP;
+        var k = usable / Math.max(1, maxSum);
+
+        var pos = {};
+
+        byCol.forEach(function (list, ci) {
+            var y = 34;
+
+            list.forEach(function (n) {
+                var h = Math.max(3, n.value * k);
+
+                pos[n.id] = { x: colX[ci], y: y, h: h, node: n };
+                y += h + GAP;
+            });
+        });
+
+        // раскладываем связи по узлам (сверху вниз, по объёму)
+        var outAt = {};
+        var inAt = {};
+        var paths = [];
+
+        s.links.slice().sort(function (a, b) {
+            return b.value - a.value;
+        }).forEach(function (l) {
+            var a = pos[l.source];
+            var b = pos[l.target];
+
+            if (!a || !b) { return; }
+
+            var th = Math.max(1, l.value * k);
+            var ay = (outAt[l.source] = (outAt[l.source] || 0)) + a.y;
+            var by = (inAt[l.target] = (inAt[l.target] || 0)) + b.y;
+
+            outAt[l.source] += th;
+            inAt[l.target] += th;
+
+            var x1 = a.x + NODE_W;
+            var x2 = b.x;
+            var mx = (x1 + x2) / 2;
+            var direct = (l.source.indexOf("r:напрямую") === 0) ||
+                (l.target === "r:напрямую");
+
+            paths.push('<path class="lk" data-a="' + esc(l.source) +
+                '" data-b="' + esc(l.target) + '" d="M' + x1 + "," +
+                (ay + th / 2) + " C" + mx + "," + (ay + th / 2) + " " +
+                mx + "," + (by + th / 2) + " " + x2 + "," + (by + th / 2) +
+                '" stroke="' + (direct ? "rgba(148,163,184,.45)"
+                                       : "rgba(139,92,246,.45)") +
+                '" stroke-width="' + th + '" stroke-opacity="0.5">' +
+                "<title>" + esc(l.source.slice(2)) + " → " +
+                esc(l.target.slice(2)) + ": " + fmtN(l.value) +
+                " таблиц</title></path>");
+        });
+
+        function nodeSvg(id) {
+            var p = pos[id];
+            var n = p.node;
+            var fill = n.column === 0 ? "#8b5cf6"
+                : (n.column === 1 ? (n.direct ? "#64748b" : "#6366f1")
+                                  : "#475569");
+            var anchor = n.column === 2 ? "start" : (n.column === 0
+                ? "end" : "middle");
+            var tx = n.column === 2 ? p.x + NODE_W + 7
+                : (n.column === 0 ? p.x - 7 : p.x + NODE_W / 2);
+            var ty = p.y + p.h / 2;
+
+            // у тонких узлов подпись не рисуем — иначе каша; текст
+            // остаётся во всплывающей подсказке
+            var label = p.h >= 9
+                ? '<text x="' + tx + '" y="' + ty + '" text-anchor="' + anchor +
+                  '" dominant-baseline="middle">' + esc(n.label) +
+                  ' <tspan class="val">· ' + fmtN(n.value) + "</tspan></text>"
+                : "";
+
+            return '<g class="nd" data-id="' + esc(id) + '">' +
+                '<rect x="' + p.x + '" y="' + p.y + '" width="' + NODE_W +
+                '" height="' + p.h + '" fill="' + fill + '">' +
+                "<title>" + esc(n.label) + " · " + fmtN(n.value) +
+                " таблиц</title></rect>" + label + "</g>";
+        }
+
+        $("grFlowNote").textContent = fmtN(s.users_total) +
+            " пользователей · " + fmtN(s.schemas_total) + " схем";
+
+        box.innerHTML = '<svg viewBox="0 0 ' + W + " " + H +
+            '" preserveAspectRatio="xMidYMid meet">' +
+            '<text class="col-title" x="' + (colX[0] - 7) +
+            '" y="16" text-anchor="end">пользователь</text>' +
+            '<text class="col-title" x="' + (colX[1] + NODE_W / 2) +
+            '" y="16" text-anchor="middle">через что</text>' +
+            '<text class="col-title" x="' + (colX[2] + NODE_W + 7) +
+            '" y="16">схема</text>' +
+            paths.join("") +
+            Object.keys(pos).map(nodeSvg).join("") + "</svg>";
+
+        // подсветка пути при наведении на узел
+        var svg = box.querySelector("svg");
+
+        svg.querySelectorAll(".nd").forEach(function (g) {
+            g.addEventListener("mouseenter", function () {
+                var id = g.getAttribute("data-id");
+
+                svg.querySelectorAll(".lk").forEach(function (p) {
+                    var on = p.getAttribute("data-a") === id ||
+                        p.getAttribute("data-b") === id;
+                    p.setAttribute("stroke-opacity", on ? "0.85" : "0.08");
+                });
+
+                svg.querySelectorAll(".nd").forEach(function (other) {
+                    var oid = other.getAttribute("data-id");
+                    var linked = oid === id ||
+                        Array.prototype.some.call(
+                            svg.querySelectorAll(".lk"), function (p) {
+                                return (p.getAttribute("data-a") === id &&
+                                        p.getAttribute("data-b") === oid) ||
+                                    (p.getAttribute("data-b") === id &&
+                                     p.getAttribute("data-a") === oid);
+                            });
+                    other.classList.toggle("dim", !linked);
+                });
+            });
+
+            g.addEventListener("mouseleave", function () {
+                svg.querySelectorAll(".lk").forEach(function (p) {
+                    p.setAttribute("stroke-opacity", "0.5");
+                });
+                svg.querySelectorAll(".nd").forEach(function (other) {
+                    other.classList.remove("dim");
+                });
+            });
+        });
     }
 
     /* ---------------- загрузка ---------------- */
@@ -1850,6 +2065,7 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
 
                 if (state.view === "graph") { buildGraph(); }
                 if (state.view === "matrix") { renderMatrix(); }
+                if (state.view === "flow") { renderFlow(); }
             })
             .catch(function (e) {
                 state.loading = false;
@@ -1894,12 +2110,14 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
 
                 var graph = state.view === "graph";
                 var matrix = state.view === "matrix";
+                var flow = state.view === "flow";
 
                 $("grGraphPanel").style.display = graph ? "" : "none";
                 $("grMatrixPanel").style.display = matrix ? "" : "none";
-                $("grListPanel").style.display = (graph || matrix)
+                $("grFlowPanel").style.display = flow ? "" : "none";
+                $("grListPanel").style.display = (graph || matrix || flow)
                     ? "none" : "";
-                $("grExpandAll").style.display = (graph || matrix)
+                $("grExpandAll").style.display = (graph || matrix || flow)
                     ? "none" : "";
 
                 if (graph) {
@@ -1908,6 +2126,7 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
                 }
 
                 if (matrix) { renderMatrix(); }
+                if (flow) { renderFlow(); }
             };
         });
 

@@ -249,6 +249,76 @@ def group_by_access_profile(agg):
     return out
 
 
+def build_sankey(user_src, src_schema, top_users=18, top_schemas=12):
+    """
+    Поток прав: пользователь -> роль (или «напрямую») -> схема.
+    Толщина = число таблиц. Мелкие узлы сворачиваются в «прочие»,
+    поэтому диаграмма читается на любом числе пользователей.
+    Чистая функция.
+
+    user_src:   {(user, source): tables}
+    src_schema: {(source, schema): tables}
+    """
+    def top_keys(totals, limit):
+        ranked = sorted(totals.items(), key=lambda kv: (-kv[1], kv[0]))
+        return set(k for k, _v in ranked[:limit])
+
+    user_totals = {}
+    schema_totals = {}
+
+    for (user, _src), n in user_src.items():
+        user_totals[user] = user_totals.get(user, 0) + n
+
+    for (_src, schema), n in src_schema.items():
+        schema_totals[schema] = schema_totals.get(schema, 0) + n
+
+    keep_users = top_keys(user_totals, top_users)
+    keep_schemas = top_keys(schema_totals, top_schemas)
+
+    OTHER_U = "прочие пользователи"
+    OTHER_S = "прочие схемы"
+
+    left = {}
+    right = {}
+
+    for (user, src), n in user_src.items():
+        key = (user if user in keep_users else OTHER_U, src)
+        left[key] = left.get(key, 0) + n
+
+    for (src, schema), n in src_schema.items():
+        key = (src, schema if schema in keep_schemas else OTHER_S)
+        right[key] = right.get(key, 0) + n
+
+    sources = sorted(set([s for _u, s in left] + [s for s, _c in right]))
+
+    nodes = (
+        [{"id": "u:" + u, "label": u, "column": 0,
+          "value": sum(n for (uu, _s), n in left.items() if uu == u)}
+         for u in sorted(set(u for u, _s in left))] +
+        [{"id": "r:" + s, "label": s, "column": 1,
+          "value": sum(n for (ss, _c), n in right.items() if ss == s),
+          "direct": s == "напрямую"}
+         for s in sources] +
+        [{"id": "s:" + c, "label": c, "column": 2,
+          "value": sum(n for (_s, cc), n in right.items() if cc == c)}
+         for c in sorted(set(c for _s, c in right))]
+    )
+
+    links = (
+        [{"source": "u:" + u, "target": "r:" + s, "value": n}
+         for (u, s), n in sorted(left.items(), key=lambda kv: -kv[1])] +
+        [{"source": "r:" + s, "target": "s:" + c, "value": n}
+         for (s, c), n in sorted(right.items(), key=lambda kv: -kv[1])]
+    )
+
+    return {
+        "nodes": nodes,
+        "links": links,
+        "users_total": len(user_totals),
+        "schemas_total": len(schema_totals),
+    }
+
+
 def build_graph(users, max_tables=MAX_GRAPH_TABLES, agg=None,
                 schema_tables=None):
     """
@@ -499,6 +569,9 @@ def build_overview(raw):
     # MAX_TABLES_PER_USER), иначе часть схем пропадала бы из графа
     agg_full = {}
     schema_tables_full = {}
+    # потоки для sankey: пользователь -> источник (роль/напрямую) -> схема
+    flow_user_src = {}
+    flow_src_schema = {}
 
     for name in sorted(set(list(effective) + list(role_info))):
         info = role_info.get(name) or {}
@@ -545,6 +618,15 @@ def build_overview(raw):
                 e["write_tables"] += 1
 
             schema_tables_full.setdefault(t["schema"], set()).add(t["table"])
+
+            # поток «через что пришло право» — только для login-ролей,
+            # иначе группы дублировали бы объёмы своих участников
+            if info.get("rolcanlogin"):
+                src = t["via_role"] or "напрямую"
+                fk = (name, src)
+                flow_user_src[fk] = flow_user_src.get(fk, 0) + 1
+                sk = (src, t["schema"])
+                flow_src_schema[sk] = flow_src_schema.get(sk, 0) + 1
 
         tables.sort(key=lambda t: (-t["rows"], t["schema"], t["table"]))
         # реальное число объектов до обрезки — чтобы в UI не было
@@ -622,6 +704,7 @@ def build_overview(raw):
         "users": users,
         "matrix_order": {"rows": row_order, "cols": col_order},
         "role_groups": group_by_access_profile(agg_full),
+        "sankey": build_sankey(flow_user_src, flow_src_schema),
         "graph": build_graph(
             [u for u in users if u["tables_count"]],
             agg=agg_full, schema_tables=schema_tables_full,
