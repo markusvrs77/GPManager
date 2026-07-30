@@ -351,7 +351,7 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
                     <input type="range" id="grRep" min="40" max="900" value="260"></div>
                 <div class="gr-rng"><label>Длина связи <span id="grVOrb">200</span></label>
                     <input type="range" id="grOrb" min="60" max="500" value="200"></div>
-                <div class="gr-rng"><label>Разлёт схем <span id="grVSpr">160</span></label>
+                <div class="gr-rng"><label>Круг схемы <span id="grVSpr">160</span></label>
                     <input type="range" id="grSpr" min="40" max="500" value="160"></div>
 
                 <h6 style="margin-top: 4px;">Выделено</h6>
@@ -808,6 +808,12 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
 
     /* --- двудольная раскладка: пользователи слева, объекты справа --- */
 
+    // радиус круга схемы: им регулируется, насколько широко её таблицы
+    // расходятся вокруг неё
+    function schemaOrbit(o) {
+        return Math.max(34, (o || graphOpts()).spr * 0.55);
+    }
+
     function layoutColumns() {
         var o = graphOpts();
         var detail = G.level === "table" || G.drill;
@@ -889,12 +895,43 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
 
         var gapU = 30;
         var perColU = users.length > 26 ? 20 : users.length;
-        var xU = detail ? -240 : -170;      // правый край блока пользователей
-        var xS = detail ? 120 : 190;
+        var orbit = schemaOrbit(o);
+
+        // радиус круга каждой схемы — по числу её таблиц, чтобы плотность
+        // была ровной: у большой схемы круг шире, у мелкой уже
+        var tableCount = {};
+
+        tables.forEach(function (t) {
+            tableCount[t.schema] = (tableCount[t.schema] || 0) + 1;
+        });
+
+        var maxCount = Math.max(1, Math.max.apply(null,
+            [1].concat(Object.keys(tableCount).map(function (s) {
+                return tableCount[s];
+            }))));
+
+        schemas.forEach(function (n) {
+            var c = tableCount[n.label] || 0;
+
+            n.orbitR = detail && c
+                ? orbit * (0.4 + 0.6 * Math.sqrt(c / maxCount))
+                : 0;
+        });
+
+        var maxOrbit = Math.max.apply(null, [0].concat(
+            schemas.map(function (n) { return n.orbitR || 0; })));
+
+        // между схемами нужен зазор под их круги
+        var gapS = detail
+            ? Math.max(80, maxOrbit * 2 + 34)
+            : Math.max(62, o.spr * 0.4);
+        var xU = detail ? -(maxOrbit + 260) : -170;
+        var xS = detail ? maxOrbit + 40 : 190;
 
         columns(users, xU, gapU, perColU, 165);
-        columns(schemas, xS, Math.max(62, o.spr * 0.4),
-                schemas.length > 14 ? 12 : schemas.length, 170);
+        columns(schemas, xS, gapS,
+                schemas.length > 14 ? 12 : schemas.length,
+                detail ? maxOrbit * 2 + 60 : 170);
 
         if (detail && tables.length) {
             // таблицы — справа, блоком возле своей схемы
@@ -907,17 +944,21 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
             Object.keys(bySchema).forEach(function (schema) {
                 var list = bySchema[schema];
                 var s = G.byId["schema:" + schema];
-                var baseY = s ? s.homeY : 0;
-                var perCol = Math.max(2, Math.min(14,
-                    Math.ceil(Math.sqrt(list.length * 1.6))));
+                var cx = s ? s.homeX : 0;
+                var cy = s ? s.homeY : 0;
+                var total = list.length;
+
+                // таблицы — вокруг своей схемы, в её круге (радиус
+                // регулируется ползунком «Круг схемы»)
+                var R = (s && s.orbitR) || orbit;
 
                 list.forEach(function (t, i) {
-                    var col = Math.floor(i / perCol);
-                    var row = i % perCol;
+                    var ang = i * 2.39996;                 // золотой угол
+                    var rad = R * (0.3 + 0.7 *
+                        Math.sqrt((i + 0.5) / total));
 
-                    // блок таблиц — правее своей схемы, на её высоте
-                    t.homeX = (s ? s.homeX : 0) + 190 + col * 26;
-                    t.homeY = baseY + (row - (perCol - 1) / 2) * 22;
+                    t.homeX = cx + Math.cos(ang) * rad;
+                    t.homeY = cy + Math.sin(ang) * rad;
                 });
             });
         }
@@ -1087,6 +1128,25 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
             if (o.q && n.label.toLowerCase().indexOf(o.q) < 0) { return true; }
             if (sel && n !== sel && !(near && near[n.id])) { return true; }
             return false;
+        }
+
+        // круг схемы: видно, какие таблицы к ней относятся
+        if (G.level === "table" || G.drill) {
+            G.nodes.forEach(function (n) {
+                if (n.type !== "schema" || hidden(n) || !n.orbitR) { return; }
+
+                c.beginPath();
+                c.arc(n.x, n.y, n.orbitR, 0, Math.PI * 2);
+                c.fillStyle = dim(n) ? "rgba(148,163,184,0.015)"
+                    : "rgba(139,92,246,0.05)";
+                c.fill();
+                c.strokeStyle = dim(n) ? "rgba(148,163,184,0.08)"
+                    : "rgba(148,163,184,0.3)";
+                c.setLineDash([5, 5]);
+                c.lineWidth = 1.4 / G.scale;
+                c.stroke();
+                c.setLineDash([]);
+            });
         }
 
         G.links.forEach(function (l) {
