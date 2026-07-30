@@ -176,7 +176,8 @@ def build_revoke_sql(schema, table, privileges, grantee):
     )
 
 
-def build_graph(users, max_tables=MAX_GRAPH_TABLES):
+def build_graph(users, max_tables=MAX_GRAPH_TABLES, agg=None,
+                schema_tables=None):
     """
     Payload для графа связей: узлы (пользователи, таблицы, схемы) и связи
     пользователь -> таблица. Таблицы обрезаются по числу связей, чтобы
@@ -231,9 +232,46 @@ def build_graph(users, max_tables=MAX_GRAPH_TABLES):
                 "schema": t["schema"],
             })
 
+    # агрегация «пользователь -> схема»: основной режим графа, где вместо
+    # тысяч связей — десятки понятных. Если агрегацию посчитали снаружи
+    # (по полному списку таблиц, до обрезки) — берём её.
+    if agg is None or schema_tables is None:
+        agg = {}
+        schema_tables = {}
+
+        for user in users:
+            for t in user.get("tables") or []:
+                k = (user["name"], t["schema"])
+                e = agg.setdefault(k, {"tables": 0, "write_tables": 0})
+                e["tables"] += 1
+
+                if any(p in WRITE_PRIVS for p in (t.get("privileges") or [])):
+                    e["write_tables"] += 1
+
+                schema_tables.setdefault(t["schema"], set()).add(t["table"])
+
+    user_schema_links = [
+        {
+            "source": "user:" + name, "target": "schema:" + schema,
+            "tables": v["tables"], "write_tables": v["write_tables"],
+            "write": v["write_tables"] > 0,
+        }
+        for (name, schema), v in sorted(agg.items())
+    ]
+
+    schema_nodes = [
+        {
+            "id": "schema:" + schema, "type": "schema", "label": schema,
+            "tables": len(tabs),
+        }
+        for schema, tabs in sorted(schema_tables.items())
+    ]
+
     return {
         "nodes": nodes,
         "links": links,
+        "schema_nodes": schema_nodes,
+        "user_schema_links": user_schema_links,
         "tables_total": len(table_weight),
         "tables_shown": len(kept),
     }
@@ -384,6 +422,10 @@ def build_overview(raw):
                  for a in raw.get("activity") or []}
 
     users = []
+    # агрегация для графа считается по полному составу прав (до обрезки
+    # MAX_TABLES_PER_USER), иначе часть схем пропадала бы из графа
+    agg_full = {}
+    schema_tables_full = {}
 
     for name in sorted(set(list(effective) + list(role_info))):
         info = role_info.get(name) or {}
@@ -420,6 +462,16 @@ def build_overview(raw):
                 "revoke_sql": build_revoke_sql(
                     schema, table, privileges, name),
             })
+
+        for t in tables:
+            key = (name, t["schema"])
+            e = agg_full.setdefault(key, {"tables": 0, "write_tables": 0})
+            e["tables"] += 1
+
+            if any(p in WRITE_PRIVS for p in t["privileges"]):
+                e["write_tables"] += 1
+
+            schema_tables_full.setdefault(t["schema"], set()).add(t["table"])
 
         tables.sort(key=lambda t: (-t["rows"], t["schema"], t["table"]))
         # реальное число объектов до обрезки — чтобы в UI не было
@@ -485,7 +537,10 @@ def build_overview(raw):
     return {
         "summary": summary,
         "users": users,
-        "graph": build_graph([u for u in users if u["tables_count"]]),
+        "graph": build_graph(
+            [u for u in users if u["tables_count"]],
+            agg=agg_full, schema_tables=schema_tables_full,
+        ),
     }
 
 

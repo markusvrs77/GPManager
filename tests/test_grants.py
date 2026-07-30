@@ -116,6 +116,20 @@ def test_build_graph_nodes_and_links():
     assert small["tables_shown"] == 1
     assert small["tables_total"] == 2
 
+    # агрегированные связи «пользователь -> схема» считаются по всем
+    # таблицам, а не только по попавшим в детальный режим
+    agg = {(l["source"], l["target"]): l for l in small["user_schema_links"]}
+    admin_dwh = agg[("user:gp_admin", "schema:dwh")]
+    assert admin_dwh["tables"] == 1
+    assert admin_dwh["write_tables"] == 1 and admin_dwh["write"] is True
+
+    admin_stg = agg[("user:gp_admin", "schema:stg")]
+    assert admin_stg["tables"] == 1 and admin_stg["write"] is False
+    assert agg[("user:s.ivanov", "schema:dwh")]["write_tables"] == 0
+
+    # схемы отдаются полным списком (для агрегированного режима)
+    assert {n["label"] for n in small["schema_nodes"]} == {"dwh", "stg"}
+
 
 def test_build_overview_end_to_end():
     raw = {
