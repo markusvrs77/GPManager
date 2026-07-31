@@ -224,15 +224,34 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
   letter-spacing: .04em; }
 
 /* --- поток (sankey) --- */
-#grFlow { padding: 8px 6px 14px; overflow-x: auto; }
-#grFlow svg { display: block; width: 100%; height: auto; }
-#grFlow .lk { fill: none; transition: stroke-opacity var(--dur-fast); }
+.gr-flow-body { display: grid; grid-template-columns: minmax(0, 1fr) 268px; }
+@media (max-width: 1100px) {
+  .gr-flow-body { grid-template-columns: minmax(0, 1fr); }
+}
+#grFlow { padding: 8px 6px 14px; overflow: auto; max-height: 74vh; }
+.gr-flow-body .gr-side { overflow: auto; max-height: 74vh; }
+#grFlow svg { display: block; }
+#grFlow .lk { stroke: none; transition: fill-opacity var(--dur-fast); }
+#grFlow .nd { cursor: pointer; }
 #grFlow .nd rect { rx: 3; }
-#grFlow .nd text { font-size: 11px; fill: #cbd5e1; }
-#grFlow .nd.dim rect, #grFlow .nd.dim text { opacity: .3; }
-#grFlow .nd text.val { fill: var(--text-muted); font-size: 10px; }
+#grFlow .nd text { font-size: 10.5px; fill: #cbd5e1; }
+#grFlow .nd.dim rect, #grFlow .nd.dim text { opacity: .25; }
+#grFlow .nd.on rect { stroke: #e2e8f0; stroke-width: 1.6; }
+#grFlow .nd.on text { fill: #fff; font-weight: 700; }
+#grFlow .nd text.val { fill: var(--text-muted); font-size: 9.5px; }
+#grFlow .nd text.su { fill: #f97066; }
 #grFlow .col-title { font-size: 10px; font-weight: 800; letter-spacing: .09em;
   fill: var(--text-muted); text-transform: uppercase; }
+.gr-flow-act { display: inline-block; margin: 6px 6px 0 0; padding: 3px 9px;
+  border-radius: var(--radius-pill); cursor: pointer; font-size: 11.5px;
+  border: 1px solid color-mix(in srgb, var(--a1) 45%, transparent);
+  color: var(--a2); }
+.gr-flow-act:hover { background: color-mix(in srgb, var(--a1) 16%, transparent); }
+.gr-flow-brk { margin-top: 8px; font-size: 11.5px; }
+.gr-flow-brk div { display: flex; gap: 8px; padding: 2px 0;
+  border-bottom: 1px solid var(--hairline); cursor: pointer; }
+.gr-flow-brk div:hover { color: var(--a2); }
+.gr-flow-brk b { margin-left: auto; font-variant-numeric: tabular-nums; }
 </style>
 
 <div class="gr">
@@ -305,12 +324,24 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
 
     <div class="gr-panel" id="grFlowPanel" style="display: none;">
         <div class="gr-mx-bar">
-            <span class="gr-mx-crumb">пользователь → через что → схема</span>
-            <span class="gr-mx-hint">толщина потока — число таблиц;
-                наведи на узел, чтобы подсветить его путь</span>
+            <span class="gr-mx-crumb" id="grFlowCrumb">пользователь →
+                через что → схема</span>
+            <label class="gr-mx-sw" for="grFlowWrite">
+                <input type="checkbox" id="grFlowWrite"
+                       class="form-check-input"> только права записи</label>
+            <span class="gr-mx-hint">клик по узлу — фокус на его потоке;
+                толщина — число таблиц, жёлтым — права записи</span>
             <span class="gr-mx-note" id="grFlowNote"></span>
         </div>
-        <div id="grFlow"><div class="gr-empty">Загрузка…</div></div>
+        <div class="gr-flow-body">
+            <div id="grFlow"><div class="gr-empty">Загрузка…</div></div>
+            <div class="gr-side">
+                <h6>Узел <span class="rst" id="grFlowReset">сброс</span></h6>
+                <div class="gr-selbox" id="grFlowSel">кликни по узлу —
+                    покажу, из чего складывается его поток, и открою его
+                    в матрице, графе или списке</div>
+            </div>
+        </div>
     </div>
 
     <div class="gr-panel" id="grGraphPanel" style="display: none;">
@@ -349,7 +380,8 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
                 <h6 style="margin-top: 4px;">Силы</h6>
                 <div class="gr-rng"><label>Отталкивание <span id="grVRep">260</span></label>
                     <input type="range" id="grRep" min="40" max="900" value="260"></div>
-                <div class="gr-rng"><label>Длина связи <span id="grVOrb">200</span></label>
+                <div class="gr-rng"><label>Разлёт объектов
+                    <span id="grVOrb">200</span></label>
                     <input type="range" id="grOrb" min="60" max="500" value="200"></div>
                 <div class="gr-rng"><label>Круг схемы <span id="grVSpr">160</span></label>
                     <input type="range" id="grSpr" min="40" max="500" value="160"></div>
@@ -823,6 +855,9 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
         var schemas = G.nodes.filter(function (n) { return n.type === "schema"; });
         var tables = G.nodes.filter(function (n) { return n.type === "table"; });
 
+        // свободу раздаём заново на каждой перекладке
+        G.nodes.forEach(function (n) { n.free = false; });
+
         // «главная» схема пользователя — по ней сортируем колонку, чтобы
         // связи шли почти горизонтально и меньше пересекались
         var mainSchema = {};
@@ -934,7 +969,10 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
                 detail ? maxOrbit * 2 + 60 : 170);
 
         if (detail && tables.length) {
-            // таблицы — справа, блоком возле своей схемы
+            // объекты живут свободно, как в первой версии графа: «дом» —
+            // центр своей схемы, а конкретное место находит физика.
+            // Так таблицы не слипаются в плотный узор, а расходятся
+            // ровно настолько, насколько им хватает места.
             var bySchema = {};
 
             tables.forEach(function (t) {
@@ -947,18 +985,20 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
                 var cx = s ? s.homeX : 0;
                 var cy = s ? s.homeY : 0;
                 var total = list.length;
-
-                // таблицы — вокруг своей схемы, в её круге (радиус
-                // регулируется ползунком «Круг схемы»)
                 var R = (s && s.orbitR) || orbit;
 
                 list.forEach(function (t, i) {
                     var ang = i * 2.39996;                 // золотой угол
-                    var rad = R * (0.3 + 0.7 *
+                    var rad = R * (0.35 + 0.65 *
                         Math.sqrt((i + 0.5) / total));
 
-                    t.homeX = cx + Math.cos(ang) * rad;
-                    t.homeY = cy + Math.sin(ang) * rad;
+                    t.homeX = cx;
+                    t.homeY = cy;
+                    t.orbit = R;
+                    t.free = true;
+                    // стартовое облако вокруг схемы — дальше физика
+                    t.startX = cx + Math.cos(ang) * rad;
+                    t.startY = cy + Math.sin(ang) * rad;
                 });
             });
         }
@@ -971,11 +1011,12 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
                 n.homeX = p[0];
                 n.homeY = p[1];
                 n.moved = true;
+                n.free = false;        // куда поставили — там и стоит
             }
 
             if (!n.spawned) {
-                n.x = n.homeX;
-                n.y = n.homeY;
+                n.x = n.startX === undefined ? n.homeX : n.startX;
+                n.y = n.startY === undefined ? n.homeY : n.startY;
                 n.spawned = true;
             }
 
@@ -1014,29 +1055,49 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
     var MAX_V = 9;          // ограничение скорости — иначе граф «взрывает»
     var BOUND = 1400;       // мягкая граница полотна
 
-    // раскладка задана колонками: узлы мягко держатся «дома», слегка
-    // дышат и расталкиваются, если наехали друг на друга. Без стягивания
-    // к центру — структура не разъезжается.
+    // пользователи и схемы держатся своих колонок, объекты — свободны:
+    // их тянет к своей схеме и расталкивает друг от друга, как в первой
+    // версии графа. Без стягивания к центру — структура не разъезжается.
     function step() {
         var nodes = G.nodes;
+        var o = graphOpts();
         var t = Date.now() / 1000;
-        var i, j, a, b, dx, dy, dist, minDist;
+        var rep = o.rep * 1.1;                  // сила отталкивания
+        var reach = Math.max(70, o.orb);        // дальность разлёта
+        var i, j, a, b, dx, dy, dist, minDist, f;
 
         for (i = 0; i < nodes.length; i++) {
             a = nodes[i];
 
             if (G.drag === a) { continue; }
 
-            // пружина к своей позиции
-            a.vx += (a.homeX - a.x) * 0.035;
-            a.vy += (a.homeY - a.y) * 0.035;
+            if (a.free) {
+                // объект держится своей схемы на расстоянии её круга,
+                // но точное место выбирает сам
+                dx = a.homeX - a.x;
+                dy = a.homeY - a.y;
+                dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+                f = (dist - (a.orbit || 60)) * 0.014;
 
-            // «дыхание»: медленное живое колебание
-            a.vx += Math.cos(t * 0.6 + a.phase) * 0.06;
-            a.vy += Math.sin(t * 0.5 + a.phase * 1.3) * 0.06;
+                a.vx += dx / dist * f;
+                a.vy += dy / dist * f;
+
+                // живое блуждание — граф всё время слегка движется
+                a.vx += Math.cos(t * 0.85 + a.phase) * 0.17;
+                a.vy += Math.sin(t * 0.67 + a.phase * 1.7) * 0.17;
+            } else {
+                // пружина к своей позиции в колонке
+                a.vx += (a.homeX - a.x) * 0.035;
+                a.vy += (a.homeY - a.y) * 0.035;
+
+                // «дыхание»: медленное живое колебание
+                a.vx += Math.cos(t * 0.6 + a.phase) * 0.1;
+                a.vy += Math.sin(t * 0.5 + a.phase * 1.3) * 0.1;
+            }
         }
 
-        // расталкивание только при реальном наложении
+        // свободные объекты расходятся на расстоянии, колонки — только
+        // при реальном наложении
         for (i = 0; i < nodes.length; i++) {
             a = nodes[i];
 
@@ -1045,6 +1106,21 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
                 dx = b.x - a.x;
                 dy = b.y - a.y;
                 dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+
+                if ((a.free || b.free) && dist < reach) {
+                    f = Math.min(1.7, rep / (dist * dist));
+
+                    if (a.free && G.drag !== a) {
+                        a.vx -= dx / dist * f;
+                        a.vy -= dy / dist * f;
+                    }
+
+                    if (b.free && G.drag !== b) {
+                        b.vx += dx / dist * f;
+                        b.vy += dy / dist * f;
+                    }
+                }
+
                 minDist = (a.type === "table" && b.type === "table") ? 15 : 26;
 
                 if (dist >= minDist) { continue; }
@@ -1062,8 +1138,8 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
         nodes.forEach(function (n) {
             if (G.drag === n) { return; }
 
-            n.vx *= 0.84;
-            n.vy *= 0.84;
+            n.vx *= n.free ? 0.9 : 0.84;
+            n.vy *= n.free ? 0.9 : 0.84;
 
             var v = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
 
@@ -1863,6 +1939,108 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
 
     /* ---------------- поток (sankey) ---------------- */
 
+    // FL.focus — узел, на потоке которого сфокусировались (клик),
+    // FL.sel — узел, разобранный в боковой панели
+    var FL = { focus: null, sel: null, pos: {}, links: [] };
+
+    function switchView(v) {
+        var chip = document.querySelector('#grView [data-v="' + v + '"]');
+
+        if (chip) { chip.click(); }
+    }
+
+    function flowNode(id) {
+        var s = state.data && state.data.sankey;
+        var found = null;
+
+        ((s && s.nodes) || []).forEach(function (n) {
+            if (n.id === id) { found = n; }
+        });
+
+        return found;
+    }
+
+    // связи после фильтров: «только запись» и фокус на узле
+    function flowLinks() {
+        var s = state.data && state.data.sankey;
+        var writeOnly = $("grFlowWrite").checked;
+        var links = ((s && s.links) || []).map(function (l) {
+            return {
+                source: l.source,
+                target: l.target,
+                value: writeOnly ? (l.write || 0) : l.value,
+                total: l.value,
+                write: l.write || 0
+            };
+        }).filter(function (l) { return l.value > 0; });
+
+        if (!FL.focus) { return links; }
+
+        var id = FL.focus;
+        var kind = id.charAt(0);
+        var via = {};
+
+        if (kind === "u") {
+            links.forEach(function (l) {
+                if (l.source === id) { via[l.target] = true; }
+            });
+
+            return links.filter(function (l) {
+                return l.source === id ||
+                    (l.source.charAt(0) === "r" && via[l.source]);
+            });
+        }
+
+        if (kind === "r") {
+            return links.filter(function (l) {
+                return l.source === id || l.target === id;
+            });
+        }
+
+        links.forEach(function (l) {
+            if (l.target === id) { via[l.source] = true; }
+        });
+
+        return links.filter(function (l) {
+            return l.target === id ||
+                (l.target.charAt(0) === "r" && via[l.target]);
+        });
+    }
+
+    function flowMix(ratio) {
+        var a = [99, 102, 241];
+        var b = [245, 158, 11];
+
+        return "rgb(" + a.map(function (v, i) {
+            return Math.round(v + (b[i] - v) * Math.max(0, Math.min(1, ratio)));
+        }).join(",") + ")";
+    }
+
+    function flowCrumb(shownUsers, shownTables) {
+        var crumb = $("grFlowCrumb");
+
+        if (FL.focus) {
+            var n = flowNode(FL.focus);
+
+            crumb.className = "gr-mx-crumb back";
+            crumb.textContent = "← весь поток · фокус: " +
+                (n ? n.label : FL.focus.slice(2));
+            crumb.onclick = function () {
+                FL.focus = null;
+                renderFlow();
+            };
+        } else {
+            crumb.className = "gr-mx-crumb";
+            crumb.textContent = "пользователь → через что → схема";
+            crumb.onclick = null;
+        }
+
+        $("grFlowNote").textContent = fmtN(shownUsers) +
+            (FL.focus ? " пользователей в потоке · " : " пользователей · ") +
+            fmtN(shownTables) +
+            (FL.focus ? " прав в фокусе" : " прав на таблицы");
+    }
+
     function renderFlow() {
         var box = $("grFlow");
         var s = state.data && state.data.sankey;
@@ -1872,114 +2050,157 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
             return;
         }
 
-        var W = Math.max(760, box.clientWidth || 900);
-        var PAD = 18;
-        var NODE_W = 13;
-        var GAP = 6;
-        var colX = [PAD + 130, W / 2 - NODE_W / 2, W - PAD - 130 - NODE_W];
+        var links = flowLinks();
 
-        // высота пропорциональна суммарному объёму в самой «толстой» колонке
+        if (!links.length) {
+            box.innerHTML = '<div class="gr-empty">Под фильтр ничего ' +
+                "не подходит.</div>";
+            flowCrumb(0, 0);
+            return;
+        }
+
+        // объёмы узлов считаем по отфильтрованным связям
+        var outV = {}, inV = {}, outW = {}, inW = {};
+
+        links.forEach(function (l) {
+            outV[l.source] = (outV[l.source] || 0) + l.value;
+            inV[l.target] = (inV[l.target] || 0) + l.value;
+            outW[l.source] = (outW[l.source] || 0) + l.write;
+            inW[l.target] = (inW[l.target] || 0) + l.write;
+        });
+
+        function pick(id, a, b) {
+            var kind = id.charAt(0);
+
+            if (kind === "u") { return a[id] || 0; }
+            if (kind === "s") { return b[id] || 0; }
+
+            return Math.max(a[id] || 0, b[id] || 0);
+        }
+
         var byCol = [[], [], []];
 
-        s.nodes.forEach(function (n) { byCol[n.column].push(n); });
-        byCol.forEach(function (list) {
-            list.sort(function (a, b) { return b.value - a.value; });
+        s.nodes.forEach(function (n) {
+            var v = pick(n.id, outV, inV);
+
+            if (v <= 0) { return; }
+
+            byCol[n.column].push({
+                id: n.id, label: n.label, column: n.column, value: v,
+                write: pick(n.id, outW, inW), superuser: n.superuser,
+                direct: n.direct, users: n.users
+            });
         });
+
+        byCol.forEach(function (list) {
+            list.sort(function (a, b) {
+                return b.value - a.value || a.label.localeCompare(b.label);
+            });
+        });
+
+        var NODE_W = 13, GAP = 5, MIN_H = 13, MAX_H = 320, TOP = 34;
+        var LBL = 200;
+        var W = Math.max(900, (box.clientWidth || 920) - 26);
+        var colX = [LBL, W / 2 - NODE_W / 2, W - LBL - NODE_W];
 
         var maxSum = Math.max.apply(null, byCol.map(function (list) {
             return list.reduce(function (a, n) { return a + n.value; }, 0);
         }));
-        var maxCount = Math.max.apply(null, byCol.map(function (l) {
-            return l.length;
-        }));
-
-        var H = Math.max(360, Math.min(760, maxCount * 26));
-        var usable = H - 40 - (maxCount - 1) * GAP;
-        var k = usable / Math.max(1, maxSum);
-
+        // масштаб «чернил»: узлы не тоньше MIN_H, чтобы у каждого
+        // пользователя осталась читаемая подпись
+        var k = Math.min(20, 1100 / Math.max(1, maxSum));
         var pos = {};
+        var H = 0;
 
         byCol.forEach(function (list, ci) {
-            var y = 34;
+            var y = TOP;
 
             list.forEach(function (n) {
-                var h = Math.max(3, n.value * k);
+                // MIN_H — чтобы подпись читалась даже у мелкого узла,
+                // MAX_H — чтобы один крупный не занял весь экран
+                var h = Math.min(MAX_H, Math.max(MIN_H, n.value * k));
 
                 pos[n.id] = { x: colX[ci], y: y, h: h, node: n };
                 y += h + GAP;
             });
+
+            H = Math.max(H, y);
         });
 
-        // раскладываем связи по узлам (сверху вниз, по объёму)
-        var outAt = {};
-        var inAt = {};
-        var paths = [];
+        H = Math.max(340, H + 14);
 
-        s.links.slice().sort(function (a, b) {
-            return b.value - a.value;
-        }).forEach(function (l) {
+        // ленты: толщина у каждого конца — доля связи в объёме узла
+        var outAt = {}, inAt = {};
+        var paths = links.filter(function (l) {
+            return pos[l.source] && pos[l.target];
+        }).sort(function (a, b) {
+            return (pos[a.source].y - pos[b.source].y) ||
+                (pos[a.target].y - pos[b.target].y);
+        }).map(function (l) {
             var a = pos[l.source];
             var b = pos[l.target];
+            var ha = a.h * l.value / Math.max(1, outV[l.source]);
+            var hb = b.h * l.value / Math.max(1, inV[l.target]);
+            var ay = a.y + (outAt[l.source] || 0);
+            var by = b.y + (inAt[l.target] || 0);
 
-            if (!a || !b) { return; }
-
-            var th = Math.max(1, l.value * k);
-            var ay = (outAt[l.source] = (outAt[l.source] || 0)) + a.y;
-            var by = (inAt[l.target] = (inAt[l.target] || 0)) + b.y;
-
-            outAt[l.source] += th;
-            inAt[l.target] += th;
+            outAt[l.source] = (outAt[l.source] || 0) + ha;
+            inAt[l.target] = (inAt[l.target] || 0) + hb;
 
             var x1 = a.x + NODE_W;
             var x2 = b.x;
             var mx = (x1 + x2) / 2;
-            var direct = (l.source.indexOf("r:напрямую") === 0) ||
-                (l.target === "r:напрямую");
+            var ratio = l.total ? l.write / l.total : 0;
 
-            paths.push('<path class="lk" data-a="' + esc(l.source) +
-                '" data-b="' + esc(l.target) + '" d="M' + x1 + "," +
-                (ay + th / 2) + " C" + mx + "," + (ay + th / 2) + " " +
-                mx + "," + (by + th / 2) + " " + x2 + "," + (by + th / 2) +
-                '" stroke="' + (direct ? "rgba(148,163,184,.45)"
-                                       : "rgba(139,92,246,.45)") +
-                '" stroke-width="' + th + '" stroke-opacity="0.5">' +
-                "<title>" + esc(l.source.slice(2)) + " → " +
-                esc(l.target.slice(2)) + ": " + fmtN(l.value) +
-                " таблиц</title></path>");
+            return '<path class="lk" data-a="' + esc(l.source) +
+                '" data-b="' + esc(l.target) + '" fill="' + flowMix(ratio) +
+                '" fill-opacity="0.34" d="M' + x1 + "," + ay +
+                " C" + mx + "," + ay + " " + mx + "," + by + " " + x2 + "," +
+                by + " L" + x2 + "," + (by + hb) +
+                " C" + mx + "," + (by + hb) + " " + mx + "," + (ay + ha) +
+                " " + x1 + "," + (ay + ha) + ' Z">' +
+                "<title>" + esc(a.node.label) + " → " + esc(b.node.label) +
+                ": " + fmtN(l.total) + " таблиц" +
+                (l.write ? ", из них с записью " + fmtN(l.write) : "") +
+                "</title></path>";
         });
 
         function nodeSvg(id) {
             var p = pos[id];
             var n = p.node;
-            var fill = n.column === 0 ? "#8b5cf6"
+            var fill = n.column === 0
+                ? (n.superuser ? "#f97066" : "#8b5cf6")
                 : (n.column === 1 ? (n.direct ? "#64748b" : "#6366f1")
                                   : "#475569");
-            var anchor = n.column === 2 ? "start" : (n.column === 0
-                ? "end" : "middle");
+            var anchor = n.column === 2 ? "start"
+                : (n.column === 0 ? "end" : "middle");
             var tx = n.column === 2 ? p.x + NODE_W + 7
                 : (n.column === 0 ? p.x - 7 : p.x + NODE_W / 2);
             var ty = p.y + p.h / 2;
+            var short = n.label.length > 26
+                ? n.label.slice(0, 25) + "…" : n.label;
 
-            // у тонких узлов подпись не рисуем — иначе каша; текст
-            // остаётся во всплывающей подсказке
-            var label = p.h >= 9
-                ? '<text x="' + tx + '" y="' + ty + '" text-anchor="' + anchor +
-                  '" dominant-baseline="middle">' + esc(n.label) +
-                  ' <tspan class="val">· ' + fmtN(n.value) + "</tspan></text>"
-                : "";
-
-            return '<g class="nd" data-id="' + esc(id) + '">' +
+            return '<g class="nd' + (FL.sel === id ? " on" : "") +
+                '" data-id="' + esc(id) + '">' +
                 '<rect x="' + p.x + '" y="' + p.y + '" width="' + NODE_W +
                 '" height="' + p.h + '" fill="' + fill + '">' +
                 "<title>" + esc(n.label) + " · " + fmtN(n.value) +
-                " таблиц</title></rect>" + label + "</g>";
+                " таблиц" + (n.write ? " · с записью " + fmtN(n.write) : "") +
+                "</title></rect>" +
+                '<text x="' + tx + '" y="' + ty + '" text-anchor="' + anchor +
+                '" dominant-baseline="middle">' +
+                (n.superuser ? '<tspan class="su">★ </tspan>' : "") +
+                esc(short) + ' <tspan class="val">· ' + fmtN(n.value) +
+                "</tspan></text></g>";
         }
 
-        $("grFlowNote").textContent = fmtN(s.users_total) +
-            " пользователей · " + fmtN(s.schemas_total) + " схем";
+        var shownUsers = byCol[0].length;
+        var shownTables = byCol[0].reduce(function (a, n) {
+            return a + n.value;
+        }, 0);
 
-        box.innerHTML = '<svg viewBox="0 0 ' + W + " " + H +
-            '" preserveAspectRatio="xMidYMid meet">' +
+        box.innerHTML = '<svg width="' + W + '" height="' + H +
+            '" viewBox="0 0 ' + W + " " + H + '">' +
             '<text class="col-title" x="' + (colX[0] - 7) +
             '" y="16" text-anchor="end">пользователь</text>' +
             '<text class="col-title" x="' + (colX[1] + NODE_W / 2) +
@@ -1989,41 +2210,166 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
             paths.join("") +
             Object.keys(pos).map(nodeSvg).join("") + "</svg>";
 
-        // подсветка пути при наведении на узел
+        FL.pos = pos;
+        FL.links = links;
+        // в фокусе честнее показывать объём самого узла: левая колонка
+        // при фокусе на схеме отражает весь трафик пользователей через
+        // эти роли, а не только тот, что дошёл до схемы
+        flowCrumb(shownUsers, FL.focus && pos[FL.focus]
+            ? pos[FL.focus].node.value : shownTables);
+        bindFlowNodes(box);
+        renderFlowSel();
+    }
+
+    function bindFlowNodes(box) {
         var svg = box.querySelector("svg");
 
-        svg.querySelectorAll(".nd").forEach(function (g) {
-            g.addEventListener("mouseenter", function () {
-                var id = g.getAttribute("data-id");
+        if (!svg) { return; }
 
+        svg.querySelectorAll(".nd").forEach(function (g) {
+            var id = g.getAttribute("data-id");
+
+            g.addEventListener("click", function () {
+                // повторный клик по тому же узлу снимает фокус
+                if (FL.focus === id) {
+                    FL.focus = null;
+                    FL.sel = null;
+                } else {
+                    FL.focus = id;
+                    FL.sel = id;
+                }
+
+                renderFlow();
+            });
+
+            g.addEventListener("mouseenter", function () {
                 svg.querySelectorAll(".lk").forEach(function (p) {
                     var on = p.getAttribute("data-a") === id ||
                         p.getAttribute("data-b") === id;
-                    p.setAttribute("stroke-opacity", on ? "0.85" : "0.08");
+
+                    p.setAttribute("fill-opacity", on ? "0.75" : "0.06");
+                });
+
+                var near = {};
+
+                svg.querySelectorAll(".lk").forEach(function (p) {
+                    if (p.getAttribute("data-a") === id) {
+                        near[p.getAttribute("data-b")] = true;
+                    }
+                    if (p.getAttribute("data-b") === id) {
+                        near[p.getAttribute("data-a")] = true;
+                    }
                 });
 
                 svg.querySelectorAll(".nd").forEach(function (other) {
                     var oid = other.getAttribute("data-id");
-                    var linked = oid === id ||
-                        Array.prototype.some.call(
-                            svg.querySelectorAll(".lk"), function (p) {
-                                return (p.getAttribute("data-a") === id &&
-                                        p.getAttribute("data-b") === oid) ||
-                                    (p.getAttribute("data-b") === id &&
-                                     p.getAttribute("data-a") === oid);
-                            });
-                    other.classList.toggle("dim", !linked);
+
+                    other.classList.toggle("dim", oid !== id && !near[oid]);
                 });
             });
 
             g.addEventListener("mouseleave", function () {
                 svg.querySelectorAll(".lk").forEach(function (p) {
-                    p.setAttribute("stroke-opacity", "0.5");
+                    p.setAttribute("fill-opacity", "0.34");
                 });
                 svg.querySelectorAll(".nd").forEach(function (other) {
                     other.classList.remove("dim");
                 });
             });
+        });
+    }
+
+    // боковая панель: из чего складывается поток выбранного узла
+    function renderFlowSel() {
+        var box = $("grFlowSel");
+        var id = FL.sel;
+
+        if (!id) {
+            box.innerHTML = "кликни по узлу — покажу, из чего складывается " +
+                "его поток, и открою его в матрице, графе или списке";
+            return;
+        }
+
+        var n = flowNode(id);
+
+        if (!n) { box.innerHTML = "узел не найден"; return; }
+
+        var kind = id.charAt(0);
+        var parts = [];
+
+        FL.links.forEach(function (l) {
+            if (l.source === id) {
+                parts.push({ id: l.target, value: l.value, write: l.write });
+            } else if (l.target === id) {
+                parts.push({ id: l.source, value: l.value, write: l.write });
+            }
+        });
+
+        parts.sort(function (a, b) { return b.value - a.value; });
+
+        var kindName = kind === "u" ? "пользователь"
+            : (kind === "r" ? (n.direct ? "прямая выдача" : "роль") : "схема");
+        var total = parts.reduce(function (a, p) { return a + p.value; }, 0);
+        var write = parts.reduce(function (a, p) { return a + p.write; }, 0);
+
+        var acts = "";
+
+        if (kind === "u") {
+            acts = '<span class="gr-flow-act" data-act="graph">в графе</span>' +
+                '<span class="gr-flow-act" data-act="list">в списке</span>';
+        } else if (kind === "s") {
+            acts = '<span class="gr-flow-act" data-act="matrix">' +
+                "открыть схему в матрице</span>";
+        } else {
+            acts = '<span class="gr-flow-act" data-act="list">' +
+                "найти в списке</span>";
+        }
+
+        box.innerHTML = "<b>" + esc(n.label) + "</b>" +
+            (n.superuser ? ' <span style="color: #f97066;">superuser</span>'
+                         : "") +
+            "<br>" + kindName + "<br>" +
+            "прав на таблицы: <b>" + fmtN(total) + "</b>" +
+            (write ? ", с записью: <b>" + fmtN(write) + "</b>" : "") +
+            (kind === "r" && n.users
+                ? "<br>пользователей: <b>" + fmtN(n.users) + "</b>" : "") +
+            acts +
+            '<div class="gr-flow-brk">' +
+            parts.slice(0, 24).map(function (p) {
+                var other = flowNode(p.id);
+
+                return '<div data-go="' + esc(p.id) + '"><span>' +
+                    esc(other ? other.label : p.id.slice(2)) +
+                    "</span><b>" + fmtN(p.value) + "</b></div>";
+            }).join("") +
+            (parts.length > 24
+                ? "<div>…и ещё " + (parts.length - 24) + "</div>" : "") +
+            "</div>";
+
+        box.querySelectorAll("[data-go]").forEach(function (row) {
+            row.onclick = function () {
+                FL.focus = row.getAttribute("data-go");
+                FL.sel = FL.focus;
+                renderFlow();
+            };
+        });
+
+        box.querySelectorAll("[data-act]").forEach(function (btn) {
+            btn.onclick = function () {
+                var act = btn.getAttribute("data-act");
+
+                if (act === "graph") {
+                    focusUserInGraph(n.label);
+                } else if (act === "list") {
+                    $("grQ").value = n.label;
+                    state.q = n.label;
+                    renderList();
+                    switchView("list");
+                } else if (act === "matrix") {
+                    switchView("matrix");
+                    openSchemaMatrix(n.label);
+                }
+            };
         });
     }
 
@@ -2072,6 +2418,8 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
                 state.data = d;
                 state.openUsers = {};
                 state.openTables = {};
+                FL.focus = null;
+                FL.sel = null;
                 renderCards();
                 renderList();
 
@@ -2153,6 +2501,17 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
                 if (state.view === "matrix") { renderMatrix(); }
             }, 200);
         });
+
+        $("grFlowWrite").addEventListener("change", function () {
+            renderFlow();
+        });
+
+        $("grFlowReset").onclick = function () {
+            FL.focus = null;
+            FL.sel = null;
+            $("grFlowWrite").checked = false;
+            renderFlow();
+        };
 
         ["grMxRoles", "grMxSeriate"].forEach(function (id) {
             $(id).addEventListener("change", function () {

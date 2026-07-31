@@ -249,16 +249,26 @@ def group_by_access_profile(agg):
     return out
 
 
-def build_sankey(user_src, src_schema, top_users=18, top_schemas=12):
+def build_sankey(user_src, src_schema, top_users=None, top_schemas=None,
+                 user_src_write=None, src_schema_write=None,
+                 superusers=None):
     """
     Поток прав: пользователь -> роль (или «напрямую») -> схема.
-    Толщина = число таблиц. Мелкие узлы сворачиваются в «прочие»,
-    поэтому диаграмма читается на любом числе пользователей.
+    Толщина = число таблиц, отдельно считается доля прав записи.
+    По умолчанию в диаграмму попадают ВСЕ пользователи и схемы; если
+    передать top_users / top_schemas, мелкие узлы свернутся в «прочие».
     Чистая функция.
 
-    user_src:   {(user, source): tables}
-    src_schema: {(source, schema): tables}
+    user_src:         {(user, source): tables}
+    src_schema:       {(source, schema): tables}
+    user_src_write:   то же, но только таблицы с правом записи
+    src_schema_write: то же, но только таблицы с правом записи
+    superusers:       множество имён superuser-ролей (пометка узлов)
     """
+    user_src_write = user_src_write or {}
+    src_schema_write = src_schema_write or {}
+    supers = set(superusers or ())
+
     def top_keys(totals, limit):
         ranked = sorted(totals.items(), key=lambda kv: (-kv[1], kv[0]))
         return set(k for k, _v in ranked[:limit])
@@ -272,42 +282,59 @@ def build_sankey(user_src, src_schema, top_users=18, top_schemas=12):
     for (_src, schema), n in src_schema.items():
         schema_totals[schema] = schema_totals.get(schema, 0) + n
 
-    keep_users = top_keys(user_totals, top_users)
-    keep_schemas = top_keys(schema_totals, top_schemas)
+    keep_users = top_keys(user_totals, top_users) if top_users else None
+    keep_schemas = (top_keys(schema_totals, top_schemas)
+                    if top_schemas else None)
 
     OTHER_U = "прочие пользователи"
     OTHER_S = "прочие схемы"
 
     left = {}
+    left_w = {}
     right = {}
+    right_w = {}
 
     for (user, src), n in user_src.items():
-        key = (user if user in keep_users else OTHER_U, src)
+        name = user if keep_users is None or user in keep_users else OTHER_U
+        key = (name, src)
         left[key] = left.get(key, 0) + n
+        left_w[key] = left_w.get(key, 0) + user_src_write.get((user, src), 0)
 
     for (src, schema), n in src_schema.items():
-        key = (src, schema if schema in keep_schemas else OTHER_S)
+        sch = (schema if keep_schemas is None or schema in keep_schemas
+               else OTHER_S)
+        key = (src, sch)
         right[key] = right.get(key, 0) + n
+        right_w[key] = right_w.get(key, 0) + src_schema_write.get(
+            (src, schema), 0)
 
     sources = sorted(set([s for _u, s in left] + [s for s, _c in right]))
 
+    def total(pairs, idx, key):
+        return sum(n for k, n in pairs.items() if k[idx] == key)
+
     nodes = (
         [{"id": "u:" + u, "label": u, "column": 0,
-          "value": sum(n for (uu, _s), n in left.items() if uu == u)}
+          "value": total(left, 0, u), "write": total(left_w, 0, u),
+          "superuser": u in supers,
+          "sources": sorted(set(s for uu, s in left if uu == u))}
          for u in sorted(set(u for u, _s in left))] +
         [{"id": "r:" + s, "label": s, "column": 1,
-          "value": sum(n for (ss, _c), n in right.items() if ss == s),
+          "value": total(right, 0, s), "write": total(right_w, 0, s),
+          "users": len(set(u for u, ss in left if ss == s)),
           "direct": s == "напрямую"}
          for s in sources] +
         [{"id": "s:" + c, "label": c, "column": 2,
-          "value": sum(n for (_s, cc), n in right.items() if cc == c)}
+          "value": total(right, 1, c), "write": total(right_w, 1, c)}
          for c in sorted(set(c for _s, c in right))]
     )
 
     links = (
-        [{"source": "u:" + u, "target": "r:" + s, "value": n}
+        [{"source": "u:" + u, "target": "r:" + s, "value": n,
+          "write": left_w.get((u, s), 0)}
          for (u, s), n in sorted(left.items(), key=lambda kv: -kv[1])] +
-        [{"source": "r:" + s, "target": "s:" + c, "value": n}
+        [{"source": "r:" + s, "target": "s:" + c, "value": n,
+          "write": right_w.get((s, c), 0)}
          for (s, c), n in sorted(right.items(), key=lambda kv: -kv[1])]
     )
 
@@ -316,6 +343,7 @@ def build_sankey(user_src, src_schema, top_users=18, top_schemas=12):
         "links": links,
         "users_total": len(user_totals),
         "schemas_total": len(schema_totals),
+        "tables_total": sum(user_totals.values()),
     }
 
 
@@ -572,6 +600,10 @@ def build_overview(raw):
     # потоки для sankey: пользователь -> источник (роль/напрямую) -> схема
     flow_user_src = {}
     flow_src_schema = {}
+    # те же потоки, но только права записи — чтобы в диаграмме была видна
+    # доля «опасного» трафика, а не только объём
+    flow_user_src_w = {}
+    flow_src_schema_w = {}
 
     for name in sorted(set(list(effective) + list(role_info))):
         info = role_info.get(name) or {}
@@ -613,8 +645,9 @@ def build_overview(raw):
             key = (name, t["schema"])
             e = agg_full.setdefault(key, {"tables": 0, "write_tables": 0})
             e["tables"] += 1
+            is_write = any(p in WRITE_PRIVS for p in t["privileges"])
 
-            if any(p in WRITE_PRIVS for p in t["privileges"]):
+            if is_write:
                 e["write_tables"] += 1
 
             schema_tables_full.setdefault(t["schema"], set()).add(t["table"])
@@ -627,6 +660,10 @@ def build_overview(raw):
                 flow_user_src[fk] = flow_user_src.get(fk, 0) + 1
                 sk = (src, t["schema"])
                 flow_src_schema[sk] = flow_src_schema.get(sk, 0) + 1
+
+                if is_write:
+                    flow_user_src_w[fk] = flow_user_src_w.get(fk, 0) + 1
+                    flow_src_schema_w[sk] = flow_src_schema_w.get(sk, 0) + 1
 
         tables.sort(key=lambda t: (-t["rows"], t["schema"], t["table"]))
         # реальное число объектов до обрезки — чтобы в UI не было
@@ -704,7 +741,16 @@ def build_overview(raw):
         "users": users,
         "matrix_order": {"rows": row_order, "cols": col_order},
         "role_groups": group_by_access_profile(agg_full),
-        "sankey": build_sankey(flow_user_src, flow_src_schema),
+        # в поток идут ВСЕ пользователи (без «прочих») — иначе половина
+        # связей прячется именно там, где её надо разбирать
+        "sankey": build_sankey(
+            flow_user_src, flow_src_schema,
+            user_src_write=flow_user_src_w,
+            src_schema_write=flow_src_schema_w,
+            superusers=set(
+                n for n, i in role_info.items() if i.get("rolsuper")
+            ),
+        ),
         "graph": build_graph(
             [u for u in users if u["tables_count"]],
             agg=agg_full, schema_tables=schema_tables_full,

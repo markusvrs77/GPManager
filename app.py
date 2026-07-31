@@ -603,11 +603,8 @@ def api_stop_job(job_id):
                 "message": "Job not found",
             }), 404
 
-        status = (
-            job.get("status")
-            if isinstance(job, dict)
-            else get_item_value(job, "status")
-        )
+        # get_job() всегда отдаёт dict (job_manager.get_job)
+        status = job.get("status")
 
         if status in ("done", "failed", "cancelled", "interrupted"):
             return jsonify({
@@ -619,12 +616,6 @@ def api_stop_job(job_id):
 
         # Важно: ставим stop flag, а не убиваем Flask/thread напрямую
         request_stop_job(job_id)
-
-        try:
-            mark_job_stopping(job_id)
-        except Exception:
-            # Если такой функции нет — не падаем
-            pass
 
         return jsonify({
             "ok": True,
@@ -1190,36 +1181,6 @@ def api_vacuum_start():
                 "message": str(e),
             }
         ), 500
-
-
-def update_job_status(job_id, status, error_message=None):
-    with sqlite_cursor(commit=True) as cur:
-        if error_message is not None:
-            cur.execute(
-                """
-                UPDATE jobs
-                SET status = ?,
-                    error_message = ?
-                WHERE id = ?
-                """,
-                (
-                    status,
-                    str(error_message),
-                    job_id,
-                ),
-            )
-        else:
-            cur.execute(
-                """
-                UPDATE jobs
-                SET status = ?
-                WHERE id = ?
-                """,
-                (
-                    status,
-                    job_id,
-                ),
-            )
 
 
 @app.route("/gpcopy")

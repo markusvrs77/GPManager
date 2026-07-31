@@ -216,6 +216,41 @@ def test_build_sankey_flows_and_others():
     assert small["users_total"] == 3
 
 
+def test_build_sankey_keeps_all_users_and_write_share():
+    user_src = {("u" + str(i), "ro"): i + 1 for i in range(30)}
+    user_src[("gp_admin", "напрямую")] = 4
+    src_schema = {("ro", "dwh"): sum(range(1, 31)), ("напрямую", "dwh"): 4}
+
+    s = build_sankey(
+        user_src, src_schema,
+        user_src_write={("gp_admin", "напрямую"): 3},
+        src_schema_write={("напрямую", "dwh"): 3},
+        superusers={"gp_admin"},
+    )
+    labels = [n["label"] for n in s["nodes"]]
+
+    # по умолчанию никого не сворачиваем — все 31 пользователь на месте
+    assert "прочие пользователи" not in labels
+    assert "прочие схемы" not in labels
+    assert len([n for n in s["nodes"] if n["column"] == 0]) == 31
+    assert s["users_total"] == 31
+    assert s["tables_total"] == sum(range(1, 31)) + 4
+
+    by_id = {n["id"]: n for n in s["nodes"]}
+    admin = by_id["u:gp_admin"]
+
+    assert admin["superuser"] is True
+    assert admin["write"] == 3
+    assert admin["sources"] == ["напрямую"]
+    assert by_id["u:u0"]["superuser"] is False
+    assert by_id["r:напрямую"]["users"] == 1
+    assert by_id["s:dwh"]["write"] == 3
+
+    flow = {(link["source"], link["target"]): link for link in s["links"]}
+    assert flow[("u:gp_admin", "r:напрямую")]["write"] == 3
+    assert flow[("u:u0", "r:ro")]["write"] == 0
+
+
 def test_build_overview_end_to_end():
     raw = {
         "roles": [
