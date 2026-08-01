@@ -1678,7 +1678,7 @@ function renderGpcopyItems(items) {
         return;
     }
 
-    body.innerHTML = items.map(function (item) {
+    const html = items.map(function (item) {
         const status = item.status || "";
 
         const badgeClass =
@@ -1704,6 +1704,13 @@ function renderGpcopyItems(items) {
             </tr>
         `;
     }).join("");
+
+    // опрос идёт постоянно — прокрутку списка не роняем
+    if (window.gpKeepScroll) {
+        window.gpKeepScroll(body, function () { body.innerHTML = html; });
+    } else {
+        body.innerHTML = html;
+    }
 }
 
 function saveGpcopyFormState() {

@@ -412,6 +412,17 @@ function renderReorganizeJobItems(items) {
         return;
     }
 
+    // опрос идёт каждые пару секунд — прокрутку возвращаем на место
+    if (window.gpKeepScroll) {
+        window.gpKeepScroll(body, function () {
+            paintReorganizeJobItems(body, items);
+        });
+    } else {
+        paintReorganizeJobItems(body, items);
+    }
+}
+
+function paintReorganizeJobItems(body, items) {
     body.innerHTML = "";
 
     if (!items || !items.length) {

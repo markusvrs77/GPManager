@@ -601,6 +601,17 @@ function renderSkewJobItems(items, resultMap = {}) {
         return;
     }
 
+    // опрос идёт каждые пару секунд — прокрутку возвращаем на место
+    if (window.gpKeepScroll) {
+        window.gpKeepScroll(body, function () {
+            paintSkewJobItems(body, items, resultMap);
+        });
+    } else {
+        paintSkewJobItems(body, items, resultMap);
+    }
+}
+
+function paintSkewJobItems(body, items, resultMap) {
     body.innerHTML = "";
 
     if (!items || !items.length) {

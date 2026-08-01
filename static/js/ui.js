@@ -149,6 +149,95 @@
         });
     }, true);
 
+    /* ---------- Scroll preservation ---------- */
+    /* Перерисовка списка (innerHTML) роняет прокрутку в начало: контейнер
+       на миг пустеет, и браузер обнуляет scrollTop. gpKeepScroll(root, render)
+       запоминает позиции прокрученных предков и потомков root и возвращает
+       их после перерисовки — пользователь остаётся там, где читал. */
+
+    function scrollPath(el, root) {
+        var parts = [];
+        var node = el;
+
+        while (node && node !== root) {
+            var parent = node.parentNode;
+            var index = parent
+                ? Array.prototype.indexOf.call(parent.children, node) : 0;
+
+            parts.push(node.tagName + ":" + index);
+            node = parent;
+        }
+
+        return parts.reverse().join("/");
+    }
+
+    function byScrollPath(root, path) {
+        var node = root;
+
+        path.split("/").forEach(function (part) {
+            if (!node) { return; }
+            node = node.children[parseInt(part.split(":")[1], 10)] || null;
+        });
+
+        return node;
+    }
+
+    function gpKeepScroll(root, render) {
+        if (!root || typeof render !== "function") {
+            return render ? render() : undefined;
+        }
+
+        // предки переживают перерисовку — храним ссылками
+        var outer = [];
+        var node = root.parentElement;
+
+        while (node) {
+            if (node.scrollTop) { outer.push([node, node.scrollTop]); }
+            node = node.parentElement;
+        }
+
+        var doc = document.scrollingElement || document.documentElement;
+
+        if (doc && doc.scrollTop) { outer.push([doc, doc.scrollTop]); }
+
+        // потомков придётся искать заново — по id или по позиции в дереве
+        var inner = [];
+
+        if (root.scrollTop) { inner.push([null, root.scrollTop]); }
+
+        Array.prototype.forEach.call(root.querySelectorAll("*"), function (el) {
+            if (!el.scrollTop) { return; }
+            inner.push([el.id ? "#" + el.id : scrollPath(el, root), el.scrollTop]);
+        });
+
+        var result = render();
+
+        function restore() {
+            outer.forEach(function (pair) { pair[0].scrollTop = pair[1]; });
+
+            inner.forEach(function (pair) {
+                var el = pair[0] === null ? root
+                    : (pair[0].charAt(0) === "#"
+                        ? document.getElementById(pair[0].slice(1))
+                        : byScrollPath(root, pair[0]));
+
+                if (el && el.scrollHeight > el.clientHeight) {
+                    el.scrollTop = pair[1];
+                }
+            });
+        }
+
+        restore();
+
+        // второй проход — если содержимое дорисовалось в следующем кадре
+        if (window.requestAnimationFrame) {
+            window.requestAnimationFrame(restore);
+        }
+
+        return result;
+    }
+
     window.gpToast = gpToast;
     window.gpConfirm = gpConfirm;
+    window.gpKeepScroll = gpKeepScroll;
 })();

@@ -304,7 +304,7 @@ function renderVacuumRuns(jobs) {
         return;
     }
 
-    box.innerHTML = jobs.map(job => {
+    const html = jobs.map(job => {
         const status = String(job.status || "").toLowerCase();
         const running = VACUUM_ACTIVE.includes(status);
         const failed = VACUUM_BAD.includes(status);
@@ -344,6 +344,8 @@ function renderVacuumRuns(jobs) {
             </div>
         `;
     }).join("");
+
+    vacuumRepaint(box, function () { box.innerHTML = html; });
 
     if (note) {
         const activeCount = jobs.filter(j =>
@@ -420,6 +422,15 @@ function setText(id, value) {
     }
 }
 
+// перерисовка списка не должна ронять прокрутку (опрос идёт каждые 2 с)
+function vacuumRepaint(box, paint) {
+    if (window.gpKeepScroll) {
+        window.gpKeepScroll(box, paint);
+    } else {
+        paint();
+    }
+}
+
 function renderVacuumItems(items) {
     const body = document.getElementById("vacuumItemsBody");
 
@@ -436,7 +447,7 @@ function renderVacuumItems(items) {
         return;
     }
 
-    body.innerHTML = items.map(item => {
+    const html = items.map(item => {
         const status = String(item.status || "").toLowerCase();
 
         let badgeClass = "bg-secondary";
@@ -466,6 +477,8 @@ function renderVacuumItems(items) {
             </tr>
         `;
     }).join("");
+
+    vacuumRepaint(body, function () { body.innerHTML = html; });
 }
 
 function escapeHtml(value) {

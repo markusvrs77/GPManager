@@ -162,7 +162,7 @@
 
     /* ---------------- render: selection ---------------- */
 
-    function renderSelection() {
+    function renderSelection(opts) {
         var by = schemaCounts();
         var schemas = Object.keys(by).sort();
         var total = state.sel.size;
@@ -190,13 +190,15 @@
         });
 
         renderSummary();
-        renderModalCounts();
+
+        if (opts && opts.keepList) { updateModalCounters(); }
+        else { renderModalCounts(); }
     }
 
-    function onSelectionChanged() {
+    function onSelectionChanged(opts) {
         invalidateResolutions();
         saveSel();
-        renderSelection();
+        renderSelection(opts);
     }
 
     /* ---------------- catalog ---------------- */
@@ -298,7 +300,9 @@
                     var key = cb.getAttribute("data-key");
                     if (cb.checked) { state.sel.add(key); }
                     else { state.sel.delete(key); }
-                    onSelectionChanged();
+                    // список не перерисовываем: галочка держит себя сама,
+                    // обновляем только счётчики — прокрутка остаётся на месте
+                    onSelectionChanged({ keepList: true });
                 };
             });
         container.querySelectorAll(".gpp-prt-badge:not([data-wired])")
@@ -352,48 +356,20 @@
                 : "");
     }
 
-    function renderModalSchemas() {
-        var box = $("gppSelSchemas");
-        if (!state.catalog) { box.innerHTML = ""; return; }
+    // перерисовка блока без потери прокрутки (иначе список прыгает наверх)
+    function setHtml(box, html) {
+        if (!box) { return; }
 
-        var by = schemaCounts();
-        var html = "";
-        state.catalog.schemas.forEach(function (s) {
-            var selN = by[s.schema] || 0;
-            var open = state.expandedSchema === s.schema;
-            html += '<div class="gpp-scw">' +
-                '<div class="gpp-sc' + (open ? " open" : "") + '" data-open="' +
-                esc(s.schema) + '"><span><span class="chev">' + (open ? "▼" : "▶") +
-                "</span><code>" + esc(s.schema) + "</code> " +
-                '<span class="cnt">' + fmtN(s.total) + "</span></span><span>" +
-                (selN ? '<span class="selcnt">выбрано ' + fmtN(selN) + "</span> " : "") +
-                '<button class="gpp-btn sm" data-schema="' + esc(s.schema) +
-                '" data-act="' + (selN >= s.total ? "unsel" : "sel") + '">' +
-                (selN >= s.total ? "снять" : "выбрать все") + "</button></span></div>" +
-                (open ? '<div class="gpp-sc-panel">' + renderSchemaPanel(s.schema) + "</div>" : "") +
-                "</div>";
-        });
-        box.innerHTML = html;
+        if (window.gpKeepScroll) {
+            window.gpKeepScroll(box, function () { box.innerHTML = html; });
+        } else {
+            box.innerHTML = html;
+        }
+    }
 
-        // клик по строке схемы — раскрыть/свернуть список таблиц
-        box.querySelectorAll(".gpp-sc[data-open]").forEach(function (row) {
-            row.onclick = function (ev) {
-                if (ev.target.closest("button")) { return; }
-                var schema = row.getAttribute("data-open");
-                state.expandedSchema = state.expandedSchema === schema ? null : schema;
-                state.schemaFilter = "";
-                state.schemaView = "all";
-                state.schemaLimit = CHUNK;
-                state.expandedParent = null;
-                if (state.expandedSchema && !state.schemaTables[schema]) {
-                    loadSchemaTables(schema);
-                }
-                renderModalSchemas();
-            };
-        });
-
-        // «выбрать все» по схеме — без партиций (родитель уже включает их данные)
-        box.querySelectorAll("button[data-schema]").forEach(function (btn) {
+    // «выбрать все» по схеме — без партиций (родитель уже включает их данные)
+    function wireSchemaButtons(scope) {
+        scope.querySelectorAll("button[data-schema]").forEach(function (btn) {
             btn.onclick = function (ev) {
                 ev.stopPropagation();
                 var schema = btn.getAttribute("data-schema");
@@ -417,6 +393,87 @@
                 });
             };
         });
+    }
+
+    function schemaActionHtml(schema, selN, total) {
+        return (selN ? '<span class="selcnt">выбрано ' + fmtN(selN) + "</span> " : "") +
+            '<button class="gpp-btn sm" data-schema="' + esc(schema) +
+            '" data-act="' + (selN >= total ? "unsel" : "sel") + '">' +
+            (selN >= total ? "снять" : "выбрать все") + "</button>";
+    }
+
+    // счётчики без перерисовки списка — чтобы галочка не роняла прокрутку
+    function updateModalCounters() {
+        var by = schemaCounts();
+
+        $("gppSelTotal").textContent = fmtN(state.sel.size);
+        $("gppSelTotalSchemas").textContent =
+            "таблиц в " + fmtN(Object.keys(by).length) + " схемах";
+
+        var box = $("gppSelSchemas");
+        if (!box || !state.catalog) { return; }
+
+        var totals = {};
+        state.catalog.schemas.forEach(function (s) { totals[s.schema] = s.total; });
+
+        box.querySelectorAll(".gpp-sc[data-open]").forEach(function (row) {
+            var schema = row.getAttribute("data-open");
+            var right = row.lastElementChild;
+            if (!right) { return; }
+
+            right.innerHTML = schemaActionHtml(
+                schema, by[schema] || 0, totals[schema] || 0);
+            wireSchemaButtons(right);
+        });
+    }
+
+    function renderModalSchemas() {
+        var box = $("gppSelSchemas");
+        if (!state.catalog) { box.innerHTML = ""; return; }
+
+        // перерисовка не должна ронять прокрутку списка
+        if (window.gpKeepScroll) {
+            window.gpKeepScroll(box, function () { paintModalSchemas(box); });
+        } else {
+            paintModalSchemas(box);
+        }
+    }
+
+    function paintModalSchemas(box) {
+        var by = schemaCounts();
+        var html = "";
+        state.catalog.schemas.forEach(function (s) {
+            var selN = by[s.schema] || 0;
+            var open = state.expandedSchema === s.schema;
+            html += '<div class="gpp-scw">' +
+                '<div class="gpp-sc' + (open ? " open" : "") + '" data-open="' +
+                esc(s.schema) + '"><span><span class="chev">' + (open ? "▼" : "▶") +
+                "</span><code>" + esc(s.schema) + "</code> " +
+                '<span class="cnt">' + fmtN(s.total) + "</span></span><span>" +
+                schemaActionHtml(s.schema, selN, s.total) + "</span></div>" +
+                (open ? '<div class="gpp-sc-panel">' + renderSchemaPanel(s.schema) + "</div>" : "") +
+                "</div>";
+        });
+        box.innerHTML = html;
+
+        // клик по строке схемы — раскрыть/свернуть список таблиц
+        box.querySelectorAll(".gpp-sc[data-open]").forEach(function (row) {
+            row.onclick = function (ev) {
+                if (ev.target.closest("button")) { return; }
+                var schema = row.getAttribute("data-open");
+                state.expandedSchema = state.expandedSchema === schema ? null : schema;
+                state.schemaFilter = "";
+                state.schemaView = "all";
+                state.schemaLimit = CHUNK;
+                state.expandedParent = null;
+                if (state.expandedSchema && !state.schemaTables[schema]) {
+                    loadSchemaTables(schema);
+                }
+                renderModalSchemas();
+            };
+        });
+
+        wireSchemaButtons(box);
 
         // чипы «Все / С партициями / Без партиций»
         box.querySelectorAll(".gpp-view").forEach(function (b) {
@@ -749,7 +806,7 @@
         });
 
         var top = rows.slice(0, 200);
-        box.innerHTML = top.map(function (r) {
+        setHtml(box, top.map(function (r) {
             var colHtml;
             if (state.incEditing === r.key) {
                 colHtml = '<input class="colinput" id="gppIncColEdit" value="' +
@@ -781,7 +838,7 @@
         (rows.length > top.length
             ? '<div class="gpp-hint">…и ещё ' + fmtN(rows.length - top.length) +
               " — используй фильтр.</div>"
-            : "");
+            : ""));
 
         $("gppIncFilter").style.display = incRowsData().length > 15 ? "" : "none";
 
@@ -954,7 +1011,7 @@
         if (extra > 0) {
             rows.push('<div class="gpp-hint">…и ещё ' + fmtN(extra) + "</div>");
         }
-        box.innerHTML = rows.join("");
+        setHtml(box, rows.join(""));
 
         box.querySelectorAll(".edit[data-key-e]").forEach(function (el) {
             el.onclick = function () {
@@ -1295,7 +1352,7 @@
         var items = partFlatItems();
         var top = items.slice(0, state.partLimit);
 
-        box.innerHTML =
+        setHtml(box,
             '<div class="gpp-chips" style="margin-bottom: 6px;">' +
             chip("all", "Все партиции", totalAll) +
             chip("diff", "Различаются", totalLag) +
@@ -1311,7 +1368,7 @@
             (items.length > top.length
                 ? '<div class="gpp-hint" id="gppPartMore">Показано ' + fmtN(top.length) +
                   " из " + fmtN(items.length) + " — прокрути список ниже.</div>"
-                : "");
+                : ""));
 
         updatePartCounter();
 
@@ -1816,12 +1873,9 @@
     }
 
     function renderRuns(box, jobs, stById) {
-        // перерисовка идёт каждые несколько секунд — сохраняем прокрутку
-        // списка таблиц открытой шторки, иначе скролл сбрасывается наверх
-        var prevList = box.querySelector(".gpp-run-drawer .gpp-key-list");
-        var prevScroll = prevList ? prevList.scrollTop : 0;
-
-        box.innerHTML = jobs.map(function (j) {
+        // перерисовка идёт каждые несколько секунд — прокрутку шторки,
+        // списка таблиц и всей страницы возвращаем на место (gpKeepScroll)
+        setHtml(box, jobs.map(function (j) {
             var running = isActiveStatus(j.status);
             var failed = j.status === "failed" || j.status === "error" ||
                 j.status === "cancelled" || j.status === "interrupted";
@@ -1867,10 +1921,7 @@
                 '%;"></i></div><span>' + statusTxt + "</span>" +
                 '<span class="meta">' + meta + "</span></div>" +
                 (open ? drawerHtml(j, st) : "");
-        }).join("");
-
-        var newList = box.querySelector(".gpp-run-drawer .gpp-key-list");
-        if (newList && prevScroll) { newList.scrollTop = prevScroll; }
+        }).join(""));
 
         box.querySelectorAll(".run[data-job]").forEach(function (row) {
             row.onclick = function () {
