@@ -720,6 +720,9 @@ def api_jobs_recent():
         except Exception:
             j["dest_name"] = None
 
+        # операция задачи (VACUUM / ANALYZE / …) — для ленты запусков
+        j["action"] = cfg.get("action")
+
     return jsonify({
         "ok": True,
         "jobs": jobs,

@@ -34,6 +34,23 @@ def test_recent_jobs_filtered_by_types_newest_first(client):
     assert ids.index(c) < ids.index(a)
 
 
+def test_recent_jobs_expose_action(client):
+    """Лента запусков вакуума показывает операцию задачи."""
+    job_id = create_job("vacuum_analyze", 1, {
+        "marker": "recent_api_test",
+        "action": "VACUUM_FULL",
+    })
+
+    data = client.get(
+        "/api/jobs/recent?types=vacuum_analyze&limit=10"
+    ).get_json()
+    job = [j for j in data["jobs"] if j["id"] == job_id][0]
+
+    assert job["action"] == "VACUUM_FULL"
+    # тяжёлый config_json наружу по-прежнему не уходит
+    assert "config_json" not in job
+
+
 def test_recent_jobs_limit(client):
     for _ in range(3):
         _mk("gpcopy")

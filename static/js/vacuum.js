@@ -1,5 +1,10 @@
-let currentVacuumJobId = null;
+let currentVacuumJobId = null;   // активная задача (кнопка «Остановить»)
+let vacuumViewJobId = null;      // какой запуск показан в деталях
 let vacuumPollTimer = null;
+let vacuumRunsTimer = null;
+
+const VACUUM_ACTIVE = ["running", "queued", "stopping"];
+const VACUUM_BAD = ["failed", "error", "cancelled", "interrupted"];
 
 function showVacuumMessage(message, type = "info") {
     const box = document.getElementById("vacuumStatusBox");
@@ -95,9 +100,10 @@ async function startVacuumJob() {
     }
 
     currentVacuumJobId = data.job_id;
+    vacuumViewJobId = data.job_id;
 
     showVacuumMessage(
-        `Job #${currentVacuumJobId} started. Action: ${data.action}. Tables: ${data.total_items}`,
+        `Запуск #${currentVacuumJobId}: ${data.action}, таблиц — ${data.total_items}`,
         "success"
     );
 
@@ -131,7 +137,13 @@ function startVacuumPolling() {
         clearInterval(vacuumPollTimer);
     }
 
+    // задачу мог запустить ассистент — он ставит только currentVacuumJobId
+    if (currentVacuumJobId) {
+        vacuumViewJobId = currentVacuumJobId;
+    }
+
     loadVacuumStatus();
+    loadVacuumRuns();
 
     vacuumPollTimer = setInterval(loadVacuumStatus, 2000);
 }
@@ -144,15 +156,17 @@ function stopVacuumPolling() {
 }
 
 async function loadVacuumStatus() {
-    if (!currentVacuumJobId) {
+    const jobId = vacuumViewJobId || currentVacuumJobId;
+
+    if (!jobId) {
         return;
     }
 
-    const response = await fetch(`/api/jobs/${currentVacuumJobId}/status`);
+    const response = await fetch(`/api/jobs/${jobId}/status`);
     const data = await response.json();
 
     if (!response.ok || !data.ok) {
-        showVacuumMessage(data.message || "Failed to load status", "danger");
+        showVacuumMessage(data.message || "Не удалось прочитать статус", "danger");
         stopVacuumPolling();
         setVacuumButtonRunning(false);
         currentVacuumJobId = null;
@@ -160,28 +174,215 @@ async function loadVacuumStatus() {
     }
 
     renderVacuumStatus(data);
+    setVacuumViewLabel(data.job);
 
     const jobStatus = String(data.job.status || "").toLowerCase();
 
-    if (["done", "failed", "cancelled", "interrupted"].includes(jobStatus)) {
+    if (VACUUM_ACTIVE.includes(jobStatus)) {
+        return;
+    }
+
+    // завершилась именно та задача, которую мы вели
+    if (jobId === currentVacuumJobId) {
         stopVacuumPolling();
         setVacuumButtonRunning(false);
+        currentVacuumJobId = null;
 
         if (jobStatus === "done") {
-            showVacuumMessage(`Last job #${data.job.id} done.`, "success");
+            showVacuumMessage(`Запуск #${data.job.id} завершён.`, "success");
         } else if (jobStatus === "failed") {
             showVacuumMessage(
-                `Last job #${data.job.id} failed: ${data.job.error_message || ""}`,
+                `Запуск #${data.job.id} упал: ${data.job.error_message || ""}`,
                 "danger"
             );
         } else if (jobStatus === "cancelled") {
-            showVacuumMessage(`Last job #${data.job.id} cancelled.`, "warning");
+            showVacuumMessage(`Запуск #${data.job.id} остановлен.`, "warning");
         } else {
-            showVacuumMessage(`Last job #${data.job.id} interrupted.`, "warning");
+            showVacuumMessage(`Запуск #${data.job.id} прерван.`, "warning");
         }
 
-        currentVacuumJobId = null;
+        loadVacuumRuns();
+    } else if (!currentVacuumJobId) {
+        // смотрим историю — опрашивать нечего
+        stopVacuumPolling();
     }
+}
+
+function setVacuumViewLabel(job) {
+    const el = document.getElementById("vacViewLabel");
+
+    if (!el || !job) {
+        return;
+    }
+
+    el.textContent = "показан запуск #" + job.id + " · " +
+        String(job.status || "") +
+        (job.started_at ? " · " + job.started_at : "");
+}
+
+/* ---------------- история запусков ---------------- */
+
+function selectVacuumRun(jobId) {
+    vacuumViewJobId = jobId;
+    loadVacuumStatus();
+    loadVacuumRuns();
+}
+
+async function loadVacuumRuns(adopt) {
+    const box = document.getElementById("vacRuns");
+
+    if (!box) {
+        return;
+    }
+
+    let data;
+
+    try {
+        const response = await fetch(
+            "/api/jobs/recent?types=vacuum_analyze&limit=12"
+        );
+
+        data = await response.json();
+    } catch (e) {
+        box.innerHTML =
+            '<div class="text-danger small">Не удалось прочитать историю.</div>';
+        return;
+    }
+
+    if (!data || !data.ok) {
+        return;
+    }
+
+    const jobs = data.jobs || [];
+    const active = jobs.find(j =>
+        VACUUM_ACTIVE.includes(String(j.status || "").toLowerCase())
+    );
+
+    // после перезагрузки страницы подхватываем идущую задачу, а если
+    // ничего не идёт — показываем последний запуск
+    if (adopt) {
+        if (active) {
+            currentVacuumJobId = active.id;
+            vacuumViewJobId = active.id;
+            setVacuumButtonRunning(true);
+            showVacuumMessage(
+                `Запуск #${active.id} продолжается — подхватил его после ` +
+                "перезагрузки страницы.",
+                "info"
+            );
+            startVacuumPolling();
+        } else if (jobs.length) {
+            vacuumViewJobId = jobs[0].id;
+            loadVacuumStatus();
+        }
+    }
+
+    renderVacuumRuns(jobs);
+
+    clearTimeout(vacuumRunsTimer);
+    vacuumRunsTimer = setTimeout(function () {
+        loadVacuumRuns();
+    }, active ? 5000 : 20000);
+}
+
+function renderVacuumRuns(jobs) {
+    const box = document.getElementById("vacRuns");
+    const note = document.getElementById("vacRunsNote");
+
+    if (!box) {
+        return;
+    }
+
+    if (!jobs.length) {
+        box.innerHTML =
+            '<div class="text-muted small">Пока не было ни одного запуска.</div>';
+
+        if (note) {
+            note.textContent = "";
+        }
+
+        return;
+    }
+
+    box.innerHTML = jobs.map(job => {
+        const status = String(job.status || "").toLowerCase();
+        const running = VACUUM_ACTIVE.includes(status);
+        const failed = VACUUM_BAD.includes(status);
+        const dot = running ? "b" : (failed ? "r" : (status === "done" ? "g" : "i"));
+
+        let percent = Math.max(0, Math.min(100,
+            Math.round(job.progress_percent || 0)));
+
+        if (status === "done") {
+            percent = 100;
+        }
+
+        const barClass = status === "done" ? "done" : (failed ? "fail" : "");
+        const action = String(job.action || "").replace(/_/g, " ");
+        const meta = [job.started_at, job.source_name]
+            .filter(Boolean).map(escapeHtml).join(" · ");
+        const err = failed && job.error_message
+            ? ' <span class="text-danger">· ' +
+              escapeHtml(String(job.error_message).slice(0, 60)) + "</span>"
+            : "";
+
+        return `
+            <div class="vr-row ${job.id === vacuumViewJobId ? "on" : ""}"
+                 data-run="${job.id}" title="Показать детали запуска">
+                <span class="vr-dot ${dot}"></span>
+                <span class="vr-lab">#${job.id}
+                    <span class="act">${escapeHtml(action)}</span>
+                    <span class="meta">· ${job.done_items || 0}/${job.total_items || 0}
+                        ${meta ? "· " + meta : ""}</span>${err}</span>
+                <span class="vr-bar"><i class="${barClass}"
+                    style="width: ${percent}%"></i></span>
+                <span class="vr-st">${running ? percent + "%" : escapeHtml(status)}
+                    ${running
+                        ? `<button type="button" class="vr-stop"
+                                   data-stop="${job.id}">стоп</button>`
+                        : ""}</span>
+            </div>
+        `;
+    }).join("");
+
+    if (note) {
+        const activeCount = jobs.filter(j =>
+            VACUUM_ACTIVE.includes(String(j.status || "").toLowerCase())
+        ).length;
+
+        note.textContent = (activeCount ? activeCount + " активных · " : "") +
+            jobs.length + " в истории";
+    }
+
+    box.querySelectorAll("[data-run]").forEach(row => {
+        row.onclick = function () {
+            selectVacuumRun(parseInt(row.getAttribute("data-run"), 10));
+        };
+    });
+
+    box.querySelectorAll("[data-stop]").forEach(btn => {
+        btn.onclick = async function (ev) {
+            ev.stopPropagation();
+
+            const id = btn.getAttribute("data-stop");
+
+            btn.disabled = true;
+
+            const response = await fetch(`/api/jobs/${id}/stop`, {
+                method: "POST",
+            });
+            const result = await response.json();
+
+            showVacuumMessage(
+                result.ok
+                    ? `Запуск #${id} останавливается…`
+                    : (result.message || "Не удалось остановить"),
+                result.ok ? "warning" : "danger"
+            );
+
+            loadVacuumRuns();
+        };
+    });
 }
 
 function renderVacuumStatus(data) {
@@ -277,3 +478,16 @@ function escapeHtml(value) {
 }
 
 window.handleVacuumActionButton = handleVacuumActionButton;
+window.selectVacuumRun = selectVacuumRun;
+window.loadVacuumRuns = loadVacuumRuns;
+
+document.addEventListener("DOMContentLoaded", function () {
+    const refresh = document.getElementById("vacRunsRefresh");
+
+    if (refresh) {
+        refresh.onclick = function () { loadVacuumRuns(); };
+    }
+
+    // adopt: если задача идёт — подхватываем её, иначе показываем последнюю
+    loadVacuumRuns(true);
+});
