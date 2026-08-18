@@ -257,6 +257,31 @@ def init_db():
             """
         )
 
+        # срез прав («Пользователи и гранты»): страница читает его из
+        # SQLite и не ходит в источник, пока не нажали «обновить срез»
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS grants_snapshots (
+                connection_id INTEGER PRIMARY KEY,
+                generated_at TEXT,
+                duration_seconds REAL,
+                payload_json TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS grants_schema_snapshots (
+                connection_id INTEGER NOT NULL,
+                schema_name TEXT NOT NULL,
+                generated_at TEXT,
+                payload_json TEXT,
+                PRIMARY KEY (connection_id, schema_name)
+            )
+            """
+        )
+
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS table_sets (

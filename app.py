@@ -2364,10 +2364,13 @@ def api_grants_schema_matrix():
         return jsonify({"ok": False,
                         "message": "connection_id и schema обязательны"}), 400
 
+    force = request.args.get("force") == "1"
+
     try:
         from modules.grants import collect_schema_matrix
 
-        return jsonify(collect_schema_matrix(connection_id, schema))
+        return jsonify(
+            collect_schema_matrix(connection_id, schema, force=force))
     except ValueError as e:
         return jsonify({"ok": False, "message": str(e)}), 400
     except Exception as e:

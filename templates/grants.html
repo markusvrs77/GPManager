@@ -223,6 +223,12 @@ table.gr-mx tbody th .mem { display: block; font-size: 10.5px;
 table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
   letter-spacing: .04em; }
 
+.gr-snap { font-size: 11.5px; color: var(--text-muted);
+  white-space: nowrap; }
+.gr-snap b { color: var(--text); font-weight: 600; }
+.gr-snap.stale b { color: var(--warn); }
+.gr-snap.none b { color: var(--crit); }
+
 /* --- поток (sankey) --- */
 .gr-flow-body { display: grid; grid-template-columns: minmax(0, 1fr) 268px; }
 @media (max-width: 1100px) {
@@ -293,6 +299,8 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
             <span class="gr-chip" data-v="list">список</span>
             <span class="gr-chip" data-v="graph">граф</span>
         </div>
+        <span class="gr-snap" id="grSnap" title="Данные показываются из
+сохранённого среза — источник не опрашивается, пока не нажать кнопку"></span>
         <button class="btn btn-sm btn-outline-primary" id="grRefresh"
                 type="button">обновить срез</button>
     </div>
@@ -2390,9 +2398,60 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
 
         if (crumb && state.data) {
             crumb.textContent = "права на объекты · " +
-                (state.data.connection_name || "") + " · срез " +
-                (state.data.generated_at || "");
+                (state.data.connection_name || "") +
+                (state.data.generated_at
+                    ? " · срез " + state.data.generated_at
+                    : " · срез не собран");
         }
+
+        renderSnapNote();
+    }
+
+    // возраст сохранённого среза: страница живёт на нём и в источник
+    // не ходит, пока не нажали «обновить срез»
+    function renderSnapNote() {
+        var box = $("grSnap");
+        var d = state.data;
+
+        if (!box) { return; }
+
+        if (!d || !d.generated_at) {
+            box.className = "gr-snap none";
+            box.innerHTML = "<b>среза нет</b> — нажми «обновить срез»";
+            return;
+        }
+
+        var age = Math.max(0,
+            (Date.now() - new Date(d.generated_at.replace(" ", "T"))) / 60000);
+        var txt;
+
+        if (age < 1) { txt = "только что"; }
+        else if (age < 60) { txt = Math.round(age) + " мин назад"; }
+        else if (age < 60 * 24) { txt = Math.round(age / 60) + " ч назад"; }
+        else { txt = Math.round(age / 60 / 24) + " дн назад"; }
+
+        box.className = "gr-snap" + (age > 60 * 24 ? " stale" : "");
+        box.innerHTML = "срез из БД · <b>" + esc(txt) + "</b> · " +
+            esc(d.generated_at);
+    }
+
+    // среза ещё нет: ничего не показываем и в источник не лезем
+    function showNoSnapshot() {
+        var msg = '<div class="gr-empty">Срез прав по этому подключению ещё ' +
+            "не собирали. Нажми <b>«обновить срез»</b> — Opsentri один раз " +
+            "прочитает системные каталоги и сохранит результат в свою базу. " +
+            "Дальше страница работает с сохранёнными данными и источник " +
+            "не трогает.</div>";
+
+        $("grList").innerHTML = msg;
+        $("grMatrix").innerHTML = msg;
+        $("grFlow").innerHTML = msg;
+        $("grFlowNote").textContent = "";
+
+        G.nodes = [];
+        G.links = [];
+        G.byId = {};
+        G.sel = null;
     }
 
     function load(force) {
@@ -2400,7 +2459,10 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
 
         state.loading = true;
         $("grRefresh").disabled = true;
-        $("grList").innerHTML = '<div class="gr-empty">Читаю каталоги прав…</div>';
+        $("grRefresh").textContent = force ? "читаю источник…" : "обновить срез";
+        $("grList").innerHTML = '<div class="gr-empty">' +
+            (force ? "Читаю каталоги прав в источнике…"
+                   : "Читаю сохранённый срез…") + "</div>";
 
         fetch("/api/grants/overview?connection_id=" +
               encodeURIComponent(state.conn) + (force ? "&force=1" : ""))
@@ -2408,6 +2470,7 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
             .then(function (d) {
                 state.loading = false;
                 $("grRefresh").disabled = false;
+                $("grRefresh").textContent = "обновить срез";
 
                 if (!d.ok) {
                     $("grList").innerHTML = '<div class="gr-empty" ' +
@@ -2420,7 +2483,12 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
                 state.openTables = {};
                 FL.focus = null;
                 FL.sel = null;
+                MX.drill = null;
+                MX.schemaData = null;
                 renderCards();
+
+                if (d.empty) { showNoSnapshot(); return; }
+
                 renderList();
 
                 if (state.view === "graph") { buildGraph(); }
@@ -2430,6 +2498,7 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
             .catch(function (e) {
                 state.loading = false;
                 $("grRefresh").disabled = false;
+                $("grRefresh").textContent = "обновить срез";
                 $("grList").innerHTML = '<div class="gr-empty" ' +
                     'style="color: var(--crit);">' + esc(String(e)) + "</div>";
             });

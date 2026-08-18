@@ -8,7 +8,11 @@ attacl) — никакой нагрузки на данные. Права, по�
 GRANT/REVOKE только генерируется текстом — модуль ничего не меняет.
 """
 
+import json
 import time
+import zlib
+
+from db import sqlite_cursor
 
 try:
     from modules.gpcopy import open_psycopg2_connection_by_cfg, quote_ident
@@ -39,8 +43,8 @@ MAX_TABLES_PER_USER = 400
 # в кашу из связей
 MAX_GRAPH_TABLES = 140
 
-_CACHE = {}
-_CACHE_TTL = 90
+# срез живёт в SQLite: страница читает сохранённое и не трогает источник,
+# пока пользователь не нажмёт «обновить срез»
 
 
 # ------------------------------------------------------------------
@@ -758,21 +762,73 @@ def build_overview(raw):
     }
 
 
-def collect_schema_matrix(connection_id, schema, max_tables=400):
+def load_schema_snapshot(connection_id, schema):
+    """Сохранённая матрица схемы (None, если её ещё не читали)."""
+    with sqlite_cursor() as cur:
+        cur.execute(
+            """
+            SELECT generated_at, payload_json
+            FROM grants_schema_snapshots
+            WHERE connection_id = ? AND schema_name = ?
+            """,
+            (int(connection_id), str(schema)),
+        )
+        row = cur.fetchone()
+
+    if not row:
+        return None
+
+    data = _unpack(row["payload_json"])
+
+    if data is None:
+        return None
+
+    data["generated_at"] = row["generated_at"]
+    data["from_snapshot"] = True
+
+    return data
+
+
+def save_schema_snapshot(connection_id, schema, data):
+    payload = {k: v for k, v in data.items()
+               if k not in ("generated_at", "from_snapshot")}
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            INSERT INTO grants_schema_snapshots (
+                connection_id, schema_name, generated_at, payload_json
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(connection_id, schema_name) DO UPDATE SET
+                generated_at = excluded.generated_at,
+                payload_json = excluded.payload_json
+            """,
+            (int(connection_id), str(schema),
+             data.get("generated_at"), _pack(payload)),
+        )
+
+
+def collect_schema_matrix(connection_id, schema, max_tables=400, force=False):
     """
     Матрица «пользователи × таблицы» внутри одной схемы (drill из общей
-    матрицы). Данных мало — читаем напрямую, без кэша и без обрезки
-    по пользователям.
+    матрицы). Тоже живёт в SQLite: в источник идём только когда матрицы
+    ещё нет или её просят обновить.
     """
-    conn_cfg = get_connection_by_id(int(connection_id))
-
-    if not conn_cfg:
-        raise ValueError("Подключение не найдено")
-
     schema = str(schema or "").strip()
 
     if not schema:
         raise ValueError("Схема обязательна")
+
+    if not force:
+        stored = load_schema_snapshot(connection_id, schema)
+
+        if stored is not None:
+            return stored
+
+    conn_cfg = get_connection_by_id(int(connection_id))
+
+    if not conn_cfg:
+        raise ValueError("Подключение не найдено")
 
     conn = open_psycopg2_connection_by_cfg(conn_cfg)
 
@@ -856,31 +912,151 @@ def collect_schema_matrix(connection_id, schema, max_tables=400):
 
     row_order, col_order = seriate_matrix(users, tables, cell_keys)
 
-    return {
+    data = {
         "ok": True,
         "schema": schema,
         "rows": row_order,
         "cols": col_order,
         "cells": cells,
         "tables_total": len(table_weight),
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    save_schema_snapshot(connection_id, schema, data)
+    data["from_snapshot"] = False
+
+    return data
+
+
+EMPTY_SUMMARY = {
+    "users": 0, "groups": 0, "superusers": 0, "tables": 0, "schemas": 0,
+    "write_privileges": 0, "review": 0,
+}
+
+
+def _pack(payload):
+    """Срез — это мегабайты JSON, поэтому в БД кладём его сжатым."""
+    return zlib.compress(
+        json.dumps(payload, ensure_ascii=False).encode("utf-8"), 6)
+
+
+def _unpack(blob):
+    """Читаем и сжатый, и старый несжатый формат."""
+    if blob is None:
+        return None
+
+    if isinstance(blob, (bytes, bytearray)):
+        try:
+            blob = zlib.decompress(bytes(blob)).decode("utf-8")
+        except zlib.error:
+            blob = bytes(blob).decode("utf-8", "replace")
+
+    try:
+        return json.loads(blob)
+    except Exception:
+        return None
+
+
+def load_snapshot(connection_id):
+    """Сохранённый срез прав из SQLite (None, если его ещё нет)."""
+    with sqlite_cursor() as cur:
+        cur.execute(
+            """
+            SELECT generated_at, duration_seconds, payload_json
+            FROM grants_snapshots
+            WHERE connection_id = ?
+            """,
+            (int(connection_id),),
+        )
+        row = cur.fetchone()
+
+    if not row:
+        return None
+
+    data = _unpack(row["payload_json"])
+
+    if data is None:
+        return None
+
+    data["generated_at"] = row["generated_at"]
+    data["duration_seconds"] = row["duration_seconds"]
+    data["from_snapshot"] = True
+
+    return data
+
+
+def save_snapshot(connection_id, data):
+    """Кладём срез в SQLite — страница будет читать его, а не источник."""
+    payload = {k: v for k, v in data.items()
+               if k not in ("generated_at", "duration_seconds",
+                            "from_snapshot")}
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            INSERT INTO grants_snapshots (
+                connection_id, generated_at, duration_seconds, payload_json
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(connection_id) DO UPDATE SET
+                generated_at = excluded.generated_at,
+                duration_seconds = excluded.duration_seconds,
+                payload_json = excluded.payload_json
+            """,
+            (int(connection_id), data.get("generated_at"),
+             data.get("duration_seconds"), _pack(payload)),
+        )
+        # матрицы схем пересобираются под новый срез
+        cur.execute(
+            "DELETE FROM grants_schema_snapshots WHERE connection_id = ?",
+            (int(connection_id),),
+        )
+
+
+def empty_overview(connection_id, conn_name=None):
+    """Пустой ответ, пока срез ни разу не собирали."""
+    return {
+        "ok": True,
+        "empty": True,
+        "connection_id": int(connection_id),
+        "connection_name": conn_name,
+        "generated_at": None,
+        "summary": dict(EMPTY_SUMMARY),
+        "users": [],
+        "matrix_order": {"rows": [], "cols": []},
+        "role_groups": [],
+        "sankey": {"nodes": [], "links": [], "users_total": 0,
+                   "schemas_total": 0, "tables_total": 0},
+        "graph": {"nodes": [], "links": [], "schema_nodes": [],
+                  "user_schema_links": [], "tables_shown": 0,
+                  "tables_total": 0},
     }
 
 
 def collect_grants(connection_id, force=False):
-    """Срез прав по подключению (кэш 90 с)."""
+    """
+    Срез прав по подключению. Без force читаем сохранённый в SQLite —
+    источник не трогаем вообще. С force идём в каталоги и перезаписываем
+    срез (кнопка «обновить срез»).
+    """
     key = int(connection_id)
-    now = time.time()
-    cached = _CACHE.get(key)
 
-    if cached and not force and now - cached["ts"] < _CACHE_TTL:
-        return cached["data"]
+    if not force:
+        stored = load_snapshot(key)
+
+        if stored is not None:
+            return stored
+
+        conn_cfg = get_connection_by_id(key)
+
+        return empty_overview(
+            key, conn_cfg.get("name") if conn_cfg else None)
 
     conn_cfg = get_connection_by_id(key)
 
     if not conn_cfg:
         raise ValueError("Подключение не найдено")
 
-    started = now
+    started = time.time()
     conn = open_psycopg2_connection_by_cfg(conn_cfg)
 
     try:
@@ -900,6 +1076,7 @@ def collect_grants(connection_id, force=False):
     data["generated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     data["duration_seconds"] = round(time.time() - started, 1)
 
-    _CACHE[key] = {"ts": time.time(), "data": data}
+    save_snapshot(key, data)
+    data["from_snapshot"] = False
 
     return data
