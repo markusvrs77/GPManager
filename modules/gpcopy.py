@@ -216,6 +216,64 @@ _WORKER_TAG_RE = re.compile(r"\[Worker\s+(?P<worker>\d+)\]")
 _ERROR_DETAIL_RE = re.compile(r"ERROR:\s*(?P<err>.+)")
 
 
+# строки лога, в которых обычно и лежит настоящая причина падения
+_CAUSE_RE = re.compile(
+    r"(ERROR|FATAL|PANIC|DETAIL|HINT|WARNING)\s*:"
+    r"|permission denied"
+    r"|does not exist"
+    r"|no such file"
+    r"|connection refused"
+    r"|could not connect"
+    r"|authentication failed"
+    r"|out of memory"
+    r"|disk (?:full|quota)"
+    r"|gpcopy_helper"
+    r"|failed to",
+    re.IGNORECASE,
+)
+
+# обёртки gpcopy, которые сами по себе ничего не объясняют
+_CAUSE_NOISE = (
+    "error detail: command error message",
+    "command error message:",
+    "error: error detail:",
+)
+
+_LOG_PREFIX_RE = re.compile(r"^\d{8}:[\d:]+\s+\S+-\[[A-Z]+\]:-")
+
+
+def extract_failure_cause(text, limit=6):
+    """
+    Достаёт из лога gpcopy строки с настоящей причиной падения: сообщения
+    сегментов, DETAIL/HINT, отказ доступа и т.п. Пустые обёртки вида
+    «Error Detail: command error message:» отбрасываются. Чистая функция.
+    """
+    found = []
+    seen = set()
+
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+
+        if not line or not _CAUSE_RE.search(line):
+            continue
+
+        low = line.lower()
+
+        if any(n in low for n in _CAUSE_NOISE):
+            continue
+
+        cut = _LOG_PREFIX_RE.sub("", line).strip().lstrip(": ").strip()
+
+        if not cut or cut.lower() in seen:
+            continue
+
+        seen.add(cut.lower())
+        found.append(cut)
+
+    # интереснее всего последние сообщения — они ближе к месту падения
+    return found[-limit:]
+
+
 def parse_failed_table_errors(text):
     """
     Карта (schema, table) -> текст ошибки из лога gpcopy. Формат лога:

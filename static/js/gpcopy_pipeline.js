@@ -2024,6 +2024,56 @@
             };
         });
 
+        box.querySelectorAll("button[data-run-log]").forEach(function (btn) {
+            btn.onclick = function (ev) {
+                ev.stopPropagation();
+
+                var id = btn.getAttribute("data-run-log");
+                var out = $("gppLogBox" + id);
+                var hint = $("gppLogHint" + id);
+
+                if (out && out.innerHTML) {   // повторный клик — свернуть
+                    out.innerHTML = "";
+                    if (hint) { hint.textContent = ""; }
+                    return;
+                }
+
+                btn.disabled = true;
+
+                api("/api/jobs/" + id + "/log").then(function (d) {
+                    btn.disabled = false;
+
+                    if (!d.ok) {
+                        if (hint) { hint.textContent = d.message || "лога нет"; }
+                        return;
+                    }
+
+                    if (hint) {
+                        hint.textContent =
+                            (d.truncated ? "последние 200 КБ · " : "") +
+                            Math.round((d.size || 0) / 1024) + " КБ · " + d.path;
+                    }
+
+                    var cause = (d.cause || []).length
+                        ? '<div class="gpp-err" style="margin-bottom: 6px;">' +
+                          "<b>Причина из лога:</b><pre>" +
+                          esc(d.cause.join("\n")) + "</pre></div>"
+                        : "";
+
+                    out.innerHTML = cause +
+                        '<pre class="gpp-log-full">' + esc(d.text) + "</pre>";
+
+                    // лог читают с конца — прокручиваем туда сразу
+                    var pre = out.querySelector(".gpp-log-full");
+
+                    if (pre) { pre.scrollTop = pre.scrollHeight; }
+                }).catch(function (e) {
+                    btn.disabled = false;
+                    if (hint) { hint.textContent = String(e); }
+                });
+            };
+        });
+
         box.querySelectorAll("button[data-run-stop]").forEach(function (btn) {
             btn.onclick = function (ev) {
                 ev.stopPropagation();
@@ -2120,6 +2170,17 @@
         if (j.error_message) {
             html += '<div class="gpp-err"><pre>' + esc(j.error_message) + "</pre></div>";
         }
+
+        // сам gpcopy пишет причину падения в свой лог — даём его открыть
+        html += '<div style="margin: 6px 0 10px; display: flex; gap: 8px;' +
+            ' align-items: center; flex-wrap: wrap;">' +
+            '<button class="gpp-btn sm" data-run-log="' + j.id + '">' +
+            "\ud83d\udcc4 Полный лог</button>" +
+            '<a class="gpp-btn sm" href="/api/jobs/' + j.id + '/log.txt"' +
+            ' download>\u2b07 Скачать лог</a>' +
+            '<span class="gpp-hint" style="margin: 0;" id="gppLogHint' +
+            j.id + '"></span></div>' +
+            '<div id="gppLogBox' + j.id + '"></div>';
 
         if (items.length) {
             // порядок: сейчас копируется -> упавшие -> в очереди -> готовые

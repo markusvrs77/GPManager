@@ -663,6 +663,75 @@ def api_stop_job(job_id):
         }), 500
 
 
+def _read_job_log(job_id, tail_bytes=200000):
+    """Хвост файла лога задачи: (текст, путь, размер) или (None, путь, 0)."""
+    job = get_job(job_id)
+
+    if not job:
+        return None, None, 0
+
+    path = job.get("log_file")
+
+    if not path or not os.path.exists(path):
+        return None, path, 0
+
+    size = os.path.getsize(path)
+
+    with open(path, "rb") as fh:
+        if tail_bytes and size > tail_bytes:
+            fh.seek(size - tail_bytes)
+            # первая строка после seek почти наверняка обрезана
+            fh.readline()
+
+        data = fh.read()
+
+    return data.decode("utf-8", "replace"), path, size
+
+
+@app.route("/api/jobs/<int:job_id>/log")
+def api_job_log(job_id):
+    """Полный лог внешнего инструмента (gpcopy / gpbackup / pg_dump)."""
+    full = request.args.get("full") == "1"
+    text, path, size = _read_job_log(job_id, 0 if full else 200000)
+
+    if text is None:
+        return jsonify({
+            "ok": False,
+            "path": path,
+            "message": ("Файл лога недоступен: " + str(path)) if path
+                       else "Лог не найден — задача его не оставила",
+        }), 404
+
+    from modules.gpcopy import extract_failure_cause
+
+    return jsonify({
+        "ok": True,
+        "path": path,
+        "size": size,
+        "truncated": (not full) and size > 200000,
+        "text": text,
+        "cause": extract_failure_cause(text),
+    })
+
+
+@app.route("/api/jobs/<int:job_id>/log.txt")
+def api_job_log_download(job_id):
+    """Скачать лог целиком — чтобы приложить к тикету."""
+    text, _path, _size = _read_job_log(job_id, 0)
+
+    if text is None:
+        return jsonify({"ok": False, "message": "Лог не найден"}), 404
+
+    return app.response_class(
+        text,
+        mimetype="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition":
+                'attachment; filename="job_{}.log"'.format(job_id),
+        },
+    )
+
+
 @app.route("/api/jobs/<int:job_id>/skew-results")
 def api_get_job_skew_results(job_id):
     try:
