@@ -1710,6 +1710,69 @@
         });
     }
 
+    function autoCreateOn() {
+        var cb = $("gppAutoCreate");
+        return !cb || cb.checked;
+    }
+
+    // перед запуском: сверить DDL, создать недостающее в приёмнике и
+    // выкинуть объекты, которых нет в источнике
+    function prepareTarget() {
+        if (!autoCreateOn() || state.when === "sched") {
+            return Promise.resolve(true);
+        }
+
+        setMsg("Сверяю DDL с приёмником…");
+
+        return api("/api/gpcopy/precheck", "POST", {
+            source_connection_id: srcId(),
+            dest_connection_id: dstId(),
+            tables: selTables(),
+        }).then(function (d) {
+            if (!d.ok) { return true; }   // предпроверка не должна блокировать
+
+            ddlLast = d;
+            ddlRender();
+
+            var ghosts = ddlGhosts();
+
+            ghosts.forEach(function (key) { state.sel.delete(key); });
+
+            if (ghosts.length) {
+                onSelectionChanged();
+                toast("Пропускаю " + fmtN(ghosts.length) +
+                      " объектов, которых нет в источнике: " +
+                      ghosts.slice(0, 3).join(", ") +
+                      (ghosts.length > 3 ? "…" : ""), "warning");
+            }
+
+            if (!state.sel.size) {
+                setMsg("В источнике не осталось ни одного выбранного объекта.",
+                       "err");
+                return false;
+            }
+
+            var missing = ddlMissing().filter(function (t) {
+                return ghosts.indexOf(t.schema + "." + t.table) === -1;
+            });
+
+            if (!missing.length) { return true; }
+
+            setMsg("Создаю в приёмнике недостающие объекты (" +
+                   fmtN(missing.length) + ")…");
+
+            return createMissing(missing).then(function (r) {
+                if (r.ok) {
+                    toast("Создано в приёмнике: " + fmtN(r.created) +
+                          (r.failed ? ", не удалось: " + fmtN(r.failed) : ""),
+                          r.failed ? "warning" : "success");
+                }
+
+                return true;
+            }).catch(function () { return true; });
+        }).catch(function () { return true; });
+    }
+
     function go() {
         if (!state.sel.size) { setMsg("Сначала выбери таблицы (шаг 1).", "err"); return; }
         if (isNaN(srcId()) || isNaN(dstId())) { setMsg("Выбери подключения.", "err"); return; }
@@ -1718,7 +1781,11 @@
         $("gppGo").disabled = true;
         setMsg("Запускаю…");
 
-        var p = state.when === "sched" ? createSchedule() : launchNow();
+        var p = prepareTarget().then(function (goOn) {
+            if (!goOn) { return null; }
+
+            return state.when === "sched" ? createSchedule() : launchNow();
+        });
 
         p.then(function (d) {
             $("gppGo").disabled = false;
@@ -2118,6 +2185,45 @@
 
     var ddlLast = null;   // последний результат precheck
 
+    // объекты, которых нет в приёмнике — создаём по DDL источника
+    function ddlMissing() {
+        return (ddlLast ? ddlLast.results : []).filter(function (r) {
+            return r.status === "no_dest";
+        }).map(function (r) {
+            return { schema: r.schema, table: r.table };
+        });
+    }
+
+    // объектов нет в источнике — их нельзя отдавать gpcopy: он падает
+    // целиком на первом же несуществующем имени
+    function ddlGhosts() {
+        return (ddlLast ? ddlLast.results : []).filter(function (r) {
+            return r.status === "no_source";
+        }).map(function (r) {
+            return r.schema + "." + r.table;
+        });
+    }
+
+    // создать недостающие объекты, следом — их зависимости
+    function createMissing(tables) {
+        return api("/api/gpcopy/create-tables", "POST", {
+            source_connection_id: srcId(),
+            dest_connection_id: dstId(),
+            tables: tables,
+        }).then(function (d) {
+            if (!d.ok) { return d; }
+
+            return api("/api/gpcopy/fix-deps", "POST", {
+                source_connection_id: srcId(),
+                dest_connection_id: dstId(),
+                tables: tables,
+            }).then(function (dep) {
+                d.deps = dep && dep.ok ? dep.created : 0;
+                return d;
+            }).catch(function () { return d; });
+        });
+    }
+
     function ddlFixables() {
         return (ddlLast ? ddlLast.results : []).filter(function (r) {
             return r.missing_in_dest && r.missing_in_dest.length;
@@ -2141,6 +2247,13 @@
             " · нет в приёмнике <b>" + fmtN(s.no_dest || 0) + "</b>" +
             (s.no_source ? " · нет в источнике <b>" + fmtN(s.no_source) + "</b>" : "") +
             "</div>";
+
+        var missing = ddlMissing();
+
+        if (missing.length) {
+            html += '<button class="gpp-btn sm" id="gppDdlCreate">🏗 Создать ' +
+                "недостающие объекты (" + fmtN(missing.length) + ")</button> ";
+        }
 
         var fixables = ddlFixables();
 
@@ -2174,7 +2287,7 @@
                     var det = [];
 
                     if (r.status === "no_dest") {
-                        det.push("нет в приёмнике — gpcopy создаст её сам");
+                        det.push("нет в приёмнике — создам по DDL источника");
                     }
                     if (r.status === "no_source") {
                         det.push("нет в источнике (проверь имя)");
@@ -2200,6 +2313,46 @@
         }
 
         box.innerHTML = html;
+
+        var createBtn = $("gppDdlCreate");
+
+        if (createBtn) {
+            createBtn.onclick = function () {
+                var tables = ddlMissing();
+
+                createBtn.disabled = true;
+                createBtn.textContent = "Создаю…";
+
+                createMissing(tables).then(function (d) {
+                    createBtn.disabled = false;
+
+                    if (!d.ok) {
+                        createBtn.textContent = "🏗 Создать недостающие объекты";
+                        toast(d.message || "Не удалось создать", "error");
+                        return;
+                    }
+
+                    toast("Создано объектов: " + fmtN(d.created) +
+                        " (" + fmtN(d.statements) + " DDL)" +
+                        (d.failed ? ", ошибок: " + fmtN(d.failed) : "") +
+                        (d.deps ? ", зависимостей: " + fmtN(d.deps) : ""),
+                        d.failed ? "warning" : "success");
+
+                    (d.results || []).filter(function (r) {
+                        return !r.ok;
+                    }).slice(0, 3).forEach(function (r) {
+                        toast(r.schema + "." + r.table + ": " + r.error,
+                              "error");
+                    });
+
+                    ddlRun();   // перепроверить после создания
+                }).catch(function (e) {
+                    createBtn.disabled = false;
+                    createBtn.textContent = "🏗 Создать недостающие объекты";
+                    toast(String(e), "error");
+                });
+            };
+        }
 
         var fixBtn = $("gppDdlFix");
 
@@ -2570,6 +2723,21 @@
         fancySelect($("gppDst"));
 
         $("gppGo").onclick = go;
+
+        var auto = $("gppAutoCreate");
+
+        if (auto) {
+            try {
+                auto.checked = localStorage.getItem("gpp-auto-create") !== "0";
+            } catch (e) { /* приватный режим */ }
+
+            auto.onchange = function () {
+                try {
+                    localStorage.setItem("gpp-auto-create",
+                                         auto.checked ? "1" : "0");
+                } catch (e) { /* приватный режим */ }
+            };
+        }
 
         loadSel();
         renderSelection();

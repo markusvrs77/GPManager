@@ -145,6 +145,288 @@ def build_add_column_sql(schema, table, columns):
 
 
 # ------------------------------------------------------------------
+# создание недостающих объектов в приёмнике
+# ------------------------------------------------------------------
+
+def _column_def(col):
+    """Кусок «имя тип [DEFAULT ...] [NOT NULL]» для CREATE TABLE."""
+    name = (col.get("name") or "").strip()
+    col_type = (col.get("type") or "").strip()
+
+    if not name:
+        raise ValueError("Пустое имя колонки")
+
+    if not col_type or not _TYPE_RE.match(col_type):
+        raise ValueError("Недопустимый тип колонки: {}".format(col_type))
+
+    part = "{} {}".format(quote_ident(name), col_type)
+
+    if col.get("default"):
+        part += " DEFAULT {}".format(col["default"])
+
+    if col.get("not_null"):
+        part += " NOT NULL"
+
+    return part
+
+
+def build_create_table_sql(schema, table, columns, options=None,
+                           partition_by=None, distributed_by=None):
+    """
+    CREATE TABLE по описанию из каталога источника. Чистая функция.
+
+    Порядок частей — как в грамматике Greenplum 7:
+    (колонки) PARTITION BY ... WITH (...) DISTRIBUTED BY (...).
+    """
+    if not columns:
+        raise ValueError("Нет колонок для {}.{}".format(schema, table))
+
+    sql = "CREATE TABLE IF NOT EXISTS {}.{} (\n    {}\n)".format(
+        quote_ident(schema), quote_ident(table),
+        ",\n    ".join(_column_def(c) for c in columns),
+    )
+
+    if partition_by:
+        sql += "\n" + partition_by
+
+    if options:
+        sql += "\nWITH ({})".format(", ".join(options))
+
+    if distributed_by:
+        sql += "\n" + distributed_by
+
+    return sql
+
+
+def build_create_partition_sql(schema, table, parent_schema, parent_table,
+                               bound, options=None):
+    """CREATE TABLE ... PARTITION OF ... FOR VALUES ... Чистая функция."""
+    if not bound:
+        raise ValueError("Нет границ партиции {}.{}".format(schema, table))
+
+    sql = "CREATE TABLE IF NOT EXISTS {}.{} PARTITION OF {}.{}\n{}".format(
+        quote_ident(schema), quote_ident(table),
+        quote_ident(parent_schema), quote_ident(parent_table), bound,
+    )
+
+    if options:
+        sql += "\nWITH ({})".format(", ".join(options))
+
+    return sql
+
+
+def build_create_view_sql(schema, table, definition, materialized=False):
+    """CREATE VIEW / MATERIALIZED VIEW по определению источника."""
+    body = (definition or "").strip().rstrip(";")
+
+    if not body:
+        raise ValueError("Пустое определение вьюхи {}.{}".format(schema, table))
+
+    return "CREATE {}VIEW {}.{} AS\n{}".format(
+        "MATERIALIZED " if materialized else "",
+        quote_ident(schema), quote_ident(table), body,
+    )
+
+
+def _partition_clause(partkeydef):
+    """
+    pg_get_partkeydef() отдаёт «RANGE (d)» без префикса — без «PARTITION BY»
+    такой DDL не выполнится. Чистая функция.
+    """
+    text = (partkeydef or "").strip()
+
+    if not text:
+        return None
+
+    if text.upper().startswith("PARTITION BY"):
+        return text
+
+    return "PARTITION BY " + text
+
+
+def _table_meta(cur, schema, table):
+    """relkind / reloptions / определение вьюхи / partition key / политика."""
+    cur.execute(
+        """
+        SELECT c.oid, c.relkind, c.reloptions
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = %s AND c.relname = %s
+        """,
+        (schema, table),
+    )
+    row = cur.fetchone()
+
+    if not row:
+        return None
+
+    oid, relkind, reloptions = row[0], row[1], row[2]
+    meta = {"oid": oid, "relkind": relkind,
+            "options": list(reloptions or []), "partition_by": None,
+            "distributed_by": None, "definition": None}
+
+    if relkind in ("v", "m"):
+        cur.execute("SELECT pg_get_viewdef(%s, true)", (oid,))
+        meta["definition"] = cur.fetchone()[0]
+        return meta
+
+    if relkind == "p":
+        try:
+            cur.execute("SELECT pg_get_partkeydef(%s)", (oid,))
+            meta["partition_by"] = _partition_clause(cur.fetchone()[0])
+        except Exception:
+            meta["partition_by"] = None
+
+    # у обычного Postgres такой функции нет — это нормально
+    try:
+        cur.execute("SELECT pg_get_table_distributedby(%s)", (oid,))
+        meta["distributed_by"] = (cur.fetchone()[0] or "").strip() or None
+    except Exception:
+        meta["distributed_by"] = None
+
+    return meta
+
+
+def _table_columns(cur, oid):
+    cur.execute(
+        """
+        SELECT a.attname,
+               format_type(a.atttypid, a.atttypmod),
+               a.attnotnull,
+               pg_get_expr(d.adbin, d.adrelid)
+        FROM pg_attribute a
+        LEFT JOIN pg_attrdef d
+               ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+        WHERE a.attrelid = %s AND a.attnum > 0 AND NOT a.attisdropped
+        ORDER BY a.attnum
+        """,
+        (oid,),
+    )
+
+    return [{"name": r[0], "type": r[1], "not_null": r[2], "default": r[3]}
+            for r in cur.fetchall()]
+
+
+def _partition_children(cur, oid):
+    """Дочерние партиции с границами — чтобы дерево доехало целиком."""
+    cur.execute(
+        """
+        SELECT n.nspname, c.relname,
+               pg_get_expr(c.relpartbound, c.oid),
+               c.reloptions
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE i.inhparent = %s
+        ORDER BY n.nspname, c.relname
+        """,
+        (oid,),
+    )
+
+    return [{"schema": r[0], "table": r[1], "bound": r[2],
+             "options": list(r[3] or [])} for r in cur.fetchall()]
+
+
+def fetch_object_ddl(src_conn, schema, table, with_partitions=True):
+    """
+    DDL объекта из каталогов источника: сама таблица (или вьюха) и, если
+    она секционированная, все её партиции. -> {"kind", "statements": [...]}
+    """
+    with src_conn.cursor() as cur:
+        meta = _table_meta(cur, schema, table)
+
+        if not meta:
+            return None
+
+        if meta["relkind"] in ("v", "m"):
+            return {
+                "kind": "view" if meta["relkind"] == "v" else "matview",
+                "statements": [build_create_view_sql(
+                    schema, table, meta["definition"],
+                    materialized=meta["relkind"] == "m")],
+            }
+
+        columns = _table_columns(cur, meta["oid"])
+        statements = [build_create_table_sql(
+            schema, table, columns,
+            options=meta["options"],
+            partition_by=meta["partition_by"],
+            distributed_by=meta["distributed_by"],
+        )]
+
+        kind = "partitioned" if meta["relkind"] == "p" else "table"
+
+        if kind == "partitioned" and with_partitions:
+            for child in _partition_children(cur, meta["oid"]):
+                statements.append(build_create_partition_sql(
+                    child["schema"], child["table"], schema, table,
+                    child["bound"], options=child["options"],
+                ))
+
+    return {"kind": kind, "statements": statements}
+
+
+def create_missing_objects(source_connection_id, dest_connection_id, tables):
+    """
+    Создать в приёмнике объекты, которых там нет: схему, таблицу (со всеми
+    партициями) или вьюху — по DDL источника. Данные не трогаем, только
+    структура. -> [{schema, table, kind, ok, error, statements}]
+    """
+    src_cfg = get_connection_by_id(int(source_connection_id))
+    dst_cfg = get_connection_by_id(int(dest_connection_id))
+
+    if not src_cfg or not dst_cfg:
+        raise ValueError("Подключение не найдено")
+
+    src_conn = open_psycopg2_connection_by_cfg(src_cfg)
+    dst_conn = open_psycopg2_connection_by_cfg(dst_cfg)
+    dst_conn.autocommit = True
+    out = []
+    made_schemas = set()
+
+    try:
+        for t in tables:
+            schema = t.get("schema")
+            table = t.get("table")
+            row = {"schema": schema, "table": table, "kind": "table",
+                   "ok": True, "error": "", "statements": 0}
+
+            try:
+                ddl = fetch_object_ddl(src_conn, schema, table)
+
+                if not ddl:
+                    row["ok"] = False
+                    row["error"] = "нет в источнике"
+                    out.append(row)
+                    continue
+
+                row["kind"] = ddl["kind"]
+
+                with dst_conn.cursor() as cur:
+                    if schema not in made_schemas:
+                        cur.execute("CREATE SCHEMA IF NOT EXISTS {}".format(
+                            quote_ident(schema)))
+                        made_schemas.add(schema)
+
+                    for sql_text in ddl["statements"]:
+                        cur.execute(sql_text)
+                        row["statements"] += 1
+            except Exception as e:
+                row["ok"] = False
+                row["error"] = str(e)[:500]
+
+            out.append(row)
+    finally:
+        for c in (src_conn, dst_conn):
+            try:
+                c.close()
+            except Exception:
+                pass
+
+    return out
+
+
+# ------------------------------------------------------------------
 # зависимости: функции в DEFAULT'ах и sequences
 # ------------------------------------------------------------------
 
