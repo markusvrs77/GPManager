@@ -2184,7 +2184,8 @@
 
         if (items.length) {
             // порядок: сейчас копируется -> упавшие -> в очереди -> готовые
-            var order = { running: 0, failed: 1, pending: 2, queued: 2, done: 3, skipped: 4 };
+            var order = { running: 0, failed: 1, done: 2, pending: 3,
+                          queued: 3, skipped: 4 };
             items.sort(function (a, b) {
                 var ao = order[a.status] !== undefined ? order[a.status] : 2;
                 var bo = order[b.status] !== undefined ? order[b.status] : 2;
@@ -2245,6 +2246,50 @@
     /* ---------------- предпроверка DDL ---------------- */
 
     var ddlLast = null;   // последний результат precheck
+
+    // колонка есть, но названа иначе (регистр, кавычки, латинские двойники)
+    function ddlRenames() {
+        return (ddlLast ? ddlLast.results : []).filter(function (r) {
+            return (r.renames || []).length;
+        }).map(function (r) {
+            return { schema: r.schema, table: r.table, renames: r.renames };
+        });
+    }
+
+    // расхождения, которые правятся только пересозданием таблицы
+    function ddlBroken() {
+        return (ddlLast ? ddlLast.results : []).filter(function (r) {
+            return (r.type_diffs || []).length ||
+                (r.extra_in_dest || []).length;
+        }).map(function (r) {
+            return { schema: r.schema, table: r.table };
+        });
+    }
+
+    // отчёт об операции прямо в блоке — тост уезжает, а это остаётся
+    function ddlReport(title, d, countKey) {
+        var box = $("gppDdlReport");
+
+        if (!box) { return; }
+
+        var bad = (d.results || []).filter(function (r) { return !r.ok; });
+
+        box.innerHTML = '<div class="gpp-hint" style="margin-top: 8px;">' +
+            esc(title) + ": <b>" + fmtN(d[countKey] || 0) + "</b>" +
+            (d.failed
+                ? ' · <span style="color: var(--crit);">ошибок ' +
+                  fmtN(d.failed) + "</span>"
+                : " · без ошибок") + "</div>" +
+            (bad.length
+                ? '<div class="gpp-key-list" style="max-height: 180px;">' +
+                  bad.map(function (r) {
+                      return '<div class="gpp-key-row"><span>' +
+                          esc(r.schema + "." + r.table) +
+                          ' <span class="cols err">· ' + esc(r.error) +
+                          "</span></span></div>";
+                  }).join("") + "</div>"
+                : "");
+    }
 
     // объекты, которых нет в приёмнике — создаём по DDL источника
     function ddlMissing() {
@@ -2316,6 +2361,23 @@
                 "недостающие объекты (" + fmtN(missing.length) + ")</button> ";
         }
 
+        var renames = ddlRenames();
+
+        if (renames.length) {
+            var nRen = renames.reduce(function (a, r) {
+                return a + r.renames.length;
+            }, 0);
+            html += '<button class="gpp-btn sm" id="gppDdlRename">\u270e ' +
+                "Переименовать колонки (" + fmtN(nRen) + ")</button> ";
+        }
+
+        var broken = ddlBroken();
+
+        if (broken.length) {
+            html += '<button class="gpp-btn sm" id="gppDdlRecreate">\u267b ' +
+                "Пересоздать таблицы (" + fmtN(broken.length) + ")</button> ";
+        }
+
         var fixables = ddlFixables();
 
         if (fixables.length) {
@@ -2353,12 +2415,16 @@
                     if (r.status === "no_source") {
                         det.push("нет в источнике (проверь имя)");
                     }
+                    (r.renames || []).forEach(function (x) {
+                        det.push("колонка названа иначе: «" + x.from +
+                            "» → «" + x.to + "» (переименую)");
+                    });
                     (r.missing_in_dest || []).forEach(function (c) {
                         det.push("нет колонки " + c.name + " (" + c.type + ")");
                     });
                     (r.type_diffs || []).forEach(function (d) {
                         det.push(d.column + ": " + d.src + " → " + d.dst +
-                            " — тип разошёлся, поправь вручную или --drop");
+                            " — тип разошёлся, лечится пересозданием");
                     });
                     if ((r.extra_in_dest || []).length) {
                         det.push("лишние в приёмнике: " + r.extra_in_dest.join(", "));
@@ -2373,7 +2439,86 @@
             html += '<div class="gpp-hint">Все выбранные таблицы совпадают по колонкам.</div>';
         }
 
+        html += '<div id="gppDdlReport"></div>';
+
         box.innerHTML = html;
+
+        var renameBtn = $("gppDdlRename");
+
+        if (renameBtn) {
+            renameBtn.onclick = function () {
+                renameBtn.disabled = true;
+                renameBtn.textContent = "Переименовываю…";
+
+                api("/api/gpcopy/rename-columns", "POST", {
+                    dest_connection_id: dstId(),
+                    tables: ddlRenames(),
+                }).then(function (d) {
+                    renameBtn.disabled = false;
+
+                    if (!d.ok) {
+                        toast(d.message || "Не удалось переименовать", "error");
+                        return;
+                    }
+
+                    var report = { results: d.results, failed: d.failed,
+                                   renamed: d.renamed };
+
+                    ddlRun().then(function () {
+                        ddlReport("Переименовано колонок", report, "renamed");
+                    });
+                }).catch(function (e) {
+                    renameBtn.disabled = false;
+                    toast(String(e), "error");
+                });
+            };
+        }
+
+        var recreateBtn = $("gppDdlRecreate");
+
+        if (recreateBtn) {
+            recreateBtn.onclick = function () {
+                var tables = ddlBroken();
+                var ask = window.gpConfirm
+                    ? window.gpConfirm("Пересоздать " + tables.length +
+                        " таблиц в приёмнике? Данные в них будут удалены " +
+                        "(DROP + CREATE по DDL источника).",
+                        { danger: true, confirmText: "Пересоздать" })
+                    : Promise.resolve(window.confirm("Пересоздать таблицы? " +
+                        "Данные в приёмнике будут удалены."));
+
+                ask.then(function (yes) {
+                    if (!yes) { return; }
+
+                    recreateBtn.disabled = true;
+                    recreateBtn.textContent = "Пересоздаю…";
+
+                    api("/api/gpcopy/recreate-tables", "POST", {
+                        source_connection_id: srcId(),
+                        dest_connection_id: dstId(),
+                        tables: tables,
+                    }).then(function (d) {
+                        recreateBtn.disabled = false;
+
+                        if (!d.ok) {
+                            toast(d.message || "Не удалось пересоздать",
+                                  "error");
+                            return;
+                        }
+
+                        var report = { results: d.results, failed: d.failed,
+                                       created: d.created };
+
+                        ddlRun().then(function () {
+                            ddlReport("Пересоздано таблиц", report, "created");
+                        });
+                    }).catch(function (e) {
+                        recreateBtn.disabled = false;
+                        toast(String(e), "error");
+                    });
+                });
+            };
+        }
 
         var createBtn = $("gppDdlCreate");
 
@@ -2406,7 +2551,12 @@
                               "error");
                     });
 
-                    ddlRun();   // перепроверить после создания
+                    var report = { results: d.results, failed: d.failed,
+                                   created: d.created };
+
+                    ddlRun().then(function () {
+                        ddlReport("Создано объектов", report, "created");
+                    });
                 }).catch(function (e) {
                     createBtn.disabled = false;
                     createBtn.textContent = "🏗 Создать недостающие объекты";
@@ -2497,7 +2647,7 @@
 
         if (!tables.length) {
             box.innerHTML = '<div class="gpp-hint">Сначала выбери таблицы (шаг 1).</div>';
-            return;
+            return Promise.resolve();
         }
 
         var btn = $("gppDdlCheck");
@@ -2505,7 +2655,8 @@
         btn.textContent = "Проверяю DDL…";
         box.innerHTML = '<div class="gpp-hint">Читаю колонки с обеих сторон…</div>';
 
-        api("/api/gpcopy/precheck", "POST", {
+        // возвращаем промис: после правок надо дождаться перепроверки
+        return api("/api/gpcopy/precheck", "POST", {
             source_connection_id: srcId(), dest_connection_id: dstId(),
             tables: tables,
         }).then(function (d) {

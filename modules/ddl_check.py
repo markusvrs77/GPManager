@@ -66,6 +66,62 @@ def fetch_columns(conn, tables):
     return result
 
 
+# латинские двойники кириллицы: имена ТСП и TCП выглядят одинаково,
+# но это разные колонки — при сверке считаем их одной и той же
+_HOMOGLYPHS = {
+    "A": "А", "B": "В", "C": "С", "E": "Е", "H": "Н", "K": "К", "M": "М",
+    "O": "О", "P": "Р", "T": "Т", "X": "Х", "a": "а", "c": "с", "e": "е",
+    "o": "о", "p": "р", "x": "х", "y": "у",
+}
+
+
+def normalize_column_name(name):
+    """
+    Имя колонки без кавычек, регистра, лишних пробелов и латинских
+    двойников — чтобы поймать «ТСП» против «TCП» и «"ГРУППИРОВКА"»
+    против «ГРУППИРОВКА». Чистая функция.
+    """
+    text = (name or "").strip().strip('"').strip()
+    text = re.sub(r"\s+", " ", text)
+    text = "".join(_HOMOGLYPHS.get(ch, ch) for ch in text)
+
+    return text.casefold()
+
+
+def match_renames(missing, extra):
+    """
+    Пары «колонка в приёмнике -> как она называется в источнике»: одно и
+    то же поле, записанное иначе. Такое чинится переименованием, а не
+    добавлением колонки. Чистая функция.
+
+    missing: [{name, type}] из источника, extra: [имя] из приёмника
+    -> ([{from, to, type}], оставшиеся missing, оставшиеся extra)
+    """
+    by_norm = {}
+
+    for name in extra:
+        by_norm.setdefault(normalize_column_name(name), []).append(name)
+
+    renames = []
+    left_missing = []
+    used = set()
+
+    for col in missing:
+        key = normalize_column_name(col["name"])
+        candidates = [n for n in by_norm.get(key, []) if n not in used]
+
+        if candidates and candidates[0] != col["name"]:
+            used.add(candidates[0])
+            renames.append({"from": candidates[0], "to": col["name"],
+                            "type": col.get("type")})
+        else:
+            left_missing.append(col)
+
+    left_extra = [n for n in extra if n not in used]
+
+    return renames, left_missing, left_extra
+
+
 def compare_ddl(src_cols, dst_cols, tables):
     """
     Чистое сравнение. -> [{schema, table, status, missing_in_dest,
@@ -108,8 +164,14 @@ def compare_ddl(src_cols, dst_cols, tables):
             if c["name"] in dst_map and dst_map[c["name"]] != c["type"]
         ]
 
+        # одно и то же поле, записанное иначе -> переименование
+        renames, row["missing_in_dest"], row["extra_in_dest"] = match_renames(
+            row["missing_in_dest"], row["extra_in_dest"])
+        row["renames"] = renames
+
         row["status"] = "diff" if (
-            row["missing_in_dest"] or row["extra_in_dest"] or row["type_diffs"]
+            row["missing_in_dest"] or row["extra_in_dest"]
+            or row["type_diffs"] or row["renames"]
         ) else "ok"
 
         out.append(row)
@@ -672,6 +734,101 @@ def apply_dependency_fixes(source_connection_id, dest_connection_id, tables):
     return results
 
 
+def build_rename_column_sql(schema, table, old_name, new_name):
+    """ALTER TABLE ... RENAME COLUMN. Чистая функция."""
+    if not old_name or not new_name:
+        raise ValueError("Пустое имя колонки")
+
+    return "ALTER TABLE {}.{} RENAME COLUMN {} TO {}".format(
+        quote_ident(schema), quote_ident(table),
+        quote_ident(old_name), quote_ident(new_name),
+    )
+
+
+def apply_column_renames(dest_connection_id, tables):
+    """
+    Привести имена колонок приёмника к именам источника.
+    tables: [{schema, table, renames: [{from, to}]}]
+    -> [{schema, table, ok, error, renamed}]
+    """
+    dst_cfg = get_connection_by_id(int(dest_connection_id))
+
+    if not dst_cfg:
+        raise ValueError("Подключение не найдено")
+
+    conn = open_psycopg2_connection_by_cfg(dst_cfg)
+    conn.autocommit = True
+    out = []
+
+    try:
+        with conn.cursor() as cur:
+            for t in tables:
+                row = {"schema": t.get("schema"), "table": t.get("table"),
+                       "ok": True, "error": "", "renamed": 0}
+
+                try:
+                    for r in t.get("renames") or []:
+                        cur.execute(build_rename_column_sql(
+                            t["schema"], t["table"], r["from"], r["to"]))
+                        row["renamed"] += 1
+                except Exception as e:
+                    row["ok"] = False
+                    row["error"] = str(e)[:500]
+
+                out.append(row)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return out
+
+
+def recreate_tables(source_connection_id, dest_connection_id, tables):
+    """
+    Пересоздать таблицы в приёмнике по DDL источника: DROP + CREATE.
+    Единственный способ починить разошедшиеся типы и лишние колонки.
+    ДАННЫЕ В ПРИЁМНИКЕ ТЕРЯЮТСЯ — вызывается только по явной команде.
+    """
+    dst_cfg = get_connection_by_id(int(dest_connection_id))
+
+    if not dst_cfg:
+        raise ValueError("Подключение не найдено")
+
+    conn = open_psycopg2_connection_by_cfg(dst_cfg)
+    conn.autocommit = True
+    dropped = []
+
+    try:
+        with conn.cursor() as cur:
+            for t in tables:
+                try:
+                    cur.execute("DROP TABLE IF EXISTS {}.{} CASCADE".format(
+                        quote_ident(t["schema"]), quote_ident(t["table"])))
+                    dropped.append(dict(t))
+                except Exception as e:
+                    dropped.append(dict(t, drop_error=str(e)[:500]))
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    results = create_missing_objects(
+        source_connection_id, dest_connection_id,
+        [t for t in dropped if not t.get("drop_error")],
+    )
+
+    for t in dropped:
+        if t.get("drop_error"):
+            results.append({"schema": t.get("schema"), "table": t.get("table"),
+                            "kind": "table", "ok": False,
+                            "error": t["drop_error"], "statements": 0})
+
+    return results
+
+
 def precheck_tables(source_connection_id, dest_connection_id, tables):
     """
     Полная предпроверка: сравнение колонок + отсутствующие в приёмнике
@@ -709,6 +866,7 @@ def precheck_tables(source_connection_id, dest_connection_id, tables):
             {"kind": d["kind"], "name": d["name"]} for d in deps
         ],
         "summary": {
+            "renames": sum(len(r.get("renames") or []) for r in results),
             "ok": sum(1 for r in results if r["status"] == "ok"),
             "diff": sum(1 for r in results if r["status"] == "diff"),
             "no_dest": sum(1 for r in results if r["status"] == "no_dest"),

@@ -466,6 +466,65 @@ def api_gpcopy_create_tables():
         return jsonify({"ok": False, "message": str(e)[:2000]}), 500
 
 
+@app.route("/api/gpcopy/rename-columns", methods=["POST"])
+def api_gpcopy_rename_columns():
+    """Привести имена колонок приёмника к именам источника."""
+    data = request.get_json(silent=True) or {}
+    tables = data.get("tables") or []
+
+    if not data.get("dest_connection_id") or not tables:
+        return jsonify({"ok": False,
+                        "message": "dest_connection_id и tables обязательны"}), 400
+
+    try:
+        from modules.ddl_check import apply_column_renames
+
+        results = apply_column_renames(data["dest_connection_id"], tables)
+        return jsonify({
+            "ok": True,
+            "results": results,
+            "renamed": sum(r["renamed"] for r in results),
+            "failed": sum(1 for r in results if not r["ok"]),
+        })
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/gpcopy/recreate-tables", methods=["POST"])
+def api_gpcopy_recreate_tables():
+    """
+    Пересоздать таблицы в приёмнике по DDL источника (DROP + CREATE).
+    Разрушает данные в приёмнике — вызывается только по явной команде
+    пользователя из интерфейса.
+    """
+    data = request.get_json(silent=True) or {}
+    tables = data.get("tables") or []
+
+    if (not data.get("source_connection_id")
+            or not data.get("dest_connection_id") or not tables):
+        return jsonify({"ok": False,
+                        "message": "source, dest и tables обязательны"}), 400
+
+    try:
+        from modules.ddl_check import recreate_tables
+
+        results = recreate_tables(
+            data["source_connection_id"], data["dest_connection_id"], tables,
+        )
+        return jsonify({
+            "ok": True,
+            "results": results,
+            "created": sum(1 for r in results if r["ok"]),
+            "failed": sum(1 for r in results if not r["ok"]),
+        })
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
 @app.route("/api/gpcopy/fix-deps", methods=["POST"])
 def api_gpcopy_fix_deps():
     """Досоздать в приёмнике зависимости: расширения, функции, sequences."""
