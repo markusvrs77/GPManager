@@ -470,15 +470,11 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
         </div>
         <div class="gpp-params" id="gppP-sched">
             <div class="gpp-row">
-                <div class="gpp-f"><label>Расписание</label>
-                    <select id="gppSchedPreset">
-                        <option value="0 2 * * *">Каждую ночь в 02:00</option>
-                        <option value="0 * * * *">Ежечасно</option>
-                        <option value="0 6 * * 1">По понедельникам в 06:00</option>
-                        <option value="custom">Cron-выражение…</option>
-                    </select></div>
-                <div class="gpp-f" id="gppSchedCronF" style="display: none;"><label>Cron</label>
-                    <input id="gppSchedCron" value="0 2 * * *" style="min-width: 140px;"></div>
+                <div class="gpp-f" style="flex: 1; min-width: 320px;">
+                    <label>Когда запускать</label>
+                    <div id="gppSchedPicker"></div>
+                    <input type="hidden" id="gppSchedCron" value="0 2 * * *">
+                </div>
                 <div class="gpp-f" style="flex: 1;"><label>Имя</label>
                     <input id="gppSchedName" placeholder="nightly-dwh-increment"></div>
             </div>
@@ -561,5 +557,6 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=10"></script>
+<script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=11"></script>
 {% endblock %}

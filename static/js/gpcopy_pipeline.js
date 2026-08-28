@@ -1465,9 +1465,9 @@
 
     /* ---------------- summary ---------------- */
 
+    // расписание задаётся календарным выбором; cron живёт в скрытом поле
     function cronExpr() {
-        var p = $("gppSchedPreset").value;
-        return p === "custom" ? $("gppSchedCron").value.trim() : p;
+        return ($("gppSchedCron").value || "0 2 * * *").trim();
     }
 
     function renderSummary() {
@@ -1479,7 +1479,9 @@
             ? $("gppDst").selectedOptions[0].textContent : "?";
 
         var whenTxt = state.when === "sched"
-            ? "по расписанию <b>" + esc(cronExpr()) + "</b>"
+            ? "по расписанию — <b>" +
+              esc(window.gpCronHuman ? gpCronHuman(cronExpr()) : cronExpr()) +
+              "</b>"
             : "<b>прямо сейчас</b>";
 
         $("gppSummary").innerHTML = "Скопировать <b>" + fmtN(state.sel.size) +
@@ -2827,13 +2829,17 @@
             $("gppDateToF").style.display = custom ? "" : "none";
         };
 
-        // sched preset custom cron
-        $("gppSchedPreset").onchange = function () {
-            $("gppSchedCronF").style.display =
-                $("gppSchedPreset").value === "custom" ? "" : "none";
-            previewCron();
-        };
-        $("gppSchedCron").oninput = previewCron;
+        // календарный выбор расписания вместо cron-строки
+        if (window.gpCronPicker && $("gppSchedPicker")) {
+            gpCronPicker($("gppSchedPicker"), {
+                value: $("gppSchedCron").value,
+                onChange: function (cron) {
+                    $("gppSchedCron").value = cron;
+                    previewCron();
+                    renderSummary();
+                },
+            });
+        }
 
         // priorities invalidate resolutions
         $("gppIncPriority").oninput = function () { state.incResolved = null; };

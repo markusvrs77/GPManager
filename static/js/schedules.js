@@ -34,9 +34,27 @@ function onJobTypeChange() {
     if (type === "gpcopy_date") previewWindow();
 }
 
+let schPicker = null;
+
+// расписание задаётся календарным выбором, cron лежит в скрытом поле
 function setCron(expr) {
     document.getElementById("schCron").value = expr;
+    if (schPicker) { schPicker.set(expr); }
     previewCron();
+}
+
+function initCronPicker() {
+    const mount = document.getElementById("schCronPicker");
+
+    if (!mount || !window.gpCronPicker) { return; }
+
+    schPicker = gpCronPicker(mount, {
+        value: document.getElementById("schCron").value,
+        onChange: (cron) => {
+            document.getElementById("schCron").value = cron;
+            previewCron();
+        },
+    });
 }
 
 function parseEndpoint(value) {
@@ -271,6 +289,7 @@ async function showRuns(id) {
 /* ---------- init ---------- */
 
 document.addEventListener("DOMContentLoaded", () => {
+    initCronPicker();
     loadSchedules();
     previewCron();
     onJobTypeChange();

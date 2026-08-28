@@ -94,13 +94,9 @@
                         <div class="small text-muted mt-2" id="dwPreview">—</div>
                     </div>
 
-                    <label class="form-label">Cron</label>
-                    <div class="d-flex gap-1 flex-wrap mb-2">
-                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setCron('0 2 * * *')">Ночью 02:00</button>
-                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setCron('0 * * * *')">Ежечасно</button>
-                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setCron('0 3 * * 0')">Вс 03:00</button>
-                    </div>
-                    <input type="text" id="schCron" class="form-control mb-1" value="0 2 * * *" oninput="previewCron()">
+                    <label class="form-label">Когда запускать</label>
+                    <div id="schCronPicker" class="mb-1"></div>
+                    <input type="hidden" id="schCron" value="0 2 * * *">
                     <div class="small text-muted mb-3" id="cronPreview">—</div>
 
                     <div class="row g-2 mb-3">
@@ -186,5 +182,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/schedules.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/schedules.js') }}?v=3"></script>
 {% endblock %}
