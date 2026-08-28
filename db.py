@@ -1,14 +1,60 @@
 import sqlite3
+import time
 from contextlib import contextmanager
 
 import config
 
+# Приложение пишет в БД из многих потоков сразу: планировщик, воркеры задач,
+# опросы прогресса из браузера. В обычном журнальном режиме любой писатель
+# блокирует базу целиком, и остальные получают "database is locked".
+# WAL разводит читателей и писателя, busy_timeout заставляет подождать
+# очереди вместо мгновенной ошибки.
+SQLITE_TIMEOUT_SECONDS = 20.0
+SQLITE_BUSY_TIMEOUT_MS = 20000
+
+_wal_ready = False
+
 
 def get_sqlite_connection():
     # Resolve config.SQLITE_DB_PATH at call time so tests can redirect it.
-    conn = sqlite3.connect(config.SQLITE_DB_PATH)
+    global _wal_ready
+
+    conn = sqlite3.connect(
+        config.SQLITE_DB_PATH, timeout=SQLITE_TIMEOUT_SECONDS,
+    )
     conn.row_factory = sqlite3.Row
+    # транзакция сразу берёт write-блокировку: иначе апгрейд read -> write
+    # отдаёт SQLITE_BUSY_SNAPSHOT, которого busy_timeout не ждёт
+    conn.isolation_level = "IMMEDIATE"
+
+    conn.execute("PRAGMA busy_timeout = {}".format(SQLITE_BUSY_TIMEOUT_MS))
+
+    if not _wal_ready:
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            _wal_ready = True
+        except sqlite3.Error:
+            # сетевая ФС или занятая база — работаем как раньше
+            pass
+
     return conn
+
+
+def _commit_with_retry(conn, attempts=6, delay=0.2):
+    """Коммит не должен падать из-за чужой транзакции — ждём и повторяем."""
+    for attempt in range(attempts):
+        try:
+            conn.commit()
+            return
+        except sqlite3.OperationalError as e:
+            locked = "locked" in str(e).lower() or "busy" in str(e).lower()
+
+            if not locked or attempt == attempts - 1:
+                raise
+
+            time.sleep(delay * (attempt + 1))
+
 
 @contextmanager
 def sqlite_cursor(commit=False):
@@ -17,7 +63,7 @@ def sqlite_cursor(commit=False):
         cur = conn.cursor()
         yield cur
         if commit:
-            conn.commit()
+            _commit_with_retry(conn)
     finally:
         conn.close()
 
