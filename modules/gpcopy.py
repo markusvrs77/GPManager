@@ -160,11 +160,41 @@ def validate_identifier_with_dollar(name):
     return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_$]*$", name or ""))
 
 
+# имя, которое gpcopy разберёт без кавычек: только нижний регистр,
+# цифры и подчёркивания
+_PLAIN_IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+
+def quote_ident_if_needed(name):
+    """
+    gpcopy читает имена по правилам SQL: без кавычек имя приводится к
+    нижнему регистру, а пробел или точка ломают разбор. Поэтому всё, что
+    не является простым именем, оборачиваем в двойные кавычки.
+    Чистая функция.
+    """
+    text = "" if name is None else str(name)
+
+    if _PLAIN_IDENT_RE.match(text):
+        return text
+
+    return '"' + text.replace('"', '""') + '"'
+
+
+def gpcopy_full_name(*parts):
+    """
+    Полное имя для gpcopy: db.schema.table, каждая часть — при
+    необходимости в кавычках. Чистая функция.
+    """
+    return ".".join(
+        quote_ident_if_needed(p) for p in parts if p not in (None, "")
+    )
+
+
 def quote_table_for_include(schema_name, table_name):
     """
     gpcopy include-table-file обычно принимает schema.table.
     """
-    return "{}.{}".format(schema_name, table_name)
+    return gpcopy_full_name(schema_name, table_name)
 
 
 def get_item_value(item, key, default=None):
@@ -677,16 +707,10 @@ def make_include_table_file(items, dbname=None):
                     continue
 
                 if dbname:
-                    full_name = "{}.{}.{}".format(
-                        dbname,
-                        schema_name,
-                        table_name,
-                    )
+                    full_name = gpcopy_full_name(
+                        dbname, schema_name, table_name)
                 else:
-                    full_name = "{}.{}".format(
-                        schema_name,
-                        table_name,
-                    )
+                    full_name = gpcopy_full_name(schema_name, table_name)
 
                 f.write(full_name + "\n")
 
@@ -1063,10 +1087,10 @@ def build_gpcopy_date_include_json_preview(config):
 
         return [
             {
-                "source": "{}.{}.{}".format(
+                "source": gpcopy_full_name(
                     source_dbname, entry["schema"], entry["table"]
                 ),
-                "dest": "{}.{}.{}".format(
+                "dest": gpcopy_full_name(
                     dest_dbname, entry["dest_schema"], entry["dest_table"]
                 ),
                 "sql": entry["sql"],
@@ -1143,10 +1167,10 @@ def build_gpcopy_date_include_json_preview(config):
     # dest:   adb.schema.table
     return [
         {
-            "source": "{}.{}.{}".format(
+            "source": gpcopy_full_name(
                 source_dbname, entry["schema"], entry["table"]
             ),
-            "dest": "{}.{}.{}".format(
+            "dest": gpcopy_full_name(
                 dest_dbname, entry["dest_schema"], entry["dest_table"]
             ),
             "sql": entry["sql"],
