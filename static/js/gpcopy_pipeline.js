@@ -1181,6 +1181,17 @@
         });
     }
 
+    // сколько таблиц проверять за заход: запросы тяжёлые, поэтому объём
+    // выбирает пользователь, а «все» гоняем той же очередью
+    function computeCap() {
+        var sel = $("gppComputeCap");
+        var raw = sel ? sel.value : "100";
+
+        return raw === "all" ? 0 : (parseInt(raw, 10) || 100);
+    }
+
+    var COMPUTE_PARALLEL = 3;
+
     function computeMissingKeys() {
         var hint = $("gppSyncHint");
         var pending = state.syncUnresolved || [];
@@ -1190,69 +1201,110 @@
             return;
         }
 
-        var CAP = 20;
-        var todo = pending.slice(0, CAP);
-        var found = 0, checked = 0;
+        var cap = computeCap();
+        var todo = cap ? pending.slice(0, cap) : pending.slice();
+        var found = 0, checked = 0, next = 0, active = 0, stopped = false;
+        var controllers = [];
 
         $("gppSyncCompute").disabled = true;
 
-        // Отмена срабатывает сразу: обрываем текущий запрос и возвращаем UI,
-        // не дожидаясь ответа сервера.
         var op = opStart("Вычисляю уникальные колонки", function () {
-            if (op._ac) { try { op._ac.abort(); } catch (e) { /* ok */ } }
+            stopped = true;
+            controllers.forEach(function (ac) {
+                try { ac.abort(); } catch (e) { /* уже завершился */ }
+            });
             $("gppSyncCompute").disabled = false;
-            hint.innerHTML = "Вычисление отменено (проверено " + fmtN(checked) + ").";
+            hint.innerHTML = "Вычисление отменено (проверено " +
+                fmtN(checked) + " из " + fmtN(todo.length) + ").";
             renderKeyList();
         });
 
-        function next(i) {
-            if (op.cancelled) { return; }
-            if (i >= todo.length) {
-                opEnd(op);
-                $("gppSyncCompute").disabled = false;
-                state.syncUnresolved = pending.filter(function (t) {
-                    return !state.syncKeys[t.schema + "." + t.table];
-                });
-                var msg = "Вычисление: проверено " + fmtN(checked) +
-                    ', <span class="good">ключ найден у ' + fmtN(found) + "</span>";
-                if (state.syncUnresolved.length) {
-                    msg += ' · <span class="warn">без ключа: ' +
-                        fmtN(state.syncUnresolved.length) + " (будут пропущены)</span>";
-                }
-                if (pending.length > CAP) {
-                    msg += " · за раз проверяем до " + CAP + " таблиц — запросы тяжёлые";
-                }
-                hint.innerHTML = msg;
-                renderKeyList();
+        function finish() {
+            opEnd(op);
+            $("gppSyncCompute").disabled = false;
+            state.syncUnresolved = pending.filter(function (t) {
+                return !state.syncKeys[t.schema + "." + t.table];
+            });
+
+            var msg = "Вычисление: проверено " + fmtN(checked) +
+                ', <span class="good">ключ найден у ' + fmtN(found) +
+                "</span>";
+
+            if (state.syncUnresolved.length) {
+                msg += ' · <span class="warn">без ключа: ' +
+                    fmtN(state.syncUnresolved.length) +
+                    " (будут пропущены)</span>";
+            }
+
+            var left = pending.length - todo.length;
+
+            if (left > 0) {
+                msg += " · осталось непроверенных: " + fmtN(left) +
+                    ' <button class="gpp-btn sm" id="gppComputeMore">' +
+                    "Проверить дальше</button>";
+            }
+
+            hint.innerHTML = msg;
+            renderKeyList();
+
+            if ($("gppComputeMore")) {
+                $("gppComputeMore").onclick = computeMissingKeys;
+            }
+        }
+
+        function pump() {
+            if (stopped) { return; }
+
+            if (next >= todo.length) {
+                if (!active) { finish(); }
                 return;
             }
-            var t = todo[i];
-            hint.textContent = "Пробую по данным: " + t.schema + "." + t.table +
-                " (" + (i + 1) + "/" + todo.length + ")…";
-            opProgress(op, Math.round(i * 100 / todo.length),
-                t.schema + "." + t.table + " (" + (i + 1) + "/" + todo.length + ")");
+
+            var t = todo[next];
+
+            next += 1;
+            active += 1;
+
             var ac = new AbortController();
-            op._ac = ac;
+
+            controllers.push(ac);
+
             api("/api/catalog/compute-unique", "POST", {
                 connection_id: srcId(), schema: t.schema, table: t.table,
             }, ac.signal).then(function (d) {
-                if (op.cancelled) { return; }
-                checked += 1;
-                if (d.ok && d.column) {
+                if (stopped) { return; }
+
+                if (d && d.ok && d.column) {
                     state.syncKeys[t.schema + "." + t.table] = {
                         columns: [d.column],
-                        source: d.confidence === "sample" ? "sampled" : "computed",
+                        source: d.confidence === "sample"
+                            ? "sampled" : "computed",
                     };
                     found += 1;
                 }
-                next(i + 1);
             }).catch(function () {
-                if (op.cancelled) { return; }
+                /* таблицу проверить не смогли — идём дальше */
+            }).then(function () {
+                if (stopped) { return; }
+
                 checked += 1;
-                next(i + 1);
+                active -= 1;
+
+                hint.textContent = "Пробую по данным: " + t.schema + "." +
+                    t.table + " (" + fmtN(checked) + "/" +
+                    fmtN(todo.length) + ")…";
+                opProgress(op, Math.round(checked * 100 / todo.length),
+                    fmtN(checked) + "/" + fmtN(todo.length) +
+                    ", ключей найдено " + fmtN(found));
+
+                pump();
             });
         }
-        next(0);
+
+        hint.textContent = "Проверяю по данным " + fmtN(todo.length) +
+            " таблиц…";
+
+        for (var i = 0; i < COMPUTE_PARALLEL; i++) { pump(); }
     }
 
     /* ---------------- partition diff preview ---------------- */

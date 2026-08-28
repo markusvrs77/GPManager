@@ -391,6 +391,13 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
                 <div class="gpp-row">
                     <button class="gpp-btn" id="gppSyncKeys">Ключи: PK + уник. индексы</button>
                     <button class="gpp-btn" id="gppSyncCompute">Найти уникальную колонку (по данным)</button>
+                    <label class="gpp-hint" style="margin: 0;">за заход
+                        <select id="gppComputeCap" style="margin-left: 6px;">
+                            <option value="20">20 таблиц</option>
+                            <option value="100" selected>100 таблиц</option>
+                            <option value="500">500 таблиц</option>
+                            <option value="all">все (долго)</option>
+                        </select></label>
                 </div>
                 <div class="gpp-hint" id="gppSyncHint">Ключ ищем по иерархии: PK → кратчайший
                     уникальный индекс → вычисление по данным (для таблиц без индексов).</div>
