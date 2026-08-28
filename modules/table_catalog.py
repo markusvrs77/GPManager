@@ -451,6 +451,211 @@ def delete_table_set(set_id):
 # приоритетный список дат -> фолбэк на любую date/timestamp колонку.
 # ------------------------------------------------------------
 
+# ------------------------------------------------------------
+# сохранённые ключи синхронизации
+# ------------------------------------------------------------
+
+def save_sync_key(connection_id, schema, table, columns, source):
+    """Запомнить ключ таблицы, чтобы не искать его заново."""
+    if not columns:
+        return
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            INSERT INTO sync_keys (
+                connection_id, schema_name, table_name, columns_json, source,
+                found_at
+            ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(connection_id, schema_name, table_name) DO UPDATE SET
+                columns_json = excluded.columns_json,
+                source = excluded.source,
+                found_at = excluded.found_at
+            """,
+            (int(connection_id), schema, table,
+             json.dumps(list(columns), ensure_ascii=False), source),
+        )
+
+
+def load_sync_keys(connection_id, tables=None):
+    """
+    Сохранённые ключи: {(schema, table): {"columns": [...], "source": str,
+    "found_at": str}}. tables — ограничить выборку (список пар).
+    """
+    with sqlite_cursor() as cur:
+        cur.execute(
+            """
+            SELECT schema_name, table_name, columns_json, source, found_at
+            FROM sync_keys
+            WHERE connection_id = ?
+            """,
+            (int(connection_id),),
+        )
+        rows = cur.fetchall()
+
+    wanted = set(tables or [])
+    out = {}
+
+    for row in rows:
+        key = (row["schema_name"], row["table_name"])
+
+        if wanted and key not in wanted:
+            continue
+
+        try:
+            columns = json.loads(row["columns_json"])
+        except Exception:
+            continue
+
+        if columns:
+            out[key] = {"columns": columns, "source": row["source"],
+                        "found_at": row["found_at"]}
+
+    return out
+
+
+def forget_sync_key(connection_id, schema, table):
+    """Забыть сохранённый ключ — чтобы искать заново."""
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            DELETE FROM sync_keys
+            WHERE connection_id = ? AND schema_name = ? AND table_name = ?
+            """,
+            (int(connection_id), schema, table),
+        )
+
+        return cur.rowcount
+
+
+# ------------------------------------------------------------
+# размеры таблиц: подсказка, что грузить целиком тяжело
+# ------------------------------------------------------------
+
+def fetch_table_sizes(connection_id, tables):
+    """
+    {(schema, table): {"bytes": n, "rows": m}} — размер на диске и оценка
+    строк. В Greenplum данные лежат на сегментах, поэтому размер берём
+    через gp_dist_random и суммируем по всему дереву партиций; на обычном
+    Postgres хватает pg_total_relation_size на мастере.
+    """
+    if not tables:
+        return {}
+
+    cfg = get_connection_by_id(int(connection_id))
+
+    if not cfg:
+        raise ValueError("Connection not found: {}".format(connection_id))
+
+    conn = open_psycopg2_connection_by_cfg(cfg)
+    out = {}
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET statement_timeout = '60s'")
+
+            pairs = list(tables)
+            owner = {}          # oid потомка -> (schema, table) корня
+            all_oids = []
+
+            for i in range(0, len(pairs), 200):
+                chunk = pairs[i:i + 200]
+                placeholders = ", ".join(["(%s, %s)"] * len(chunk))
+                params = [v for pair in chunk for v in pair]
+
+                # корни и все их партиции одним проходом
+                cur.execute(
+                    """
+                    WITH RECURSIVE roots AS (
+                        SELECT c.oid, n.nspname AS s, c.relname AS t,
+                               c.reltuples
+                        FROM pg_class c
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE (n.nspname, c.relname) IN ({})
+                    ),
+                    tree AS (
+                        SELECT oid, s, t, reltuples FROM roots
+                        UNION ALL
+                        SELECT ch.oid, tr.s, tr.t, ch.reltuples
+                        FROM tree tr
+                        JOIN pg_inherits i ON i.inhparent = tr.oid
+                        JOIN pg_class ch ON ch.oid = i.inhrelid
+                    )
+                    SELECT oid, s, t, reltuples FROM tree
+                    """.format(placeholders),
+                    params,
+                )
+
+                for oid, schema, table, reltuples in cur.fetchall():
+                    owner[oid] = (schema, table)
+                    all_oids.append(oid)
+
+                    entry = out.setdefault((schema, table),
+                                           {"bytes": 0, "rows": 0})
+                    entry["rows"] += max(0, int(reltuples or 0))
+
+            if not all_oids:
+                return out
+
+            # размер: на мастере он нулевой, поэтому спрашиваем сегменты
+            sizes = {}
+            distributed = True
+
+            for i in range(0, len(all_oids), 500):
+                chunk = all_oids[i:i + 500]
+                values = ", ".join("({}::oid)".format(int(o)) for o in chunk)
+
+                try:
+                    cur.execute(
+                        """
+                        SELECT c.oid,
+                               sum(pg_total_relation_size(c.oid))::bigint
+                        FROM gp_dist_random('pg_class') c
+                        WHERE c.oid IN (SELECT v.o FROM (VALUES {}) v(o))
+                        GROUP BY c.oid
+                        """.format(values)
+                    )
+                except Exception:
+                    conn.rollback()
+                    distributed = False
+                    break
+
+                for oid, size in cur.fetchall():
+                    sizes[oid] = int(size or 0)
+
+            if not distributed:
+                # обычный Postgres: всё лежит на этом же сервере
+                cur.execute("SET statement_timeout = '60s'")
+
+                for i in range(0, len(all_oids), 500):
+                    chunk = all_oids[i:i + 500]
+                    values = ", ".join(
+                        "({}::oid)".format(int(o)) for o in chunk)
+
+                    cur.execute(
+                        """
+                        SELECT v.o, pg_total_relation_size(v.o)
+                        FROM (VALUES {}) v(o)
+                        """.format(values)
+                    )
+
+                    for oid, size in cur.fetchall():
+                        sizes[oid] = int(size or 0)
+
+            for oid, size in sizes.items():
+                key = owner.get(oid)
+
+                if key:
+                    out[key]["bytes"] += size
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return out
+
+
 def resolve_keys_hierarchy(tables, pk_map, unique_map):
     """
     Чистая функция. Для каждой таблицы: PK, иначе кратчайший уникальный

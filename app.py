@@ -2912,22 +2912,91 @@ def api_catalog_resolve_keys():
         if not tables:
             return jsonify({"ok": False, "message": "tables is empty"}), 400
 
+        connection_id = int(data["connection_id"])
+
         pk_map, unique_map = table_catalog.fetch_unique_indexes(
-            int(data["connection_id"]), tables,
+            connection_id, tables,
         )
         resolved, unresolved = table_catalog.resolve_keys_hierarchy(
             tables, pk_map, unique_map,
         )
 
+        # ключи, найденные раньше (в том числе дорогим поиском по данным),
+        # берём из базы — второй раз искать незачем
+        saved = table_catalog.load_sync_keys(connection_id, tables)
+        still_unresolved = []
+
+        for key in unresolved:
+            info = saved.get(key)
+
+            if info:
+                resolved[key] = {"columns": info["columns"],
+                                 "source": info["source"] or "saved",
+                                 "saved_at": info.get("found_at")}
+            else:
+                still_unresolved.append(key)
+
+        # найденное по каталогу тоже запоминаем — дешевле следующий заход
+        for (schema, table), info in resolved.items():
+            if (schema, table) not in saved:
+                try:
+                    table_catalog.save_sync_key(
+                        connection_id, schema, table,
+                        info["columns"], info["source"])
+                except Exception:
+                    pass
+
+        try:
+            sizes = table_catalog.fetch_table_sizes(connection_id, tables)
+        except Exception:
+            sizes = {}
+
         return jsonify({
             "ok": True,
             "resolved": [
                 {"schema": s, "table": t,
-                 "columns": info["columns"], "source": info["source"]}
+                 "columns": info["columns"], "source": info["source"],
+                 "saved_at": info.get("saved_at")}
                 for (s, t), info in sorted(resolved.items())
             ],
-            "unresolved": [{"schema": s, "table": t} for s, t in unresolved],
+            "unresolved": [{"schema": s, "table": t}
+                           for s, t in still_unresolved],
+            "sizes": {
+                "{}.{}".format(s, t): v for (s, t), v in sizes.items()
+            },
         })
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/sync-keys", methods=["POST", "DELETE"])
+def api_catalog_sync_keys():
+    """Сохранённые ключи синхронизации: запомнить или забыть."""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        connection_id = int(data["connection_id"])
+
+        if request.method == "DELETE":
+            removed = 0
+
+            for t in data.get("tables") or []:
+                removed += table_catalog.forget_sync_key(
+                    connection_id, t["schema"], t["table"]) or 0
+
+            return jsonify({"ok": True, "removed": removed})
+
+        saved = 0
+
+        for t in data.get("tables") or []:
+            table_catalog.save_sync_key(
+                connection_id, t["schema"], t["table"],
+                t.get("columns") or [], t.get("source") or "manual")
+            saved += 1
+
+        return jsonify({"ok": True, "saved": saved})
     except (KeyError, ValueError) as e:
         return jsonify({"ok": False, "message": str(e)}), 400
     except Exception as e:
@@ -2940,12 +3009,25 @@ def api_catalog_compute_unique():
     data = request.get_json(silent=True) or {}
 
     try:
+        connection_id = int(data["connection_id"])
         result = table_catalog.probe_unique_column(
-            int(data["connection_id"]),
+            connection_id,
             data["schema"],
             data["table"],
             limit_candidates=int(data.get("limit_candidates") or 5),
         )
+
+        # поиск по данным дорогой — результат сохраняем
+        if result.get("column"):
+            try:
+                table_catalog.save_sync_key(
+                    connection_id, data["schema"], data["table"],
+                    [result["column"]],
+                    "sampled" if result.get("confidence") == "sample"
+                    else "computed")
+            except Exception:
+                pass
+
         return jsonify({"ok": True, **result})
     except (KeyError, ValueError) as e:
         return jsonify({"ok": False, "message": str(e)}), 400

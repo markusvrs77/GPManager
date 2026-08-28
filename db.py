@@ -305,6 +305,22 @@ def init_db():
 
         # срез прав («Пользователи и гранты»): страница читает его из
         # SQLite и не ходит в источник, пока не нажали «обновить срез»
+        # найденные ключи синхронизации: поиск по данным дорогой, поэтому
+        # результат живёт в базе и переиспользуется при следующих запусках
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_keys (
+                connection_id INTEGER NOT NULL,
+                schema_name TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                columns_json TEXT NOT NULL,
+                source TEXT,
+                found_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (connection_id, schema_name, table_name)
+            )
+            """
+        )
+
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS grants_snapshots (

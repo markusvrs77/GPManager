@@ -56,6 +56,8 @@
         syncUnresolved: [],
         keyEditing: null,          // строка с открытым инлайн-редактором ключа
         keyFilter: "",             // фильтр по списку ключей
+        tableSizes: {},            // "schema.table" -> {bytes, rows}
+        fallback: {},              // "schema.table" -> "full" | "date"
         keyLimit: 300,             // сколько строк списка ключей отрисовано
         partDiff: null,            // результат превью diff партиций
         partChecked: {},           // "schema.partition" -> true (грузить)
@@ -968,6 +970,33 @@
         manual: ["man", "вручную"],
     };
 
+    // порог, после которого полная перезаливка таблицы уже больно
+    var BIG_TABLE_BYTES = 5 * 1024 * 1024 * 1024;
+
+    function fmtBytes(n) {
+        var units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+        var v = Number(n || 0);
+        var i = 0;
+
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+
+        return (v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)) + " " +
+            units[i];
+    }
+
+    function sizeHtml(key) {
+        var size = state.tableSizes[key];
+
+        if (!size || !size.bytes) { return ""; }
+
+        var big = size.bytes >= BIG_TABLE_BYTES;
+
+        return ' <span class="cols' + (big ? " warn" : "") + '" title="' +
+            fmtN(size.rows) + ' строк по статистике">· ' +
+            fmtBytes(size.bytes) + (big ? " — тяжело грузить целиком" : "") +
+            "</span>";
+    }
+
     function keyRowHtml(key, info) {
         var mid;
         if (state.keyEditing === key) {
@@ -982,15 +1011,34 @@
                 '" title="Задать ключевые колонки вручную (через запятую)">✎</span>';
         }
 
+        var fb = state.fallback[key];
         var badge = info
             ? (function () {
                 var b = KEY_BADGES[info.source] || ["", info.source];
-                return '<span class="gpp-key-badge ' + b[0] + '">' + esc(b[1]) + "</span>";
+                return '<span class="gpp-key-badge ' + b[0] + '">' +
+                    esc(b[1]) + "</span>" +
+                    (info.savedAt
+                        ? ' <span class="cols" title="взят из сохранённых">' +
+                          "· сохранён</span>"
+                        : "");
             })()
-            : '<span class="gpp-key-badge none">нет ключа</span>';
+            : (fb
+                ? '<span class="gpp-key-badge comp">' +
+                  (fb === "date" ? "по датам" : "полное") + "</span>"
+                : '<span class="gpp-key-badge none">нет ключа</span>');
+
+        // у таблиц без ключа даём выбрать, чем их грузить
+        var actions = info ? "" :
+            '<span class="gpp-fb" data-fb-full="' + esc(key) +
+            '" title="Грузить эту таблицу полностью">полное</span>' +
+            '<span class="gpp-fb" data-fb-date="' + esc(key) +
+            '" title="Грузить срезом по датам">по датам</span>' +
+            (fb ? '<span class="gpp-fb" data-fb-off="' + esc(key) +
+                  '" title="Убрать выбор">×</span>' : "");
 
         return '<div class="gpp-key-row"><span>' + esc(key) + mid +
-            "</span>" + badge + "</div>";
+            sizeHtml(key) + "</span><span>" + actions + badge +
+            "</span></div>";
     }
 
     var KEY_CHUNK = 300;
@@ -1070,9 +1118,100 @@
         };
 
         wireKeyRows(box);
+        renderFallbackHint();
+    }
+
+    function setFallback(key, mode) {
+        if (mode) { state.fallback[key] = mode; }
+        else { delete state.fallback[key]; }
+
+        renderKeyList();
+        renderSummary();
+    }
+
+    function applyFallbackToAll(mode, onlyBig) {
+        (state.syncUnresolved || []).forEach(function (t) {
+            var key = t.schema + "." + t.table;
+            var size = state.tableSizes[key];
+
+            if (onlyBig && !(size && size.bytes >= BIG_TABLE_BYTES)) {
+                return;
+            }
+
+            if (mode) { state.fallback[key] = mode; }
+            else { delete state.fallback[key]; }
+        });
+
+        renderKeyList();
+        renderSummary();
+    }
+
+    // сводка по таблицам без ключа: сколько их, сколько крупных, чем грузим
+    function renderFallbackHint() {
+        var box = $("gppFallbackHint");
+
+        if (!box) { return; }
+
+        var pending = state.syncUnresolved || [];
+
+        if (!pending.length) { box.innerHTML = ""; return; }
+
+        var full = 0, date = 0, big = 0;
+
+        pending.forEach(function (t) {
+            var key = t.schema + "." + t.table;
+            var size = state.tableSizes[key];
+
+            if (state.fallback[key] === "full") { full += 1; }
+            if (state.fallback[key] === "date") { date += 1; }
+            if (size && size.bytes >= BIG_TABLE_BYTES) { big += 1; }
+        });
+
+        box.innerHTML = "Без ключа: <b>" + fmtN(pending.length) + "</b>" +
+            (big ? ' · <span class="warn">крупных (от 5 ГБ): ' + fmtN(big) +
+                   " — им лучше «по датам»</span>" : "") +
+            " · выбрано полное: <b>" + fmtN(full) + "</b>, по датам: <b>" +
+            fmtN(date) + "</b> " +
+            '<button class="gpp-btn sm" id="gppFbAllFull">Все → полное</button> ' +
+            '<button class="gpp-btn sm" id="gppFbBigDate">Крупные → по датам</button> ' +
+            '<button class="gpp-btn sm" id="gppFbClear">Сбросить</button>';
+
+        $("gppFbAllFull").onclick = function () {
+            applyFallbackToAll("full", false);
+        };
+        $("gppFbBigDate").onclick = function () {
+            applyFallbackToAll("date", true);
+        };
+        $("gppFbClear").onclick = function () {
+            applyFallbackToAll(null, false);
+        };
     }
 
     function wireKeyRows(box) {
+        box.querySelectorAll("[data-fb-full]:not([data-wired])")
+            .forEach(function (el) {
+                el.setAttribute("data-wired", "1");
+                el.onclick = function () {
+                    setFallback(el.getAttribute("data-fb-full"), "full");
+                };
+            });
+
+        box.querySelectorAll("[data-fb-date]:not([data-wired])")
+            .forEach(function (el) {
+                el.setAttribute("data-wired", "1");
+                el.onclick = function () {
+                    setFallback(el.getAttribute("data-fb-date"), "date");
+                };
+            });
+
+        box.querySelectorAll("[data-fb-off]:not([data-wired])")
+            .forEach(function (el) {
+                el.setAttribute("data-wired", "1");
+                el.onclick = function () {
+                    setFallback(el.getAttribute("data-fb-off"), null);
+                };
+            });
+
         box.querySelectorAll(".edit[data-key-e]:not([data-wired])")
             .forEach(function (el) {
                 el.setAttribute("data-wired", "1");
@@ -1160,20 +1299,26 @@
             }
 
             state.syncKeys = {};
-            var viaPk = 0, viaUniq = 0;
+            state.tableSizes = d.sizes || {};
+            var viaPk = 0, viaUniq = 0, viaSaved = 0;
             d.resolved.forEach(function (r) {
                 state.syncKeys[r.schema + "." + r.table] =
-                    { columns: r.columns, source: r.source };
-                if (r.source === "pk") { viaPk += 1; } else { viaUniq += 1; }
+                    { columns: r.columns, source: r.source,
+                      savedAt: r.saved_at };
+                if (r.source === "pk") { viaPk += 1; }
+                else if (r.source === "unique_index") { viaUniq += 1; }
+                else { viaSaved += 1; }
             });
             state.syncUnresolved = d.unresolved;
 
             var msg = '<span class="good">✓ ключ найден у ' + fmtN(d.resolved.length) +
                 " из " + fmtN(tables.length) + "</span> (PK: " + fmtN(viaPk) +
-                ", уник. индекс: " + fmtN(viaUniq) + ")";
+                ", уник. индекс: " + fmtN(viaUniq) +
+                (viaSaved ? ", из сохранённых: " + fmtN(viaSaved) : "") + ")";
             if (d.unresolved.length) {
                 msg += ' · <span class="warn">' + fmtN(d.unresolved.length) +
-                    " без ключа</span> — нажми «Найти уникальную колонку (по данным)»";
+                    " без ключа</span> — найди колонку по данным или переведи" +
+                    " их в другой режим кнопками ниже";
             }
             hint.innerHTML = msg;
             renderKeyList();
@@ -1668,6 +1813,93 @@
             });
     }
 
+    // что выбрано для таблиц без ключа
+    function fallbackTables() {
+        var out = { full: [], date: [] };
+
+        (state.syncUnresolved || []).forEach(function (t) {
+            var mode = state.fallback[t.schema + "." + t.table];
+
+            if (mode === "full") {
+                out.full.push({ schema: t.schema, table: t.table });
+            }
+
+            if (mode === "date") {
+                out.date.push({ schema: t.schema, table: t.table });
+            }
+        });
+
+        return out;
+    }
+
+    // отдельные задачи для таблиц без ключа: полное копирование и срез дат
+    function runFallbackJobs(fb, ex) {
+        var calls = [];
+
+        if (fb.full.length) {
+            var body = {
+                source_connection_id: srcId(), dest_connection_id: dstId(),
+                tables: fb.full,
+                gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
+                on_segment_threshold: ex.on_segment_threshold,
+                extra_args: ex.extra_args,
+            };
+
+            body[$("gppFullExisting").value] = true;
+            calls.push(api("/api/gpcopy/start", "POST", body));
+        }
+
+        if (fb.date.length) {
+            var range = dateRange();
+
+            if (!range[0] || !range[1]) {
+                toast("Для «по датам» укажи диапазон на шаге «По датам»",
+                      "warning");
+            } else {
+                calls.push(api("/api/catalog/resolve-columns", "POST", {
+                    connection_id: srcId(),
+                    tables: fb.date,
+                    priority: parsePriority("gppDatePriority"),
+                }).then(function (d) {
+                    var cfgs = ((d && d.resolved) || []).map(function (r) {
+                        return { schema: r.schema, table: r.table,
+                                 date_column: r.column };
+                    });
+
+                    if (!cfgs.length) {
+                        toast("У таблиц без ключа не нашлось колонки даты",
+                              "warning");
+                        return null;
+                    }
+
+                    return api("/api/gpcopy/start-date", "POST", {
+                        source_connection_id: srcId(),
+                        dest_connection_id: dstId(),
+                        date_from: range[0], date_to: range[1],
+                        table_configs: cfgs,
+                        gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
+                    });
+                }));
+            }
+        }
+
+        if (!calls.length) { return Promise.resolve({ ok: true, jobs: 0 }); }
+
+        return Promise.all(calls).then(function (results) {
+            var ids = results.filter(function (r) {
+                return r && r.ok && r.job_id;
+            }).map(function (r) { return "#" + r.job_id; });
+
+            if (ids.length) {
+                toast("Таблицы без ключа: запущено " + ids.join(", "),
+                      "success");
+                loadRuns();
+            }
+
+            return { ok: true, jobs: ids.length, job_ids: ids };
+        });
+    }
+
     function launchNow() {
         var ex = expertOpts();
         var tables = selTables();
@@ -1706,12 +1938,31 @@
                 : resolveSyncKeys();
             return preS.then(function () {
                 var cfgs = buildSyncConfigs();
-                if (!cfgs.length) {
+                var fb = fallbackTables();
+
+                if (!cfgs.length && !fb.full.length && !fb.date.length) {
                     return { ok: false, message: "Ни у одной таблицы нет ключа" };
                 }
-                return api("/api/gpcopy/sync/apply", "POST", {
-                    source_connection_id: srcId(), dest_connection_id: dstId(),
-                    table_configs: cfgs, gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
+
+                // таблицы без ключа, которым выбрали другой режим, уходят
+                // отдельными задачами — в одну gpcopy их не смешать
+                return runFallbackJobs(fb, ex).then(function (extra) {
+                    if (!cfgs.length) { return extra; }
+
+                    return api("/api/gpcopy/sync/apply", "POST", {
+                        source_connection_id: srcId(),
+                        dest_connection_id: dstId(),
+                        table_configs: cfgs, gpcopy_path: ex.gpcopy_path,
+                        jobs: ex.jobs,
+                    }).then(function (d) {
+                        if (d && d.ok && extra && extra.jobs) {
+                            d.message = (d.message || "") +
+                                " · плюс задач для таблиц без ключа: " +
+                                extra.jobs;
+                        }
+
+                        return d;
+                    });
                 });
             });
         }
