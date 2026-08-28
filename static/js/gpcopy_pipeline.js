@@ -55,6 +55,8 @@
         syncKeys: {},              // "schema.table" -> {columns:[], source}
         syncUnresolved: [],
         keyEditing: null,          // строка с открытым инлайн-редактором ключа
+        keyFilter: "",             // фильтр по списку ключей
+        keyLimit: 300,             // сколько строк списка ключей отрисовано
         partDiff: null,            // результат превью diff партиций
         partChecked: {},           // "schema.partition" -> true (грузить)
         partView: "all",           // all | diff | same
@@ -991,36 +993,98 @@
             "</span>" + badge + "</div>";
     }
 
+    var KEY_CHUNK = 300;
+
+    // весь список: проблемные наверх, дальше найденные ключи
+    function keyRowsData() {
+        var rows = (state.syncUnresolved || []).map(function (t) {
+            return { key: t.schema + "." + t.table, info: null };
+        });
+
+        Object.keys(state.syncKeys).sort().forEach(function (k) {
+            rows.push({ key: k, info: state.syncKeys[k] });
+        });
+
+        var f = (state.keyFilter || "").toLowerCase();
+
+        return f
+            ? rows.filter(function (r) {
+                return r.key.toLowerCase().indexOf(f) !== -1;
+            })
+            : rows;
+    }
+
+    function keyMoreText(shown, total) {
+        return shown >= total
+            ? "Показаны все " + fmtN(total)
+            : "Показано " + fmtN(shown) + " из " + fmtN(total) +
+              " — прокрути список ниже";
+    }
+
     function renderKeyList() {
         var box = $("gppKeyList");
         if (!box) { return; }
 
-        var rows = [];
+        var all = keyRowsData();
+        var top = all.slice(0, state.keyLimit || KEY_CHUNK);
+        var filter = $("gppKeyFilter");
 
-        // проблемные — наверх
-        (state.syncUnresolved || []).slice(0, 100).forEach(function (t) {
-            rows.push(keyRowHtml(t.schema + "." + t.table, null));
-        });
-
-        var keys = Object.keys(state.syncKeys).sort();
-        keys.slice(0, 100).forEach(function (k) {
-            rows.push(keyRowHtml(k, state.syncKeys[k]));
-        });
-
-        var extra = keys.length + (state.syncUnresolved || []).length - rows.length;
-        if (extra > 0) {
-            rows.push('<div class="gpp-hint">…и ещё ' + fmtN(extra) + "</div>");
+        if (filter) {
+            filter.style.display =
+                (Object.keys(state.syncKeys).length +
+                 (state.syncUnresolved || []).length) > 15 ? "" : "none";
         }
-        setHtml(box, rows.join(""));
 
-        box.querySelectorAll(".edit[data-key-e]").forEach(function (el) {
-            el.onclick = function () {
-                state.keyEditing = el.getAttribute("data-key-e");
-                renderKeyList();
-                var inp = $("gppKeyColEdit");
-                if (inp) { inp.focus(); inp.select(); }
-            };
-        });
+        setHtml(box, top.map(function (r) {
+            return keyRowHtml(r.key, r.info);
+        }).join("") || '<div class="gpp-hint">Ничего не найдено.</div>');
+
+        var more = $("gppKeyMore");
+
+        if (more) {
+            more.textContent = all.length
+                ? keyMoreText(top.length, all.length) : "";
+        }
+
+        // докрутили до низа — дорисовываем следующий кусок
+        box.onscroll = function () {
+            if (box.scrollTop + box.clientHeight < box.scrollHeight - 80) {
+                return;
+            }
+
+            var shown = state.keyLimit || KEY_CHUNK;
+
+            if (shown >= all.length) { return; }
+
+            state.keyLimit = shown + KEY_CHUNK;
+            box.insertAdjacentHTML("beforeend", all
+                .slice(shown, state.keyLimit)
+                .map(function (r) { return keyRowHtml(r.key, r.info); })
+                .join(""));
+            wireKeyRows(box);
+
+            if (more) {
+                more.textContent = keyMoreText(
+                    Math.min(state.keyLimit, all.length), all.length);
+            }
+        };
+
+        wireKeyRows(box);
+    }
+
+    function wireKeyRows(box) {
+        box.querySelectorAll(".edit[data-key-e]:not([data-wired])")
+            .forEach(function (el) {
+                el.setAttribute("data-wired", "1");
+                el.onclick = function () {
+                    state.keyEditing = el.getAttribute("data-key-e");
+                    renderKeyList();
+
+                    var edit = $("gppKeyColEdit");
+
+                    if (edit) { edit.focus(); edit.select(); }
+                };
+            });
 
         var inp = $("gppKeyColEdit");
         if (inp) {
@@ -2850,6 +2914,14 @@
             checkColumns("gppIncPriority", "gppIncHint", "incResolved");
         };
         $("gppIncWmPreview").onclick = previewWatermarks;
+        if ($("gppKeyFilter")) {
+            $("gppKeyFilter").oninput = function () {
+                state.keyFilter = $("gppKeyFilter").value;
+                state.keyLimit = KEY_CHUNK;
+                renderKeyList();
+            };
+        }
+
         $("gppIncFilter").oninput = function () {
             state.incFilter = $("gppIncFilter").value;
             renderIncList();
