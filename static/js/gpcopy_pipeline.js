@@ -1247,6 +1247,11 @@
         });
     }
 
+    function partAutoOn() {
+        var cb = $("gppPartAuto");
+        return !cb || cb.checked;
+    }
+
     function partCheckedList() {
         var out = [];
         (state.partDiff || []).forEach(function (t) {
@@ -1482,7 +1487,13 @@
             (schemas.length ? " (" + schemas.slice(0, 4).map(esc).join(", ") +
                 (schemas.length > 4 ? "…" : "") + ")" : "") +
             " из <b>" + esc(srcName.trim()) + "</b> в <b>" + esc(dstName.trim()) +
-            "</b> — <b>" + modeName() + "</b>, " + whenTxt + ".";
+            "</b> — <b>" + modeName() + "</b>, " + whenTxt + "." +
+            // в режиме партиций важно понимать, откуда берётся список
+            (state.mode === "part"
+                ? (partAutoOn()
+                    ? " Расхождение партиций считается в момент запуска."
+                    : " Переливаются партиции, отмеченные в превью.")
+                : "");
 
         $("gppGo").textContent =
             state.when === "sched" ? "🗓 Создать расписание" : "▶ Запустить";
@@ -1609,13 +1620,15 @@
             });
         }
 
-        // part: если превью смотрели — грузим ровно отмеченные партиции
+        // part: расхождение считает сама задача на старте, если стоит
+        // галочка (иначе грузим ровно отмеченные в превью партиции)
         var body = {
             source_connection_id: srcId(), dest_connection_id: dstId(),
             tables: tables, gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
             count_mode: $("gppPartExact").checked ? "exact" : "stats",
+            recompute: partAutoOn(),
         };
-        if (state.partDiff) {
+        if (!partAutoOn() && state.partDiff) {
             var checkedParts = partCheckedList();
             if (!checkedParts.length) {
                 return Promise.resolve({
@@ -1682,9 +1695,11 @@
             return Promise.resolve(base);
         }
 
-        // part
+        // part: в расписании список партиций не фиксируем — задача
+        // считает расхождение в момент запуска
         base.tables = tables;
         base.count_mode = $("gppPartExact").checked ? "exact" : "stats";
+        base.recompute = true;
         return Promise.resolve(base);
     }
 
@@ -2935,6 +2950,23 @@
         fancySelect($("gppDst"));
 
         $("gppGo").onclick = go;
+
+        var partAuto = $("gppPartAuto");
+
+        if (partAuto) {
+            try {
+                partAuto.checked =
+                    localStorage.getItem("gpp-part-auto") !== "0";
+            } catch (e) { /* приватный режим */ }
+
+            partAuto.onchange = function () {
+                try {
+                    localStorage.setItem("gpp-part-auto",
+                                         partAuto.checked ? "1" : "0");
+                } catch (e) { /* приватный режим */ }
+                renderSummary();
+            };
+        }
 
         var auto = $("gppAutoCreate");
 

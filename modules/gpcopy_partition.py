@@ -316,6 +316,21 @@ def diff_partitions_stats(source_cfg, dest_cfg, tables, exact=False):
         dest_conn.close()
 
 
+def normalize_partition_config(config):
+    """
+    Конфиг задачи «синхронизация партиций». Если стоит recompute, список
+    партиций из интерфейса выбрасываем: расхождение считается на старте
+    самой задачи. Иначе в расписании каждый раз лился бы один и тот же
+    список, снятый когда-то в UI. Чистая функция.
+    """
+    cfg = dict(config or {})
+
+    if cfg.get("recompute"):
+        cfg.pop("partitions", None)
+
+    return cfg
+
+
 def run_gpcopy_partition_diff_job(job_id):
     include_file = None
     started = time.time()
@@ -325,7 +340,8 @@ def run_gpcopy_partition_diff_job(job_id):
         if not job:
             raise Exception("Job not found: {}".format(job_id))
 
-        config = json.loads(get_item_value(job, "config_json") or "{}")
+        config = normalize_partition_config(
+            json.loads(get_item_value(job, "config_json") or "{}"))
 
         source_cfg = get_connection_by_id(int(config["source_connection_id"]))
         dest_cfg = get_connection_by_id(int(config["dest_connection_id"]))

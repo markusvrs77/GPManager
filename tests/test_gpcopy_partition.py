@@ -3,6 +3,7 @@ from modules.gpcopy_partition import (
     partitions_to_copy,
     build_batched_count_sql,
     classify_stats_maps,
+    normalize_partition_config,
 )
 
 
@@ -65,3 +66,32 @@ def test_classify_stats_maps_per_root():
     assert fact == {"fp1": "skip", "fp2": "copy_missing"}
     dim = {r["partition"]: r["action"] for r in out[("s", "dim")]}
     assert dim == {"dp1": "copy_missing"}
+
+
+def test_recompute_drops_frozen_partition_list():
+    """Для расписания список партиций не фиксируется: считаем на старте."""
+    cfg = normalize_partition_config({
+        "source_connection_id": 1,
+        "dest_connection_id": 2,
+        "tables": [{"schema": "dwh", "table": "inv_1"}],
+        "partitions": [{"schema": "dwh", "table": "inv_1_1_prt_10"}],
+        "count_mode": "stats",
+        "recompute": True,
+    })
+
+    assert "partitions" not in cfg
+    assert cfg["tables"] == [{"schema": "dwh", "table": "inv_1"}]
+    assert cfg["count_mode"] == "stats"
+
+
+def test_without_recompute_list_stays():
+    """Разовый запуск с отмеченными партициями работает как раньше."""
+    parts = [{"schema": "dwh", "table": "inv_1_1_prt_10"}]
+    cfg = normalize_partition_config({"tables": [], "partitions": parts})
+
+    assert cfg["partitions"] == parts
+
+    # исходный словарь не меняем
+    src = {"recompute": True, "partitions": parts}
+    normalize_partition_config(src)
+    assert src["partitions"] == parts
