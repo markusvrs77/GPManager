@@ -509,6 +509,42 @@ def find_owner_item(leaf_schema, leaf_table, item_keys):
 RETRY_EXISTING_MODES = ("truncate", "drop", "skip_existing", "append")
 
 
+def dedupe_failed_leaves(failed_leaves, finished=None):
+    """
+    Чистим список для дозагрузки. Чистая функция.
+
+    gpcopy при обрыве отчитывается Failed и по родительской таблице, и по
+    её отдельным партициям, а часть партиций к тому времени уже доехала.
+    Если отдать список как есть, дозагрузка перельёт таблицы целиком —
+    то есть сделает заново всё, что уже скопировано. Поэтому:
+      * выкидываем то, что отчиталось как Finished;
+      * если у таблицы есть упавшие партиции, льём именно их, а саму
+        таблицу из списка убираем — иначе она пойдёт целиком.
+    """
+    done = set(tuple(p) for p in (finished or []))
+    left = [tuple(p) for p in (failed_leaves or []) if tuple(p) not in done]
+
+    def parent_of(schema, table):
+        marker = table.find("_1_prt_")
+
+        if marker < 0:
+            marker = table.find("_1_def_")
+
+        return (schema, table[:marker]) if marker > 0 else None
+
+    # у каких таблиц есть упавшие партиции
+    with_parts = set()
+
+    for schema, table in left:
+        parent = parent_of(schema, table)
+
+        if parent:
+            with_parts.add(parent)
+
+    return [(schema, table) for schema, table in left
+            if (schema, table) not in with_parts]
+
+
 def build_retry_config(config, failed_leaves, existing_mode="truncate"):
     """
     Конфиг новой задачи «дозагрузить упавшие»: перезаливка только
@@ -533,9 +569,17 @@ def build_retry_config(config, failed_leaves, existing_mode="truncate"):
             "Дозагрузка упавших доступна только для полного копирования"
         )
 
+    leaves = dedupe_failed_leaves(
+        failed_leaves, config.get("finished_leaves"))
+
+    if not leaves:
+        raise ValueError(
+            "Все упавшие объекты уже скопированы — дозагружать нечего"
+        )
+
     tables = [
         {"schema": schema, "table": table}
-        for schema, table in failed_leaves
+        for schema, table in leaves
     ]
 
     retry = dict(config)
@@ -1624,6 +1668,8 @@ def finalize_gpcopy_job(job_id, items, rc, stdout_data, stderr_data,
     if failed_leaves:
         try:
             config["failed_leaves"] = [list(p) for p in failed_leaves]
+            # успешные тоже: по ним дозагрузка отсеет уже доехавшее
+            config["finished_leaves"] = [list(p) for p in finished]
             update_job_config(job_id, config)
         except Exception:
             pass

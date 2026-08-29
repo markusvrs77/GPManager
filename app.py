@@ -603,15 +603,18 @@ def api_gpcopy_retry_failed():
         config=retry_config,
     )
 
+    # льём ровно то, что осталось после отсева готового и родителей
+    retry_tables = retry_config.get("selected_tables") or []
+
     create_job_items(
         job_id=new_job_id,
         items=[
             {
-                "schema_name": schema,
-                "table_name": table,
+                "schema_name": t["schema"],
+                "table_name": t["table"],
                 "action": "GPCOPY RETRY",
             }
-            for schema, table in failed_leaves
+            for t in retry_tables
         ],
     )
 
@@ -624,8 +627,9 @@ def api_gpcopy_retry_failed():
     return jsonify({
         "ok": True,
         "job_id": new_job_id,
-        "total_items": len(failed_leaves),
-        "message": "Дозагрузка {} партиций запущена".format(len(failed_leaves)),
+        "total_items": len(retry_tables),
+        "message": "Дозагрузка {} объектов запущена (из {} упавших записей "
+                   "в логе)".format(len(retry_tables), len(failed_leaves)),
     })
 
 

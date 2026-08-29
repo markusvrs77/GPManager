@@ -479,3 +479,46 @@ def test_retry_config_from_partition_job():
     # подключения сохраняются
     assert retry["source_connection_id"] == 1
     assert retry["dest_connection_id"] == 2
+
+
+def test_dedupe_failed_leaves_prefers_partitions():
+    """В дозагрузку идут упавшие партиции, а не таблицы целиком."""
+    import modules.gpcopy as g
+
+    left = g.dedupe_failed_leaves(
+        [("dwh_stage", "s01_t_ord"),            # родитель — уберём
+         ("dwh_stage", "s01_t_ord_1_prt_3"),    # его упавшая партиция
+         ("dwh_stage", "s01_t_bal_1_prt_1000"),  # уже скопирована
+         ("dwh_stage", "s01_t_operjrn")],       # упала целиком, партиций нет
+        finished=[["dwh_stage", "s01_t_bal_1_prt_1000"]],
+    )
+
+    assert left == [("dwh_stage", "s01_t_ord_1_prt_3"),
+                    ("dwh_stage", "s01_t_operjrn")]
+
+    # дефолтные партиции тоже поглощают родителя
+    assert g.dedupe_failed_leaves(
+        [("s", "t"), ("s", "t_1_def_x")]) == [("s", "t_1_def_x")]
+
+    assert g.dedupe_failed_leaves([]) == []
+
+
+def test_retry_config_skips_already_copied():
+    """Готовое не переливаем; если не осталось ничего — честно говорим."""
+    import modules.gpcopy as g
+
+    config = {
+        "source_connection_id": 1, "dest_connection_id": 2,
+        "finished_leaves": [["s", "t_1_prt_1"]],
+    }
+
+    retry = g.build_retry_config(
+        config, [("s", "t_1_prt_1"), ("s", "t_1_prt_2")])
+
+    assert retry["selected_tables"] == [{"schema": "s", "table": "t_1_prt_2"}]
+    assert "finished_leaves" in retry   # исходный конфиг не ломаем
+
+    import pytest
+
+    with pytest.raises(ValueError):
+        g.build_retry_config(config, [("s", "t_1_prt_1")])
