@@ -2545,7 +2545,9 @@
                 "</div>";
         }
 
-        if (j.status === "failed" && j.job_type === "gpcopy") {
+        if (j.status === "failed" &&
+                (j.job_type === "gpcopy" ||
+                 j.job_type === "gpcopy_partition_diff")) {
             html += '<div style="margin: 6px 0 10px;">' +
                 '<button class="gpp-btn sm" data-run-retry="' + j.id + '">' +
                 "⟳ Дозагрузить упавшие</button></div>";

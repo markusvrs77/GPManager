@@ -542,6 +542,11 @@ def build_retry_config(config, failed_leaves, existing_mode="truncate"):
     retry.pop("failed_leaves", None)
     retry.pop("mode", None)
     retry.pop("copy_mode", None)
+    # остатки конфига синхронизации партиций: дозагрузка — обычное
+    # полное копирование перечисленных партиций
+    retry.pop("partitions", None)
+    retry.pop("recompute", None)
+    retry.pop("count_mode", None)
 
     retry["selected_tables"] = tables
     retry["expanded_tables"] = tables

@@ -447,3 +447,35 @@ def test_new_job_types_registered_in_scheduler():
 
     assert "gpcopy_increment" in scheduler.JOB_RUNNERS
     assert "gpcopy_partition_diff" in scheduler.JOB_RUNNERS
+
+
+def test_retry_config_from_partition_job():
+    """Дозагрузка упавших работает и для синхронизации партиций."""
+    import modules.gpcopy as g
+
+    config = {
+        "source_connection_id": 1,
+        "dest_connection_id": 2,
+        "tables": [{"schema": "dwh_stage", "table": "s01_t_bal"}],
+        "count_mode": "stats",
+        "recompute": True,
+        "partitions": [{"schema": "dwh_stage", "table": "s01_t_bal_1_prt_1"}],
+        "failed_leaves": [["dwh_stage", "s01_t_bal_1_prt_1538"]],
+    }
+
+    retry = g.build_retry_config(
+        config, [("dwh_stage", "s01_t_bal_1_prt_1538")])
+
+    # льём ровно упавшую партицию
+    assert retry["selected_tables"] == [
+        {"schema": "dwh_stage", "table": "s01_t_bal_1_prt_1538"}]
+    assert retry["expanded_tables"] == retry["selected_tables"]
+    assert retry["truncate"] is True
+
+    # партиционная специфика в обычную gpcopy-задачу не тащится
+    for key in ("partitions", "recompute", "count_mode", "failed_leaves"):
+        assert key not in retry
+
+    # подключения сохраняются
+    assert retry["source_connection_id"] == 1
+    assert retry["dest_connection_id"] == 2

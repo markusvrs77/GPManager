@@ -568,10 +568,12 @@ def api_gpcopy_retry_failed():
     if not job:
         return jsonify({"ok": False, "message": "Задача не найдена"}), 404
 
-    if job.get("job_type") != "gpcopy":
+    # партиционная задача падает так же и хранит тот же список упавших
+    if job.get("job_type") not in ("gpcopy", "gpcopy_partition_diff"):
         return jsonify({
             "ok": False,
-            "message": "Дозагрузка упавших доступна только для gpcopy-задач",
+            "message": "Дозагрузка упавших доступна для полного копирования "
+                       "и синхронизации партиций",
         }), 400
 
     config = _json.loads(job.get("config_json") or "{}")
