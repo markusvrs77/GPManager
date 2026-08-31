@@ -3,3 +3,4 @@ psycopg2-binary==2.9.9
 PyYAML>=6.0
 openpyxl==3.1.2
 croniter==2.0.5
+kafka-python>=2.0.2
