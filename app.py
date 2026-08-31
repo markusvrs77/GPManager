@@ -31,6 +31,7 @@ from job_manager import (
     get_latest_job,
     list_recent_jobs,
     mark_interrupted_jobs_on_startup,
+    close_orphan_items,
     request_stop_job,
     set_stop_flag,
 )
@@ -3320,6 +3321,13 @@ if __name__ == "__main__":
 
     if interrupted_jobs:
         print("Interrupted jobs after application startup:", interrupted_jobs)
+
+    # старые остановленные запуски: задача cancelled, а строки внутри
+    # так и висят в running — закрываем их при первом же старте
+    orphan_items = close_orphan_items()
+
+    if orphan_items:
+        print("Closed stale job items after startup:", orphan_items)
 
     from scheduler import start_scheduler
     start_scheduler()

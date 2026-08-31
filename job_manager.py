@@ -212,7 +212,95 @@ def mark_job_done(job_id):
         )
 
 
+# строки, которые ещё «в работе»: их и надо закрывать вместе с задачей
+OPEN_ITEM_STATUSES = ("queued", "running", "stopping", "pending")
+
+
+def close_open_items(job_id, status, message=None):
+    """
+    Даёт финальный статус строкам, оборвавшимся вместе с задачей.
+
+    Остановка убивает gpcopy на полуслове, и его объекты так и остаются
+    в running: сама задача уже cancelled, а внутри у неё «копируется».
+    Уже готовые (done/failed/skipped) не трогаем.
+    """
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            UPDATE job_items
+            SET status = ?,
+                finished_at = ?,
+                error_message =
+                    CASE
+                        WHEN (error_message IS NULL OR error_message = '')
+                             AND ? IS NOT NULL
+                        THEN ?
+                        ELSE error_message
+                    END
+            WHERE job_id = ?
+              AND status IN ('queued', 'running', 'stopping', 'pending')
+            """,
+            (
+                status,
+                now_str(),
+                message,
+                message,
+                job_id,
+            ),
+        )
+        return cur.rowcount
+
+
+# чем закрывать строки задачи, которая давно завершилась
+ORPHAN_ITEM_STATUS = {
+    "cancelled": "cancelled",
+    "interrupted": "interrupted",
+    "failed": "interrupted",
+    "done": "done",
+}
+
+
+def close_orphan_items():
+    """
+    Уборка при старте: задача завершилась, а её строки остались
+    в running/queued. Так выглядят все запуски, остановленные до того,
+    как статусы стали закрываться. Возвращает число починенных строк.
+    """
+    with sqlite_cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT j.id AS id, j.status AS status
+            FROM jobs j
+            JOIN job_items i ON i.job_id = j.id
+            WHERE j.status IN ('done', 'failed', 'cancelled', 'interrupted')
+              AND i.status IN ('queued', 'running', 'stopping', 'pending')
+            """
+        )
+        rows = [(int(r["id"]), str(r["status"])) for r in cur.fetchall()]
+
+    fixed = 0
+
+    for job_id, status in rows:
+        message = None
+
+        if status != "done":
+            message = "Задача завершилась ({}) — объект не докопирован".format(
+                status
+            )
+
+        fixed += close_open_items(
+            job_id, ORPHAN_ITEM_STATUS.get(status, "interrupted"), message
+        )
+        refresh_job_progress(job_id)
+
+    return fixed
+
+
 def mark_job_failed(job_id, error_message):
+    close_open_items(
+        job_id, "interrupted", "Задача упала — объект не докопирован"
+    )
+
     refresh_job_progress(job_id)
 
     with sqlite_cursor(commit=True) as cur:
@@ -232,7 +320,10 @@ def mark_job_failed(job_id, error_message):
         )
 
 
-def mark_job_cancelled(job_id):
+def mark_job_cancelled(job_id, error_message=None):
+    # иначе внутри отменённой задачи объекты навсегда остаются «копируется»
+    close_open_items(job_id, "cancelled", "Задача остановлена пользователем")
+
     refresh_job_progress(job_id)
 
     with sqlite_cursor(commit=True) as cur:
@@ -240,11 +331,13 @@ def mark_job_cancelled(job_id):
             """
             UPDATE jobs
             SET status = 'cancelled',
-                finished_at = ?
+                finished_at = ?,
+                error_message = COALESCE(?, error_message)
             WHERE id = ?
             """,
             (
                 now_str(),
+                str(error_message) if error_message else None,
                 job_id,
             ),
         )
@@ -903,6 +996,11 @@ def update_job_status(job_id, status, error_message=None, log_file=None):
 
     if status == "stopping":
         return set_stop_flag(job_id)
+
+    if status == "interrupted":
+        close_open_items(
+            job_id, "interrupted", "Задача прервана — объект не докопирован"
+        )
 
     # fallback для interrupted / queued / любых других статусов
     with sqlite_cursor(commit=True) as cur:

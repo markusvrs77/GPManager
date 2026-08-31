@@ -2491,6 +2491,9 @@
         failed: ["none", "failed"],
         error: ["none", "error"],
         cancelled: ["none", "cancelled"],
+        interrupted: ["none", "interrupted"],
+        stopping: ["man", "stopping"],
+        pending: ["man", "queued"],
         skipped: ["comp", "skipped"],
     };
 
@@ -2570,8 +2573,9 @@
 
         if (items.length) {
             // порядок: сейчас копируется -> упавшие -> в очереди -> готовые
-            var order = { running: 0, failed: 1, done: 2, pending: 3,
-                          queued: 3, skipped: 4 };
+            var order = { running: 0, stopping: 0, failed: 1,
+                          interrupted: 1, cancelled: 1, done: 2,
+                          pending: 3, queued: 3, skipped: 4 };
             items.sort(function (a, b) {
                 var ao = order[a.status] !== undefined ? order[a.status] : 2;
                 var bo = order[b.status] !== undefined ? order[b.status] : 2;
