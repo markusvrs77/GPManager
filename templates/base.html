@@ -172,8 +172,9 @@
             <span class="sec-chev" aria-hidden="true">▾</span>
         </button>
         <div class="sb-sec-body" id="secBody-flow">
-            <div class="sb-stub"><span class="tk-logo kf">KF</span>
-                Kafka <span class="soon">скоро</span></div>
+            <a href="/kafka" class="{% if p.startswith('/kafka') %}active{% endif %}">
+                <span class="tk-logo kf">KF</span>
+                <span class="lbl">Kafka</span></a>
             <div class="sb-stub"><span class="tk-logo dz">DZ</span>
                 Debezium <span class="soon">скоро</span></div>
             <div class="sb-stub"><span class="tk-logo lr">LR</span>

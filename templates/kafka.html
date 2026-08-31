@@ -1,1 +1,116 @@
-{% extends "base.html" %}{% block content %}<div id="kfRoot"></div>{% endblock %}
+{% extends "base.html" %}
+
+{% block title %}Kafka · Opsentri{% endblock %}
+
+{% block content %}
+
+<style>
+/* ============ Kafka: обзор кластера ============ */
+.kf { max-width: 1560px; display: flex; flex-direction: column; gap: 14px; }
+
+.kf-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 10px 12px; }
+.kf-bar select { flex: 0 1 420px; min-width: 220px; }
+.kf-bar .sp { flex: 1 1 auto; }
+.kf-snap { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+
+.kf-note { border-radius: var(--radius); padding: 10px 14px; font-size: 13px;
+  border: 1px solid var(--hairline); }
+.kf-note.warn { color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.kf-note.err { color: var(--crit);
+  background: color-mix(in srgb, var(--crit) 12%, transparent); }
+
+.kf-panel { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); overflow: hidden; }
+.kf-panel > h2 { font-size: 12px; font-weight: 800; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-muted);
+  margin: 0; padding: 11px 16px; border-bottom: 1px solid var(--hairline); }
+
+.kf-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--hairline); }
+.kf-tools input[type="search"] { flex: 0 1 280px; min-width: 180px; }
+.kf-check { display: flex; align-items: center; gap: 7px; font-size: 13px;
+  color: var(--text-muted); white-space: nowrap; cursor: pointer; }
+.kf-count { font-size: 12px; color: var(--text-muted); margin-left: auto; }
+
+.kf-list { max-height: 440px; overflow: auto; padding: 6px; }
+.kf-row { display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; padding: 8px 10px; border-radius: var(--radius-sm); }
+.kf-row .r { font-size: 12px; color: var(--text-muted); white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+.kf-row.topic { cursor: pointer; }
+.kf-row.topic:hover { background: var(--surface-2); }
+.kf-row.topic.open { background: var(--surface-2); }
+
+.kf-tag { font-size: 11px; padding: 1px 8px; border-radius: var(--radius-pill);
+  border: 1px solid var(--hairline); color: var(--text-muted);
+  margin-left: 6px; white-space: nowrap; }
+.kf-tag.crit { color: var(--crit);
+  border-color: color-mix(in srgb, var(--crit) 45%, transparent); }
+
+.kf-parts { padding: 2px 10px 10px 22px; }
+.kf-part { font-size: 12px; color: var(--text-muted); padding: 3px 0;
+  font-variant-numeric: tabular-nums; }
+
+.kf-empty { padding: 18px 16px; font-size: 13px; color: var(--text-muted); }
+</style>
+
+<div class="kf" id="kfRoot">
+
+  {% if not library_ready %}
+  <div class="kf-note warn">
+    Библиотека <code>kafka-python</code> не установлена. На сервере выполните
+    <code>pip install -r requirements.txt</code> и перезапустите app.py.
+  </div>
+  {% endif %}
+
+  <div class="kf-bar">
+    <select id="kfCluster" class="form-select form-select-sm">
+      {% for c in clusters %}
+      <option value="{{ c.id }}">{{ c.name }} — {{ c.bootstrap_servers }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn btn-sm btn-secondary" id="kfPing" type="button"
+            {% if not clusters %}disabled{% endif %}>Проверить связь</button>
+    <span class="sp"></span>
+    <span class="kf-snap" id="kfSnap">среза нет</span>
+    <button class="btn btn-sm btn-outline-primary" id="kfRefresh" type="button"
+            {% if not library_ready or not clusters %}disabled{% endif %}>
+      Обновить срез</button>
+  </div>
+
+  <div class="kf-note err" id="kfError" style="display: none;"></div>
+
+  {% if not clusters %}
+  <div class="kf-note warn">
+    Кластеры Kafka ещё не заведены. Пока форма создания не сделана, добавьте
+    кластер запросом:
+    <code>POST /api/kafka/clusters {"name": "Kafka TEST",
+    "bootstrap_servers": "kfk1:9092"}</code>
+  </div>
+  {% endif %}
+
+  <div class="kf-panel">
+    <h2>Брокеры</h2>
+    <div id="kfBrokers"></div>
+  </div>
+
+  <div class="kf-panel">
+    <h2>Топики</h2>
+    <div class="kf-tools">
+      <input type="search" id="kfFilter" class="form-control form-control-sm"
+             placeholder="поиск по имени топика">
+      <label class="kf-check">
+        <input type="checkbox" id="kfInternal"> показывать системные
+      </label>
+      <span class="kf-count" id="kfCount"></span>
+    </div>
+    <div id="kfTopics"></div>
+  </div>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/kafka.js') }}"></script>
+{% endblock %}
