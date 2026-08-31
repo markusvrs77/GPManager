@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+
+{% block title %}Доступы · Opsentri{% endblock %}
+
+{% block content %}
+
+<style>
+/* ============ Kafka: правила доступа ============ */
+.ka { max-width: 1560px; display: flex; flex-direction: column; gap: 14px; }
+
+.ka-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 10px 12px; }
+.ka-bar select, .ka-bar input { flex: 0 1 190px; }
+.ka-bar .sp { flex: 1 1 auto; }
+
+.ka-note { border-radius: var(--radius); padding: 10px 14px; font-size: 13px;
+  border: 1px solid var(--hairline); }
+.ka-note.warn { color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.ka-note.err { color: var(--crit);
+  background: color-mix(in srgb, var(--crit) 12%, transparent); }
+.ka-note code { font-size: 12px; }
+
+.ka-panel { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); overflow: hidden; }
+.ka-panel > h2 { font-size: 12px; font-weight: 800; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-muted); margin: 0;
+  padding: 11px 16px; border-bottom: 1px solid var(--hairline);
+  display: flex; align-items: center; gap: 10px; }
+.ka-panel > h2 .sp { flex: 1; }
+
+.ka-list { max-height: 460px; overflow: auto; padding: 6px; }
+.ka-row { display: flex; justify-content: space-between; gap: 12px;
+  padding: 7px 10px; border-radius: var(--radius-sm); font-size: 12.5px; }
+.ka-row:hover { background: var(--surface-2); }
+.ka-row .who { font-weight: 700; }
+.ka-row .what { color: var(--text-muted); white-space: nowrap; }
+.ka-tag { font-size: 11px; padding: 1px 8px; border-radius: var(--radius-pill);
+  border: 1px solid var(--hairline); color: var(--text-muted);
+  margin-left: 6px; }
+.ka-tag.deny { color: var(--crit);
+  border-color: color-mix(in srgb, var(--crit) 45%, transparent); }
+
+.ka-form { padding: 14px 16px; }
+.ka-form .fgrid { display: grid; gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) {
+  .ka-form .fgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.ka-form .form-label { font-size: 11.5px; font-weight: 700;
+  letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 4px; }
+.ka-form .wide { grid-column: 1 / -1; }
+.ka-ops { display: flex; gap: 10px; flex-wrap: wrap; }
+.ka-ops label { display: flex; align-items: center; gap: 6px;
+  font-size: 12.5px; color: var(--text-muted); white-space: nowrap; }
+.ka-form .buttons { display: flex; gap: 8px; margin-top: 14px;
+  flex-wrap: wrap; align-items: center; }
+.ka-hint { font-size: 11.5px; color: var(--text-muted); }
+
+.ka-empty { padding: 18px 16px; font-size: 13px; color: var(--text-muted); }
+</style>
+
+<div class="ka" id="kaRoot">
+
+  {% if not library_ready %}
+  <div class="ka-note warn">
+    Библиотека <code>kafka-python</code> не установлена. На сервере выполните
+    <code>pip install -r requirements.txt</code> и перезапустите app.py.
+  </div>
+  {% endif %}
+
+  <div class="ka-bar">
+    <select id="kaCluster" class="form-select form-select-sm"
+            {% if not clusters %}hidden{% endif %}>
+      {% for c in clusters %}
+      <option value="{{ c.id }}">{{ c.name }} — {{ c.bootstrap_servers }}</option>
+      {% endfor %}
+    </select>
+    {% if not clusters %}
+    <span class="ka-hint">Кластеры ещё не заведены</span>
+    {% endif %}
+    <input type="text" id="kaFPrincipal" class="form-control form-control-sm"
+           placeholder="принципал: любой">
+    <select id="kaFType" class="form-select form-select-sm">
+      <option value="ANY">ресурс: любой</option>
+      {% for value, label in resource_types %}
+      <option value="{{ value }}">{{ label }}</option>
+      {% endfor %}
+    </select>
+    <input type="text" id="kaFName" class="form-control form-control-sm"
+           placeholder="имя ресурса: любое">
+    <span class="sp"></span>
+    <span class="ka-hint" id="kaCount"></span>
+    <button class="btn btn-sm btn-outline-primary" id="kaLoad" type="button"
+            {% if not library_ready or not clusters %}disabled{% endif %}>
+      Показать правила</button>
+  </div>
+
+  <div class="ka-note warn" id="kaDisabled" style="display: none;"></div>
+  <div class="ka-note warn" id="kaAnon" style="display: none;">
+    Кластер подключён без SASL: для Kafka все клиенты — один
+    <code>User:ANONYMOUS</code>. Правила читаются и создаются, но
+    разграничить пользователей нельзя, пока не включена аутентификация.
+  </div>
+  <div class="ka-note err" id="kaError" style="display: none;"></div>
+
+  <div class="ka-panel">
+    <h2>Правила</h2>
+    <div id="kaList"></div>
+  </div>
+
+  <div class="ka-panel">
+    <h2>Выдать или отозвать права</h2>
+
+    <div class="ka-form">
+      <div class="fgrid">
+        <div>
+          <label class="form-label" for="kaPrincipal">Принципал</label>
+          <input type="text" id="kaPrincipal" class="form-control"
+                 placeholder="svc_etl">
+        </div>
+        <div>
+          <label class="form-label" for="kaType">Тип ресурса</label>
+          <select id="kaType" class="form-select">
+            {% for value, label in resource_types %}
+            <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="form-label" for="kaName">Имя ресурса</label>
+          <input type="text" id="kaName" class="form-control"
+                 placeholder="orders">
+        </div>
+        <div>
+          <label class="form-label" for="kaPattern">Совпадение</label>
+          <select id="kaPattern" class="form-select">
+            {% for value, label in pattern_types %}
+            <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="form-label" for="kaPermission">Разрешение</label>
+          <select id="kaPermission" class="form-select">
+            {% for value, label in permissions %}
+            <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="form-label" for="kaHost">Хост</label>
+          <input type="text" id="kaHost" class="form-control"
+                 placeholder="* — любой">
+        </div>
+        <div class="wide">
+          <label class="form-label">Операции</label>
+          <div class="ka-ops" id="kaOps">
+            {% for value, label in operations %}
+            <label><input type="checkbox" value="{{ value }}"> {{ label }}</label>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="buttons">
+        <span class="ka-hint">Шаблоны:</span>
+        {% for value, label in presets %}
+        <button class="btn btn-sm btn-secondary" data-preset="{{ value }}"
+                type="button">{{ label }}</button>
+        {% endfor %}
+        <span class="ka-hint">заполняют форму, не отправляют её</span>
+      </div>
+
+      <div class="buttons">
+        <button class="btn btn-sm btn-primary" id="kaGrant" type="button">
+          Выдать права</button>
+        <button class="btn btn-sm btn-outline-primary" id="kaPreview"
+                type="button">Показать, что попадёт под отзыв</button>
+        <button class="btn btn-sm btn-outline-primary" id="kaRevoke"
+                type="button">Отозвать</button>
+      </div>
+      <div class="ka-hint" id="kaRevokeHint"></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/kafka_acl.js') }}"></script>
+{% endblock %}

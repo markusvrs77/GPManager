@@ -19,6 +19,10 @@ class KafkaUnavailable(Exception):
     """Кластер недоступен или библиотеки нет — с текстом для человека."""
 
 
+class AclsDisabled(KafkaUnavailable):
+    """На брокерах не настроен authorizer — правил доступа просто нет."""
+
+
 def _import_kafka():
     """Вынесено отдельно, чтобы тесты могли подменить импорт."""
     import kafka
@@ -379,6 +383,170 @@ def delete_group(cluster, group_id):
     except KafkaUnavailable:
         raise
     except Exception as error:
+        raise _request_failed(cluster, error)
+    finally:
+        _close(admin)
+
+
+def _acl_enums(kafka):
+    from kafka.admin import (
+        ACL,
+        ACLFilter,
+        ACLOperation,
+        ACLPermissionType,
+        ACLResourcePatternType,
+        ResourcePattern,
+        ResourcePatternFilter,
+        ResourceType,
+    )
+
+    return {
+        "ACL": ACL, "ACLFilter": ACLFilter, "op": ACLOperation,
+        "perm": ACLPermissionType, "pattern": ACLResourcePatternType,
+        "resource": ResourceType, "ResourcePattern": ResourcePattern,
+        "ResourcePatternFilter": ResourcePatternFilter,
+    }
+
+
+def _acls_disabled(cluster, error):
+    """Отдельная ошибка: authorizer не настроен — это не отказ кластера."""
+    if "SecurityDisabled" in str(error):
+        return AclsDisabled(
+            "На брокерах {} не включена авторизация: в server.properties "
+            "нет authorizer.class.name. Без него правил доступа не "
+            "существует.".format(", ".join(_servers(cluster)))
+        )
+
+    return None
+
+
+def _build_filter(enums, spec):
+    """Спецификация фильтра → ACLFilter библиотеки. Пустое поле = ANY."""
+    spec = spec or {}
+
+    return enums["ACLFilter"](
+        principal=spec.get("principal"),
+        host=spec.get("host"),
+        operation=enums["op"][spec.get("operation") or "ANY"],
+        permission_type=enums["perm"][spec.get("permission") or "ANY"],
+        resource_pattern=enums["ResourcePatternFilter"](
+            enums["resource"][spec.get("resource_type") or "ANY"],
+            spec.get("resource_name"),
+            enums["pattern"][spec.get("pattern_type") or "ANY"],
+        ),
+    )
+
+
+def fetch_acls(cluster, filter_spec):
+    """Правила по фильтру. Сырые объекты — форматирует kafka_acl."""
+    try:
+        kafka = _import_kafka()
+    except ImportError:
+        raise KafkaUnavailable(INSTALL_HINT)
+
+    enums = _acl_enums(kafka)
+    admin = open_admin(cluster)
+
+    try:
+        # describe_acls отдаёт КОРТЕЖ (правила, ошибка), а не список
+        acls, error = admin.describe_acls(_build_filter(enums, filter_spec))
+
+        if error is not None and getattr(error, "errno", 0):
+            disabled = _acls_disabled(cluster, error)
+
+            if disabled:
+                raise disabled
+
+            raise _request_failed(cluster, error)
+
+        return list(acls or [])
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        disabled = _acls_disabled(cluster, error)
+
+        if disabled:
+            raise disabled
+
+        raise _request_failed(cluster, error)
+    finally:
+        _close(admin)
+
+
+def create_acls(cluster, specs):
+    """Создаёт правила по спецификациям. Возвращает их число."""
+    try:
+        kafka = _import_kafka()
+    except ImportError:
+        raise KafkaUnavailable(INSTALL_HINT)
+
+    enums = _acl_enums(kafka)
+    rules = []
+
+    for spec in specs or []:
+        pattern = enums["ResourcePattern"](
+            enums["resource"][spec["resource_type"]],
+            spec["resource_name"],
+            enums["pattern"][spec.get("pattern_type") or "LITERAL"],
+        )
+
+        for operation in spec.get("operations") or []:
+            rules.append(enums["ACL"](
+                principal=spec["principal"],
+                host=spec.get("host") or "*",
+                operation=enums["op"][operation],
+                permission_type=enums["perm"][
+                    spec.get("permission") or "ALLOW"],
+                resource_pattern=pattern,
+            ))
+
+    if not rules:
+        return 0
+
+    admin = open_admin(cluster)
+
+    try:
+        admin.create_acls(rules)
+        return len(rules)
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        disabled = _acls_disabled(cluster, error)
+
+        if disabled:
+            raise disabled
+
+        raise _request_failed(cluster, error)
+    finally:
+        _close(admin)
+
+
+def delete_acls(cluster, filter_spec):
+    """Удаляет всё, что подошло под фильтр. Возвращает число правил."""
+    try:
+        kafka = _import_kafka()
+    except ImportError:
+        raise KafkaUnavailable(INSTALL_HINT)
+
+    enums = _acl_enums(kafka)
+    admin = open_admin(cluster)
+
+    try:
+        answer = admin.delete_acls([_build_filter(enums, filter_spec)])
+        removed = 0
+
+        for _filter, rules, _error in answer or []:
+            removed += len(rules or [])
+
+        return removed
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        disabled = _acls_disabled(cluster, error)
+
+        if disabled:
+            raise disabled
+
         raise _request_failed(cluster, error)
     finally:
         _close(admin)

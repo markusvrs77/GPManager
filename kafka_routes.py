@@ -5,13 +5,28 @@ from flask import Blueprint, jsonify, render_template, request
 
 from modules.kafka_audit import recent as audit_recent
 from modules.kafka_audit import write as audit_write
+from modules.kafka_acl import (
+    OPERATIONS,
+    PATTERN_TYPES,
+    PERMISSIONS,
+    PRESETS,
+    RESOURCE_TYPES,
+    build_acl_spec,
+    build_filter_spec,
+    expand_preset,
+    format_acl,
+)
 from modules.kafka_client import (
+    AclsDisabled,
     KafkaUnavailable,
     add_partitions,
     alter_topic_configs,
+    create_acls,
     create_topic,
+    delete_acls,
     delete_group,
     delete_topic,
+    fetch_acls,
     fetch_topic_configs,
     library_available,
     ping,
@@ -505,3 +520,133 @@ def api_kafka_message_send(cluster_id):
 
     return jsonify({"ok": True, "partition": meta.get("partition"),
                     "offset": meta.get("offset")})
+
+
+# ---------------- правила доступа ----------------
+
+@kafka_bp.route("/kafka/acl")
+def kafka_acl_page():
+    return render_template(
+        "kafka_acl.html",
+        clusters=list_clusters(),
+        library_ready=library_available(),
+        operations=OPERATIONS,
+        resource_types=RESOURCE_TYPES,
+        pattern_types=PATTERN_TYPES,
+        permissions=PERMISSIONS,
+        presets=sorted(PRESETS.items()),
+    )
+
+
+def _is_anonymous(cluster):
+    """PLAINTEXT без SASL — все клиенты для Kafka один ANONYMOUS."""
+    protocol = str(cluster.get("security_protocol") or "PLAINTEXT").upper()
+    return not protocol.startswith("SASL")
+
+
+@kafka_bp.route("/api/kafka/clusters/<int:cluster_id>/acls/list",
+                methods=["POST"])
+def api_kafka_acls_list(cluster_id):
+    try:
+        cluster = _cluster_or_404(cluster_id)
+        spec = build_filter_spec(request.get_json(silent=True) or {})
+    except LookupError as error:
+        return _fail(error, 404)
+    except ValueError as error:
+        return _fail(error)
+
+    try:
+        rows = fetch_acls(cluster, spec)
+    except AclsDisabled as error:
+        # не ошибка запроса и не отказ кластера: несовместимое состояние
+        return jsonify({"ok": False, "disabled": True,
+                        "message": str(error)}), 409
+    except KafkaUnavailable as error:
+        return _fail(error, 502)
+
+    return jsonify({"ok": True, "anonymous": _is_anonymous(cluster),
+                    "acls": [format_acl(a) for a in rows]})
+
+
+def _grant_specs(body):
+    """Из формы или из шаблона — один и тот же список спецификаций."""
+    preset = str(body.get("preset") or "").strip()
+
+    if preset:
+        return expand_preset(preset, body)
+
+    return [build_acl_spec(body)]
+
+
+@kafka_bp.route("/api/kafka/clusters/<int:cluster_id>/acls",
+                methods=["POST"])
+def api_kafka_acl_grant(cluster_id):
+    body = request.get_json(silent=True) or {}
+
+    try:
+        cluster = _cluster_or_404(cluster_id)
+        specs = _grant_specs(body)
+    except LookupError as error:
+        return _fail(error, 404)
+    except ValueError as error:
+        return _fail(error)
+
+    target = specs[0]["principal"]
+    intent = {"preset": body.get("preset") or None, "rules": specs}
+
+    try:
+        created = create_acls(cluster, specs)
+    except AclsDisabled as error:
+        audit_write(cluster_id, "grant_acl", target, intent, "error")
+        return jsonify({"ok": False, "disabled": True,
+                        "message": str(error)}), 409
+    except KafkaUnavailable as error:
+        audit_write(cluster_id, "grant_acl", target, intent, "error")
+        return _fail(error, 502)
+
+    intent["created"] = created
+    audit_write(cluster_id, "grant_acl", target, intent, "ok")
+
+    return jsonify({"ok": True, "created": created})
+
+
+@kafka_bp.route("/api/kafka/clusters/<int:cluster_id>/acls/delete",
+                methods=["POST"])
+def api_kafka_acl_revoke(cluster_id):
+    body = request.get_json(silent=True) or {}
+
+    try:
+        cluster = _cluster_or_404(cluster_id)
+        spec = build_filter_spec(body)
+    except LookupError as error:
+        return _fail(error, 404)
+    except ValueError as error:
+        return _fail(error)
+
+    try:
+        # сначала смотрим, что попадёт: delete_acls сносит всё по фильтру
+        matched = fetch_acls(cluster, spec)
+    except AclsDisabled as error:
+        return jsonify({"ok": False, "disabled": True,
+                        "message": str(error)}), 409
+    except KafkaUnavailable as error:
+        return _fail(error, 502)
+
+    if not matched:
+        return jsonify({"ok": True, "removed": 0,
+                        "message": "Под фильтр ничего не попало"})
+
+    intent = {"filter": spec, "matched": len(matched)}
+
+    try:
+        removed = delete_acls(cluster, spec)
+    except KafkaUnavailable as error:
+        audit_write(cluster_id, "revoke_acl", spec.get("principal") or "*",
+                    intent, "error")
+        return _fail(error, 502)
+
+    intent["removed"] = removed
+    audit_write(cluster_id, "revoke_acl", spec.get("principal") or "*",
+                intent, "ok")
+
+    return jsonify({"ok": True, "removed": removed})
