@@ -113,6 +113,11 @@ gpm_scheduler.register_runner("pg_restore", run_pg_restore_job)
 
 app = Flask(__name__)
 
+# вкладка Kafka живёт отдельным Blueprint: app.py и так слишком большой
+from kafka_routes import kafka_bp  # noqa: E402
+
+app.register_blueprint(kafka_bp)
+
 
 @app.route("/")
 @app.route("/dashboard")
