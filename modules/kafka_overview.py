@@ -214,11 +214,20 @@ def collect_overview(cluster_id, force=False):
 
     cluster_meta, topics_meta = fetch_cluster_meta(cluster)
 
+    # имена полей читаем так же, как в build_overview: на kafka-python 3.x
+    # это name/partition_index, и без _pick сюда попадали пары (None, None),
+    # на которых библиотека падала с «All topics must not be None»
     pairs = [
-        (topic.get("topic"), part.get("partition"))
+        (
+            _pick(topic, "name", "topic"),
+            _pick(part, "partition_index", "partition"),
+        )
         for topic in topics_meta or []
         for part in topic.get("partitions") or []
     ]
+
+    pairs = [(name, number) for name, number in pairs
+             if name is not None and number is not None]
 
     begin, end = fetch_offsets(cluster, pairs)
     data = build_overview(cluster_meta, topics_meta, begin, end)

@@ -175,6 +175,31 @@ def test_collect_reads_snapshot_without_force(monkeypatch):
     delete_cluster(cluster_id)
 
 
+def test_collect_asks_offsets_by_real_topic_names(monkeypatch):
+    """На kafka-python 3.x поля зовутся name/partition_index. Если читать
+    старые имена, в fetch_offsets уходит (None, None) и библиотека падает
+    с «All topics must not be None»."""
+    cluster_id = create_cluster({
+        "name": "V3", "bootstrap_servers": "kfk1:9092"})
+
+    seen = {}
+
+    def fake_offsets(cluster, pairs):
+        seen["pairs"] = list(pairs)
+        return BEGIN, END
+
+    monkeypatch.setattr(kafka_overview, "fetch_cluster_meta",
+                        lambda c: (CLUSTER_META_V3, TOPICS_META_V3))
+    monkeypatch.setattr(kafka_overview, "fetch_offsets", fake_offsets)
+
+    data = collect_overview(cluster_id, force=True)
+
+    assert seen["pairs"] == [("orders", 0), ("orders", 1)]
+    assert data["topics"][0]["messages"] == 1100
+
+    delete_cluster(cluster_id)
+
+
 def test_collect_with_force_asks_cluster(monkeypatch):
     cluster_id = create_cluster({
         "name": "Live", "bootstrap_servers": "kfk1:9092"})
