@@ -369,6 +369,150 @@ def delete_group(cluster, group_id):
         _close(admin)
 
 
+def _as_bytes(value):
+    if value is None or value == "":
+        return None
+
+    if isinstance(value, bytes):
+        return value
+
+    return str(value).encode("utf-8")
+
+
+def _plan_seek(consumer, tps, plan):
+    """Ставит каждую партицию на нужную позицию согласно режиму."""
+    mode = plan.get("mode") or "latest"
+
+    if mode == "offset":
+        for tp in tps:
+            consumer.seek(tp, int(plan.get("offset") or 0))
+        return
+
+    if mode == "timestamp":
+        stamp = int(plan.get("timestamp_ms") or 0)
+        found = consumer.offsets_for_times({tp: stamp for tp in tps}) or {}
+        ends = consumer.end_offsets(tps)
+
+        for tp in tps:
+            row = found.get(tp)
+            # записей позже указанного времени нет — встаём в конец
+            consumer.seek(tp, getattr(row, "offset", None) if row
+                          else int(ends.get(tp, 0)))
+        return
+
+    # latest: делим лимит между партициями и отступаем от конца
+    limit = int(plan.get("limit") or 50)
+    per = max(1, limit // max(1, len(tps)))
+    begins = consumer.beginning_offsets(tps)
+    ends = consumer.end_offsets(tps)
+
+    for tp in tps:
+        start = max(int(begins.get(tp, 0)), int(ends.get(tp, 0)) - per)
+        consumer.seek(tp, start)
+
+
+def read_messages(cluster, topic, plan):
+    """
+    Записи топика без консьюмер-группы.
+
+    assign + seek, никаких коммитов: просмотр не должен двигать оффсеты
+    боевых потребителей.
+    """
+    try:
+        kafka = _import_kafka()
+    except ImportError:
+        raise KafkaUnavailable(INSTALL_HINT)
+
+    consumer = open_consumer(cluster)
+
+    try:
+        numbers = sorted(consumer.partitions_for_topic(topic) or [])
+        wanted = plan.get("partition")
+
+        if wanted is not None:
+            numbers = [n for n in numbers if n == int(wanted)]
+
+        if not numbers:
+            return []
+
+        tps = [kafka.TopicPartition(topic, n) for n in numbers]
+        consumer.assign(tps)
+        _plan_seek(consumer, tps, plan)
+
+        limit = int(plan.get("limit") or 50)
+        rows = []
+        empty_rounds = 0
+
+        # три пустых опроса подряд — в топике больше нечего читать
+        while len(rows) < limit and empty_rounds < 3:
+            batch = consumer.poll(timeout_ms=1000,
+                                  max_records=limit - len(rows))
+
+            if not batch:
+                empty_rounds += 1
+                continue
+
+            empty_rounds = 0
+
+            for _tp, batch_rows in batch.items():
+                for record in batch_rows:
+                    rows.append({
+                        "topic": record.topic,
+                        "partition": record.partition,
+                        "offset": record.offset,
+                        "timestamp": record.timestamp,
+                        "key": record.key,
+                        "value": record.value,
+                        "headers": list(record.headers or []),
+                    })
+
+        rows.sort(key=lambda r: (r["partition"], r["offset"]))
+
+        return rows[:limit]
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        raise _request_failed(cluster, error)
+    finally:
+        _close(consumer)
+
+
+def send_message(cluster, topic, key, value, partition=None):
+    """Отправка одной записи. Возвращает партицию и оффсет от брокера."""
+    try:
+        kafka = _import_kafka()
+    except ImportError:
+        raise KafkaUnavailable(INSTALL_HINT)
+
+    timeout = int(cluster.get("request_timeout_ms") or DEFAULT_TIMEOUT_MS)
+
+    # KafkaProducer принимает те же ключи, что client_kwargs;
+    # enable_auto_commit и consumer_timeout_ms добавляет только консьюмер
+    producer = kafka.KafkaProducer(**client_kwargs(cluster))
+
+    try:
+        future = producer.send(
+            topic,
+            value=_as_bytes(value),
+            key=_as_bytes(key),
+            partition=int(partition) if partition not in (None, "")
+            else None,
+        )
+        meta = future.get(timeout=timeout / 1000.0)
+
+        return {"partition": getattr(meta, "partition", None),
+                "offset": getattr(meta, "offset", None)}
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        raise _request_failed(cluster, error)
+    finally:
+        try:
+            producer.close(timeout=1)
+        except Exception:
+            pass
+
+
 def _topic_error(cluster, name, error):
     """Частые ошибки брокера — человеческим языком."""
     text = str(error)

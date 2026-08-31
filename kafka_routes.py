@@ -15,7 +15,9 @@ from modules.kafka_client import (
     fetch_topic_configs,
     library_available,
     ping,
+    read_messages,
     reset_offsets,
+    send_message,
 )
 from modules.kafka_clusters import (
     create_cluster,
@@ -31,6 +33,7 @@ from modules.kafka_groups import (
     collect_groups,
     find_group,
 )
+from modules.kafka_messages import build_read_plan, format_record
 from modules.kafka_overview import collect_overview
 from modules.kafka_topics import (
     assert_can_grow,
@@ -433,3 +436,72 @@ def api_kafka_topic_configs_update(cluster_id, name):
     audit_write(cluster_id, "alter_configs", topic, changes, "ok")
 
     return jsonify({"ok": True, "changed": len(changes)})
+
+
+# ---------------- сообщения ----------------
+
+@kafka_bp.route("/kafka/messages")
+def kafka_messages_page():
+    return render_template(
+        "kafka_messages.html",
+        clusters=list_clusters(),
+        library_ready=library_available(),
+    )
+
+
+@kafka_bp.route("/api/kafka/clusters/<int:cluster_id>/messages/read",
+                methods=["POST"])
+def api_kafka_messages_read(cluster_id):
+    try:
+        cluster = _cluster_or_404(cluster_id)
+        plan = build_read_plan(request.get_json(silent=True) or {})
+    except LookupError as error:
+        return _fail(error, 404)
+    except ValueError as error:
+        return _fail(error)
+
+    try:
+        raw = read_messages(cluster, plan["topic"], plan)
+    except KafkaUnavailable as error:
+        return _fail(error, 502)
+
+    return jsonify({"ok": True,
+                    "records": [format_record(r) for r in raw]})
+
+
+@kafka_bp.route("/api/kafka/clusters/<int:cluster_id>/messages",
+                methods=["POST"])
+def api_kafka_message_send(cluster_id):
+    body = request.get_json(silent=True) or {}
+    topic = str(body.get("topic") or "").strip()
+
+    try:
+        cluster = _cluster_or_404(cluster_id)
+
+        if not topic:
+            raise ValueError("Выберите топик")
+    except LookupError as error:
+        return _fail(error, 404)
+    except ValueError as error:
+        return _fail(error)
+
+    value = body.get("value")
+    # в журнал идёт только начало значения: оно может быть большим
+    # и содержать данные клиентов
+    intent = {"key": str(body.get("key") or "")[:120],
+              "size": len(str(value or "")),
+              "preview": str(value or "")[:120]}
+
+    try:
+        meta = send_message(cluster, topic, body.get("key"), value,
+                            body.get("partition"))
+    except KafkaUnavailable as error:
+        audit_write(cluster_id, "send_message", topic, intent, "error")
+        return _fail(error, 502)
+
+    intent["partition"] = meta.get("partition")
+    intent["offset"] = meta.get("offset")
+    audit_write(cluster_id, "send_message", topic, intent, "ok")
+
+    return jsonify({"ok": True, "partition": meta.get("partition"),
+                    "offset": meta.get("offset")})
