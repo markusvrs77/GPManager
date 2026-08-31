@@ -57,6 +57,30 @@
   font-variant-numeric: tabular-nums; }
 
 .kf-empty { padding: 18px 16px; font-size: 13px; color: var(--text-muted); }
+
+/* --- управление топиками --- */
+.kf-head-btn { margin-left: auto; }
+.kf-form { padding: 12px 16px; border-bottom: 1px solid var(--hairline);
+  display: none; }
+.kf-form.on { display: block; }
+.kf-form .fgrid { display: grid; gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) {
+  .kf-form .fgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.kf-form .form-label { font-size: 11.5px; font-weight: 700;
+  letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 4px; }
+.kf-form .buttons { display: flex; gap: 8px; margin-top: 12px; }
+.kf-acts { display: flex; gap: 8px; margin: 10px 0 2px; flex-wrap: wrap;
+  align-items: center; }
+.kf-cfg { margin-top: 8px; }
+.kf-cfg-row { display: flex; align-items: center; gap: 10px; padding: 3px 0;
+  font-size: 12px; }
+.kf-cfg-row .k { flex: 0 0 260px; color: var(--text-muted);
+  font-family: var(--mono, monospace); }
+.kf-cfg-row input { flex: 0 1 220px; }
+.kf-cfg-row .d { font-size: 11px; color: var(--text-muted); }
 </style>
 
 <div class="kf" id="kfRoot">
@@ -97,7 +121,50 @@
   </div>
 
   <div class="kf-panel">
-    <h2>Топики</h2>
+    <h2>Топики
+      <button class="btn btn-sm btn-outline-primary kf-head-btn"
+              id="kfTopicAdd" type="button">+ Топик</button></h2>
+
+    <div class="kf-form" id="kfTopicForm">
+      <div class="fgrid">
+        <div>
+          <label class="form-label" for="kfTopicName">Имя</label>
+          <input type="text" id="kfTopicName" class="form-control"
+                 placeholder="dwh.orders">
+        </div>
+        <div>
+          <label class="form-label" for="kfTopicParts">Партиций</label>
+          <input type="number" id="kfTopicParts" class="form-control"
+                 value="1" min="1">
+        </div>
+        <div>
+          <label class="form-label" for="kfTopicRf">Репликация</label>
+          <input type="number" id="kfTopicRf" class="form-control"
+                 value="1" min="1">
+        </div>
+        <div>
+          <label class="form-label" for="kfTopicRet">Retention, часов</label>
+          <input type="number" id="kfTopicRet" class="form-control"
+                 placeholder="по умолчанию" min="1">
+        </div>
+        <div>
+          <label class="form-label" for="kfTopicPolicy">cleanup.policy</label>
+          <select id="kfTopicPolicy" class="form-select">
+            <option value="">по умолчанию</option>
+            <option value="delete">delete</option>
+            <option value="compact">compact</option>
+            <option value="compact,delete">compact,delete</option>
+          </select>
+        </div>
+      </div>
+      <div class="buttons">
+        <button class="btn btn-sm btn-primary" id="kfTopicSave"
+                type="button">Создать</button>
+        <button class="btn btn-sm btn-outline-primary" id="kfTopicCancel"
+                type="button">Отмена</button>
+      </div>
+    </div>
+
     <div class="kf-tools">
       <input type="search" id="kfFilter" class="form-control form-control-sm"
              placeholder="поиск по имени топика">

@@ -94,7 +94,7 @@
                     " · ISR " + esc((p.isr || []).join(", ")) +
                     " · " + fmtN(p.begin) + "–" + fmtN(p.end) +
                     " (" + fmtN(size) + ")</div>";
-            }).join("") + "</div>";
+            }).join("") + "</div>" + actionsHtml(topic);
     }
 
     function paintTopics() {
@@ -138,6 +138,8 @@
                 };
             }
         );
+
+        wireTopicActions();
     }
 
     function repaintTopics() {
@@ -191,6 +193,185 @@
         });
     }
 
+    /* ---------------- управление топиками ---------------- */
+
+    var configs = {};   // конфиги топиков, загруженные по требованию
+
+    function toast(message, kind) {
+        if (window.gpToast) { window.gpToast(message, kind); }
+    }
+
+    function send(url, method, body) {
+        return api(url, {
+            method: method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body || {}),
+        });
+    }
+
+    function ask(question) {
+        if (window.gpConfirm) { return window.gpConfirm(question); }
+        return Promise.resolve(window.confirm(question));
+    }
+
+    function actionsHtml(topic) {
+        var rows = configs[topic.name];
+        var html = '<div class="kf-acts">' +
+            '<button class="btn btn-sm btn-secondary" data-cfg="' +
+            esc(topic.name) + '">Конфигурация</button>' +
+            '<button class="btn btn-sm btn-secondary" data-parts="' +
+            esc(topic.name) + '">Добавить партиции</button>' +
+            '<button class="btn btn-sm btn-outline-primary" data-drop="' +
+            esc(topic.name) + '">Удалить</button></div>';
+
+        if (rows) {
+            html += '<div class="kf-cfg">' + rows.map(function (c) {
+                var value = c.value === null ? "" : c.value;
+                return '<div class="kf-cfg-row"><span class="k">' +
+                    esc(c.key) + "</span>" +
+                    '<input class="form-control form-control-sm" ' +
+                    'data-cfg-key="' + esc(c.key) + '" value="' +
+                    esc(value) + '"' + (c.read_only ? " disabled" : "") +
+                    '><span class="d">' +
+                    (c.default ? "по умолчанию" : "задано") +
+                    (c.sensitive ? " · скрыто" : "") + "</span></div>";
+            }).join("") +
+                '<div class="kf-acts"><button class="btn btn-sm btn-primary"' +
+                ' data-cfg-save="' + esc(topic.name) +
+                '">Сохранить</button></div></div>';
+        }
+
+        return html;
+    }
+
+    function wireTopicActions() {
+        var bind = function (attr, handler) {
+            Array.prototype.forEach.call(
+                $("kfTopics").querySelectorAll("[" + attr + "]"),
+                function (b) {
+                    b.onclick = function (event) {
+                        event.stopPropagation();
+                        handler(b.getAttribute(attr));
+                    };
+                }
+            );
+        };
+
+        bind("data-cfg", loadConfigs);
+        bind("data-parts", growPartitions);
+        bind("data-drop", dropTopic);
+        bind("data-cfg-save", saveConfigs);
+    }
+
+    function loadConfigs(name) {
+        api("/api/kafka/clusters/" + clusterId() + "/topics/" +
+            encodeURIComponent(name) + "/configs").then(function (r) {
+            if (r.status !== 200 || !r.data.ok) {
+                toast(r.data.message || "Не удалось получить конфигурацию",
+                    "danger");
+                return;
+            }
+
+            configs[name] = r.data.configs;
+            repaintTopics();
+        });
+    }
+
+    function saveConfigs(name) {
+        var wanted = {};
+
+        Array.prototype.forEach.call(
+            $("kfTopics").querySelectorAll("[data-cfg-key]"),
+            function (input) {
+                wanted[input.getAttribute("data-cfg-key")] = input.value;
+            }
+        );
+
+        send("/api/kafka/clusters/" + clusterId() + "/topics/" +
+            encodeURIComponent(name) + "/configs", "PUT", { configs: wanted })
+            .then(function (r) {
+                if (r.status !== 200 || !r.data.ok) {
+                    toast(r.data.message || "Не удалось сохранить", "danger");
+                    return;
+                }
+
+                toast(r.data.changed
+                    ? "Изменено ключей: " + r.data.changed
+                    : "Изменений нет", "success");
+                loadConfigs(name);
+            });
+    }
+
+    function growPartitions(name) {
+        var topic = ((overview && overview.topics) || []).filter(
+            function (t) { return t.name === name; })[0];
+
+        if (!topic) { return; }
+
+        var target = window.prompt(
+            "Сколько партиций должно стать у «" + name + "»?\n" +
+            "Сейчас " + topic.partitions + ". Уменьшать Kafka не умеет.\n" +
+            "После увеличения записи с тем же ключом пойдут в другую " +
+            "партицию — порядок по ключу сломается.",
+            String(topic.partitions + 1));
+
+        if (!target) { return; }
+
+        send("/api/kafka/clusters/" + clusterId() + "/topics/" +
+            encodeURIComponent(name) + "/partitions", "POST",
+            { total: Number(target) }).then(function (r) {
+            if (r.status !== 200 || !r.data.ok) {
+                toast(r.data.message || "Не удалось изменить", "danger");
+                return;
+            }
+
+            toast("Партиций стало " + r.data.total, "success");
+            loadOverview(false);
+        });
+    }
+
+    function dropTopic(name) {
+        ask("Удалить топик «" + name + "»? Все его данные будут потеряны.")
+            .then(function (yes) {
+                if (!yes) { return; }
+
+                api("/api/kafka/clusters/" + clusterId() + "/topics/" +
+                    encodeURIComponent(name), { method: "DELETE" })
+                    .then(function (r) {
+                        if (r.status !== 200 || !r.data.ok) {
+                            toast(r.data.message || "Не удалось удалить",
+                                "danger");
+                            return;
+                        }
+
+                        toast("Топик удалён", "success");
+                        delete configs[name];
+                        openTopic = null;
+                        loadOverview(false);
+                    });
+            });
+    }
+
+    function createTopic() {
+        send("/api/kafka/clusters/" + clusterId() + "/topics", "POST", {
+            name: $("kfTopicName").value,
+            partitions: $("kfTopicParts").value,
+            replication: $("kfTopicRf").value,
+            retention_hours: $("kfTopicRet").value,
+            cleanup_policy: $("kfTopicPolicy").value,
+        }).then(function (r) {
+            if (r.status !== 200 || !r.data.ok) {
+                toast(r.data.message || "Не удалось создать", "danger");
+                return;
+            }
+
+            toast("Топик «" + r.data.name + "» создан", "success");
+            $("kfTopicForm").classList.remove("on");
+            $("kfTopicName").value = "";
+            loadOverview(false);
+        });
+    }
+
     function wire() {
         if (!$("kfRoot")) { return; }
 
@@ -216,6 +397,14 @@
                     }
                 });
         };
+
+        $("kfTopicAdd").onclick = function () {
+            $("kfTopicForm").classList.toggle("on");
+        };
+        $("kfTopicCancel").onclick = function () {
+            $("kfTopicForm").classList.remove("on");
+        };
+        $("kfTopicSave").onclick = createTopic;
 
         $("kfFilter").oninput = repaintTopics;
         $("kfInternal").onchange = repaintTopics;
