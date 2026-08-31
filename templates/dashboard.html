@@ -1,161 +1,206 @@
 {% extends "base.html" %}
 
+{% block title %}Dashboard · Opsentri{% endblock %}
+
 {% block content %}
 
-<div class="container-fluid py-4">
+<style>
+/* ============ dashboard (обзор кластеров и задач) ============ */
+.gpd { max-width: 1240px; }
 
-    <div class="mb-4">
-        <h2 class="mb-1">Dashboard</h2>
-        <div class="text-muted">
-            Greenplum Reorganize Center overview
+.gpd-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px; margin-bottom: 18px; }
+@media (max-width: 1100px) { .gpd-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.gpd-stat { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 16px 18px; min-height: 108px;
+  display: flex; flex-direction: column; }
+.gpd-stat .k { font-size: 11.5px; font-weight: 700; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; }
+.gpd-stat .v { font-size: 28px; font-weight: 800; line-height: 1.1;
+  font-variant-numeric: tabular-nums; }
+.gpd-stat .v.acc { background: var(--accent-grad); -webkit-background-clip: text;
+  background-clip: text; color: transparent; }
+.gpd-stat .sub { color: var(--text-muted); font-size: 12.5px; margin-top: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gpd-stat .sub b { color: var(--text); font-weight: 600; }
+
+.gpd-spark { display: flex; align-items: flex-end; gap: 4px; height: 30px;
+  margin-top: auto; padding-top: 8px; }
+.gpd-spark i { flex: 1; min-height: 3px; border-radius: 3px 3px 0 0;
+  background: var(--accent-grad); opacity: .75; }
+.gpd-spark i.z { background: var(--surface-2); opacity: 1; }
+
+.gpd-grid { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr);
+  gap: 14px; align-items: start; margin-bottom: 14px; }
+@media (max-width: 1100px) { .gpd-grid { grid-template-columns: minmax(0, 1fr); } }
+.gpd-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+.gpd-panel { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 16px 18px; min-width: 0; }
+.gpd-panel h6 { font-weight: 700; font-size: 14px; margin: 0 0 12px;
+  display: flex; align-items: center; gap: 8px; }
+.gpd-panel h6 .cnt { color: var(--text-muted); font-weight: 600; font-size: 12px; }
+.gpd-panel h6 .lnk { margin-left: auto; font-size: 12.5px; font-weight: 500; }
+
+.gpd-empty { color: var(--text-muted); font-size: 13px; padding: 6px 0; }
+
+/* лента запусков */
+.gpd-run { display: flex; align-items: center; gap: 12px; padding: 9px 4px;
+  border-bottom: 1px solid var(--hairline); font-size: 13.5px;
+  color: var(--text); text-decoration: none; border-radius: 8px; }
+.gpd-run:hover { background: var(--row-hover); color: var(--text); }
+.gpd-run:last-child { border-bottom: none; }
+.gpd-run .lab { flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.gpd-run .bar { flex: 0 1 110px; min-width: 50px; height: 6px;
+  background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.gpd-run .bar i { display: block; height: 100%; background: var(--accent-grad);
+  border-radius: 4px; }
+.gpd-run .bar i.done { background: var(--ok); }
+.gpd-run .bar i.fail { background: var(--crit); }
+.gpd-run .st { font-size: 12px; font-variant-numeric: tabular-nums; flex: none; }
+.gpd-run .dt { color: var(--text-muted); font-size: 12px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 30%; flex: none; }
+.gpd-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.gpd-dot.g { background: var(--ok); }
+.gpd-dot.b { background: var(--a1); box-shadow: 0 0 8px var(--a1); }
+.gpd-dot.r { background: var(--crit); }
+.gpd-dot.i { background: var(--idle); }
+
+/* планировщик / кластеры */
+.gpd-li { display: flex; align-items: center; gap: 10px; padding: 8px 2px;
+  border-bottom: 1px solid var(--hairline); font-size: 13px; min-width: 0; }
+.gpd-li:last-child { border-bottom: none; }
+.gpd-li .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.gpd-li .mut { color: var(--text-muted); font-size: 12px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.gpd-li .rt { margin-left: auto; text-align: right; flex: none; }
+.gpd-tag { font-size: 10.5px; font-weight: 700; border-radius: var(--radius-pill);
+  padding: 2px 8px; background: rgba(99, 102, 241, .14);
+  border: 1px solid rgba(99, 102, 241, .35); flex: none; }
+.gpd-tag.off { background: var(--surface-2); border-color: var(--hairline);
+  color: var(--text-muted); }
+
+/* skew chips */
+.gpd-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.gpd-chip { font-size: 12px; border-radius: var(--radius-pill); padding: 3px 10px;
+  background: var(--surface-2); border: 1px solid var(--hairline); }
+.gpd-chip b { font-variant-numeric: tabular-nums; }
+.gpd-chip.ok b { color: var(--ok); }
+.gpd-chip.warn b { color: var(--warn); }
+.gpd-chip.crit b { color: var(--crit); }
+
+.dashboard-chart-box { height: 320px; }
+.dashboard-donut-box { height: 240px; }
+</style>
+
+<div class="gpd">
+
+    <!-- stat cards -->
+    <div class="gpd-stats">
+        <div class="gpd-stat">
+            <div class="k">Сейчас выполняется</div>
+            <div class="v acc" id="gpdStatActive">—</div>
+            <div class="sub" id="gpdStatActiveSub">загрузка…</div>
+        </div>
+        <div class="gpd-stat">
+            <div class="k">Запуски за 7 дней</div>
+            <div class="v" id="gpdStatRuns">—</div>
+            <div class="sub" id="gpdStatRunsSub"></div>
+            <div class="gpd-spark" id="gpdSpark"></div>
+        </div>
+        <div class="gpd-stat">
+            <div class="k">Расписания</div>
+            <div class="v" id="gpdStatSched">—</div>
+            <div class="sub" id="gpdStatSchedSub"></div>
+        </div>
+        <div class="gpd-stat">
+            <div class="k">Vacuum / Analyze</div>
+            <div class="v" id="gpdStatVac">—</div>
+            <div class="sub" id="gpdStatVacSub"></div>
         </div>
     </div>
 
-    <div class="row g-3 mb-4">
+    <div class="gpd-grid">
 
-        <div class="col-md-3">
-            <div class="card shadow-sm h-100">
-                <div class="card-body">
-                    <div class="text-muted small">Total skew tables</div>
-                    <h3 class="mb-0">{{ skew_summary.total }}</h3>
-                </div>
-            </div>
+        <!-- запуски всех типов -->
+        <div class="gpd-panel">
+            <h6>Запуски <span class="cnt" id="gpdRunsCnt"></span></h6>
+            <div id="gpdRuns"><div class="gpd-empty">Загрузка…</div></div>
         </div>
 
-        <div class="col-md-3">
-            <div class="card shadow-sm h-100">
-                <div class="card-body">
-                    <div class="text-muted small">Max skew</div>
-                    <h3 class="mb-0 text-danger">{{ skew_summary.max_skew }}</h3>
-                </div>
+        <div class="gpd-col">
+            <!-- планировщик -->
+            <div class="gpd-panel">
+                <h6>Планировщик
+                    <a class="lnk" href="/schedules">все расписания</a></h6>
+                <div id="gpdSched"><div class="gpd-empty">Загрузка…</div></div>
+            </div>
+
+            <!-- кластеры -->
+            <div class="gpd-panel">
+                <h6>Кластеры
+                    <a class="lnk" href="/connections">управление</a></h6>
+                {% if connections %}
+                    {% for c in connections %}
+                    <div class="gpd-li">
+                        <span class="gpd-tag">GP</span>
+                        <div style="min-width: 0;">
+                            <div class="nm">{{ c.name }}</div>
+                            <div class="mut">{{ c.host }} · {{ c.database_name or c.database or c.dbname or '' }}</div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="gpd-empty">Нет подключений.</div>
+                {% endif %}
             </div>
         </div>
-
-        <div class="col-md-3">
-            <div class="card shadow-sm h-100">
-                <div class="card-body">
-                    <div class="text-muted small">Avg skew</div>
-                    <h3 class="mb-0 text-primary">{{ skew_summary.avg_skew }}</h3>
-                </div>
-            </div>
-        </div>
-
-        <div class="col-md-3">
-            <div class="card shadow-sm h-100">
-                <div class="card-body">
-                    <div class="text-muted small">Last skew job</div>
-
-                    {% if latest_skew_job %}
-                        <h5 class="mb-0">
-                            #{{ latest_skew_job.id }} {{ latest_skew_job.status }}
-                        </h5>
-                    {% else %}
-                        <h5 class="mb-0 text-muted">No job</h5>
-                    {% endif %}
-                </div>
-            </div>
-        </div>
-
     </div>
 
-    <div class="card shadow-sm mb-4">
-        <div class="card-header fw-bold">
-            Current skew result
-        </div>
-
-        <div class="card-body">
-
-            {% if last_results %}
-
-            <div class="row g-3">
-
-                <div class="col-lg-3">
-                    <div class="card h-100 border-0 bg-light">
-                        <div class="card-body">
-                            <h6 class="fw-bold mb-3">Skew summary</h6>
-
-                            <div class="text-muted small">Total tables</div>
-                            <h3>{{ skew_summary.total }}</h3>
-
-                            <hr>
-
-                            <div class="mb-2">
-                                OK:
-                                <strong class="text-success">{{ skew_summary.ok }}</strong>
-                            </div>
-
-                            <div class="mb-2">
-                                WARNING:
-                                <strong class="text-warning">{{ skew_summary.warning }}</strong>
-                            </div>
-
-                            <div class="mb-2">
-                                CRITICAL:
-                                <strong class="text-danger">{{ skew_summary.critical }}</strong>
-                            </div>
-
-                            <div class="mb-2">
-                                EMPTY:
-                                <strong class="text-secondary">{{ skew_summary.empty }}</strong>
-                            </div>
-
-                            <div class="mb-2">
-                                FAILED:
-                                <strong class="text-dark">{{ skew_summary.failed }}</strong>
-                            </div>
-
-                            <div>
-                                INTERRUPTED:
-                                <strong class="text-muted">{{ skew_summary.interrupted }}</strong>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="col-lg-5">
-                    <div class="card h-100 border-0 bg-light">
-                        <div class="card-body">
-                            <h6 class="fw-bold mb-3">Skew ratio by table</h6>
-                            <div class="dashboard-chart-box">
-                                <canvas id="dashboardSkewBarChart"></canvas>
-                            </div>
-                            <div class="small text-muted mt-2">
-                                Показываются top 20 таблиц по skew_ratio.
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="col-lg-4">
-                    <div class="card h-100 border-0 bg-light">
-                        <div class="card-body">
-                            <h6 class="fw-bold mb-3">Status distribution</h6>
-                            <div class="dashboard-donut-box">
-                                <canvas id="dashboardSkewStatusChart"></canvas>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-            </div>
-
-            {% else %}
-
-            <div class="alert alert-info mb-0">
-                Пока нет результатов Skew Analysis.
-            </div>
-
+    <!-- skew -->
+    <div class="gpd-panel" style="margin-bottom: 14px;">
+        <h6>Перекос данных (skew)
+            {% if latest_skew_job %}
+                <span class="cnt">job #{{ latest_skew_job.id }} · {{ latest_skew_job.status }}</span>
             {% endif %}
+            <a class="lnk" href="/maintenance">анализ</a></h6>
 
+        {% if last_results %}
+        <div class="gpd-chips">
+            <span class="gpd-chip">Таблиц: <b>{{ skew_summary.total }}</b></span>
+            <span class="gpd-chip">Max skew: <b>{{ skew_summary.max_skew }}</b></span>
+            <span class="gpd-chip">Avg: <b>{{ skew_summary.avg_skew }}</b></span>
+            <span class="gpd-chip ok">OK: <b>{{ skew_summary.ok }}</b></span>
+            <span class="gpd-chip warn">Warning: <b>{{ skew_summary.warning }}</b></span>
+            <span class="gpd-chip crit">Critical: <b>{{ skew_summary.critical }}</b></span>
+            <span class="gpd-chip">Empty: <b>{{ skew_summary.empty }}</b></span>
         </div>
+        <div class="row g-3">
+            <div class="col-lg-7">
+                <div class="dashboard-chart-box">
+                    <canvas id="dashboardSkewBarChart"></canvas>
+                </div>
+                <div class="small text-muted mt-2">Top 20 таблиц по skew_ratio.</div>
+            </div>
+            <div class="col-lg-5">
+                <div class="dashboard-donut-box">
+                    <canvas id="dashboardSkewStatusChart"></canvas>
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <div class="gpd-empty">Пока нет результатов Skew Analysis — запусти анализ на вкладке Maintenance.</div>
+        {% endif %}
     </div>
 
-    <div class="card mt-4">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <b>Session limits / Connections usage</b>
-
-            <div class="d-flex gap-2 align-items-center">
-                <select id="dashboardConnectionId" class="form-select form-select-sm" style="min-width: 280px;">
+    <!-- session limits -->
+    <div class="gpd-panel">
+        <h6>Сессии / лимиты подключений
+            <span style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
+                <select id="dashboardConnectionId" class="form-select form-select-sm" style="min-width: 260px;">
                     <option value="">Выбери connection</option>
                     {% for c in connections %}
                         <option value="{{ c.id }}">
@@ -163,67 +208,64 @@
                         </option>
                     {% endfor %}
                 </select>
-
                 <button type="button" class="btn btn-sm btn-outline-primary" onclick="loadSessionLimitsStats()">
-                    Refresh
+                    Обновить
                 </button>
+            </span>
+        </h6>
+
+        <div id="sessionLimitsMessage" class="alert alert-warning">
+            Выбери connection, чтобы посмотреть загрузку сессий.
+        </div>
+
+        <div class="row text-center mb-3">
+            <div class="col">
+                <div class="small text-muted">Nodes</div>
+                <b id="sessionNodes">0</b>
+            </div>
+            <div class="col">
+                <div class="small text-muted">Total</div>
+                <b id="sessionTotal">0</b>
+            </div>
+            <div class="col">
+                <div class="small text-muted">Active</div>
+                <b id="sessionActive" class="text-primary">0</b>
+            </div>
+            <div class="col">
+                <div class="small text-muted">Idle</div>
+                <b id="sessionIdle" class="text-secondary">0</b>
+            </div>
+            <div class="col">
+                <div class="small text-muted">Idle in transaction</div>
+                <b id="sessionIdleTxn" class="text-danger">0</b>
             </div>
         </div>
 
-        <div class="card-body">
-            <div id="sessionLimitsMessage" class="alert alert-warning">
-                Выбери connection на Dashboard.
-            </div>
-
-            <div class="row text-center mb-3">
-                <div class="col">
-                    <div class="small text-muted">Nodes</div>
-                    <b id="sessionNodes">0</b>
-                </div>
-                <div class="col">
-                    <div class="small text-muted">Total</div>
-                    <b id="sessionTotal">0</b>
-                </div>
-                <div class="col">
-                    <div class="small text-muted">Active</div>
-                    <b id="sessionActive" class="text-primary">0</b>
-                </div>
-                <div class="col">
-                    <div class="small text-muted">Idle</div>
-                    <b id="sessionIdle" class="text-secondary">0</b>
-                </div>
-                <div class="col">
-                    <div class="small text-muted">Idle in transaction</div>
-                    <b id="sessionIdleTxn" class="text-danger">0</b>
-                </div>
-            </div>
-
-            <div class="table-responsive">
-                <table class="table table-sm table-bordered align-middle">
-                    <thead>
-                        <tr>
-                            <th>Node</th>
-                            <th>Segment</th>
-                            <th>Hostname</th>
-                            <th>Address</th>
-                            <th>Port</th>
-                            <th>Total</th>
-                            <th>Active</th>
-                            <th>Idle</th>
-                            <th>Idle txn</th>
-                            <th>Max conn</th>
-                            <th>Reserved</th>
-                            <th>Free</th>
-                            <th>Used %</th>
-                        </tr>
-                    </thead>
-                    <tbody id="sessionLimitsBody">
-                        <tr>
-                            <td colspan="13" class="text-muted">Пока нет данных.</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered align-middle">
+                <thead>
+                    <tr>
+                        <th>Node</th>
+                        <th>Segment</th>
+                        <th>Hostname</th>
+                        <th>Address</th>
+                        <th>Port</th>
+                        <th>Total</th>
+                        <th>Active</th>
+                        <th>Idle</th>
+                        <th>Idle txn</th>
+                        <th>Max conn</th>
+                        <th>Reserved</th>
+                        <th>Free</th>
+                        <th>Used %</th>
+                    </tr>
+                </thead>
+                <tbody id="sessionLimitsBody">
+                    <tr>
+                        <td colspan="13" class="text-muted">Пока нет данных.</td>
+                    </tr>
+                </tbody>
+            </table>
         </div>
     </div>
 
@@ -232,6 +274,230 @@
 <script>
 const dashboardSkewResults = {{ last_results|tojson }};
 
+// ---------- живые данные: запуски / планировщик / карточки ----------
+(function () {
+    "use strict";
+
+    function esc(s) {
+        return String(s == null ? "" : s)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    var RUN_LABELS = {
+        skew: "Анализ перекоса",
+        reorganize: "Реорганизация",
+        vacuum: "Vacuum / Analyze",
+        gpcopy: "Копирование",
+        gpcopy_date: "Диапазон дат",
+        gpcopy_increment: "Инкремент",
+        gpcopy_partition_diff: "Партиции",
+        gpcopy_sync: "Sync по ключу",
+        copy_pipe: "Копирование (COPY)",
+        gpbackup: "Бэкап",
+        gprestore: "Восстановление"
+    };
+    var RUN_PAGES = {
+        skew: "/maintenance", reorganize: "/maintenance", vacuum: "/vacuum",
+        gpbackup: "/backups", gprestore: "/backups"
+    };
+
+    function pageFor(jobType) {
+        var t = String(jobType || "");
+        if (t.indexOf("gpcopy") === 0 || t === "copy_pipe") { return "/gpcopy"; }
+        return RUN_PAGES[jobType] || "/";
+    }
+
+    function isActive(s) {
+        return s === "running" || s === "queued" || s === "stopping";
+    }
+    function isFailed(s) {
+        return s === "failed" || s === "error" || s === "cancelled" || s === "interrupted";
+    }
+
+    function parseDt(s) {
+        if (!s) { return null; }
+        var d = new Date(String(s).replace(" ", "T"));
+        return isNaN(d.getTime()) ? null : d;
+    }
+
+    function fmtDt(s) {
+        var d = parseDt(s);
+        if (!d) { return ""; }
+        var now = new Date();
+        var sameDay = d.toDateString() === now.toDateString();
+        var hm = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+        if (sameDay) { return "сегодня " + hm; }
+        return ("0" + d.getDate()).slice(-2) + "." + ("0" + (d.getMonth() + 1)).slice(-2) + " " + hm;
+    }
+
+    // ---- карточка «сейчас выполняется» ----
+    function loadActive() {
+        fetch("/api/jobs/active")
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (!d.ok) { return; }
+                var jobs = d.jobs || [];
+                document.getElementById("gpdStatActive").textContent = jobs.length;
+                var sub = document.getElementById("gpdStatActiveSub");
+                if (!jobs.length) {
+                    sub.textContent = "нет активных задач";
+                    return;
+                }
+                var j = jobs[0];
+                var pct = Math.round(j.progress_percent || 0);
+                sub.innerHTML = "<b>" + esc(RUN_LABELS[j.job_type] || j.job_type) +
+                    "</b> · #" + j.id + " · " + pct + "%";
+            })
+            .catch(function () {});
+    }
+
+    // ---- запуски: карточка 7 дней + спарклайн + лента ----
+    function loadRuns() {
+        fetch("/api/jobs/recent?limit=100")
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (!d.ok) { return; }
+                var jobs = d.jobs || [];
+                renderRunsCard(jobs);
+                renderRunsFeed(jobs.slice(0, 12));
+                renderVacCard(jobs);
+            })
+            .catch(function () {});
+    }
+
+    function renderRunsCard(jobs) {
+        var now = Date.now();
+        var weekAgo = now - 7 * 86400 * 1000;
+        var perDay = [0, 0, 0, 0, 0, 0, 0];
+        var total = 0;
+        var failed = 0;
+
+        jobs.forEach(function (j) {
+            var d = parseDt(j.started_at);
+            if (!d || d.getTime() < weekAgo) { return; }
+            total += 1;
+            if (isFailed(j.status)) { failed += 1; }
+            var idx = 6 - Math.min(6, Math.floor((now - d.getTime()) / (86400 * 1000)));
+            perDay[idx] += 1;
+        });
+
+        document.getElementById("gpdStatRuns").textContent = total;
+        document.getElementById("gpdStatRunsSub").innerHTML = failed
+            ? "из них <b style='color: var(--crit);'>" + failed + " с ошибкой</b>"
+            : "все успешно";
+
+        var max = Math.max.apply(null, perDay.concat([1]));
+        document.getElementById("gpdSpark").innerHTML = perDay.map(function (n) {
+            var h = Math.max(10, Math.round(n / max * 100));
+            return "<i class='" + (n ? "" : "z") + "' style='height: " + h +
+                "%;' title='" + n + "'></i>";
+        }).join("");
+    }
+
+    function renderRunsFeed(jobs) {
+        var box = document.getElementById("gpdRuns");
+        document.getElementById("gpdRunsCnt").textContent =
+            jobs.length ? "последние " + jobs.length : "";
+
+        if (!jobs.length) {
+            box.innerHTML = "<div class='gpd-empty'>Пока нет запусков.</div>";
+            return;
+        }
+
+        box.innerHTML = jobs.map(function (j) {
+            var failed = isFailed(j.status);
+            var running = isActive(j.status);
+            var dot = running ? "b" : (failed ? "r" : (j.status === "done" ? "g" : "i"));
+            var pct = Math.max(0, Math.min(100, Math.round(j.progress_percent || 0)));
+            if (j.status === "done") { pct = 100; }
+            var barCls = j.status === "done" ? "done" : (failed ? "fail" : "");
+            var stTxt = running ? pct + "%" : esc(j.status);
+
+            return "<a class='gpd-run' href='" + pageFor(j.job_type) + "'>" +
+                "<span class='gpd-dot " + dot + "'></span>" +
+                "<span class='lab'>#" + j.id + " · " +
+                esc(RUN_LABELS[j.job_type] || j.job_type) +
+                " · " + (j.done_items || 0) + "/" + (j.total_items || 0) + "</span>" +
+                "<span class='bar'><i class='" + barCls + "' style='width: " + pct +
+                "%;'></i></span>" +
+                "<span class='st'>" + stTxt + "</span>" +
+                "<span class='dt'>" + esc(fmtDt(j.started_at)) + "</span></a>";
+        }).join("");
+    }
+
+    // ---- карточка vacuum ----
+    function renderVacCard(jobs) {
+        var vac = jobs.find(function (j) { return j.job_type === "vacuum"; });
+        var v = document.getElementById("gpdStatVac");
+        var sub = document.getElementById("gpdStatVacSub");
+
+        if (!vac) {
+            v.textContent = "—";
+            sub.textContent = "ещё не запускался";
+            return;
+        }
+        var d = parseDt(vac.finished_at || vac.started_at);
+        var days = d ? Math.floor((Date.now() - d.getTime()) / (86400 * 1000)) : null;
+        v.textContent = days == null ? "—" : (days === 0 ? "сегодня" : days + " дн.");
+        sub.innerHTML = "#" + vac.id + " · <b>" + esc(vac.status) + "</b> · " +
+            (vac.done_items || 0) + "/" + (vac.total_items || 0) + " таблиц";
+    }
+
+    // ---- планировщик ----
+    function loadSchedules() {
+        fetch("/api/schedules")
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (!d.ok) { return; }
+                var all = d.schedules || [];
+                var enabled = all.filter(function (s) { return s.enabled; });
+
+                document.getElementById("gpdStatSched").textContent =
+                    enabled.length + " / " + all.length;
+
+                var next = enabled
+                    .filter(function (s) { return s.next_run_at; })
+                    .sort(function (a, b) {
+                        return String(a.next_run_at).localeCompare(String(b.next_run_at));
+                    });
+                document.getElementById("gpdStatSchedSub").innerHTML = next.length
+                    ? "ближайший: <b>" + esc(next[0].name) + "</b> · " +
+                      esc(fmtDt(next[0].next_run_at))
+                    : "активных запусков нет";
+
+                var box = document.getElementById("gpdSched");
+                if (!all.length) {
+                    box.innerHTML = "<div class='gpd-empty'>Расписаний пока нет.</div>";
+                    return;
+                }
+                box.innerHTML = (next.length ? next : all).slice(0, 6).map(function (s) {
+                    return "<div class='gpd-li'>" +
+                        "<span class='gpd-tag" + (s.enabled ? "" : " off") + "'>" +
+                        esc(RUN_LABELS[s.job_type] || s.job_type) + "</span>" +
+                        "<div style='min-width: 0;'><div class='nm'>" + esc(s.name) +
+                        "</div><div class='mut'>" + esc(s.cron_expr || "") + "</div></div>" +
+                        "<div class='rt'><div class='mut'>" +
+                        (s.enabled ? esc(fmtDt(s.next_run_at)) : "выключено") +
+                        "</div></div></div>";
+                }).join("");
+            })
+            .catch(function () {});
+    }
+
+    function refresh() {
+        loadActive();
+        loadRuns();
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+        refresh();
+        loadSchedules();
+        setInterval(refresh, 10000);
+    });
+})();
+
+// ---------- skew charts ----------
 let dashboardSkewBarChart = null;
 let dashboardSkewStatusChart = null;
 
@@ -263,7 +529,9 @@ function renderDashboardSkewCharts() {
                 labels: sorted.map(r => `${r.schema_name}.${r.table_name}`),
                 datasets: [{
                     label: "skew_ratio",
-                    data: sorted.map(r => Number(r.skew_ratio || 0))
+                    data: sorted.map(r => Number(r.skew_ratio || 0)),
+                    backgroundColor: "rgba(139, 92, 246, .65)",
+                    borderRadius: 4
                 }]
             },
             options: {
@@ -311,7 +579,11 @@ function renderDashboardSkewCharts() {
             data: {
                 labels: Object.keys(statusCounts),
                 datasets: [{
-                    data: Object.values(statusCounts)
+                    data: Object.values(statusCounts),
+                    backgroundColor: [
+                        "#22c55e", "#f59e0b", "#ef4444",
+                        "#64748b", "#0f172a", "#94a3b8"
+                    ]
                 }]
             },
             options: {
@@ -323,117 +595,6 @@ function renderDashboardSkewCharts() {
 }
 
 document.addEventListener("DOMContentLoaded", renderDashboardSkewCharts);
-
-function getDashboardConnectionId() {
-    const el =
-        document.getElementById("connectionId") ||
-        document.getElementById("dashboardConnectionId") ||
-        document.getElementById("connection_id");
-
-    if (!el) {
-        return null;
-    }
-
-    return el.value;
-}
-
-function sessionLimitBadge(value) {
-    const percent = Number(value || 0);
-
-    if (percent >= 90) {
-        return `<span class="badge bg-danger">${percent}%</span>`;
-    }
-
-    if (percent >= 75) {
-        return `<span class="badge bg-warning text-dark">${percent}%</span>`;
-    }
-
-    return `<span class="badge bg-success">${percent}%</span>`;
-}
-
-async function loadSessionLimitsStats() {
-    const connectionId = getDashboardConnectionId();
-
-    const messageBox = document.getElementById("sessionLimitsMessage");
-    const tbody = document.getElementById("sessionLimitsTableBody");
-
-    if (!connectionId) {
-        messageBox.className = "alert alert-warning mb-3";
-        messageBox.textContent = "Выбери connection на Dashboard.";
-        return;
-    }
-
-    messageBox.className = "alert alert-info mb-3";
-    messageBox.textContent = "Загружаю статистику сессий...";
-
-    tbody.innerHTML = `
-        <tr>
-            <td colspan="13" class="text-muted">Loading...</td>
-        </tr>
-    `;
-
-    try {
-        const response = await fetch(`/api/dashboard/session-limits?connection_id=${encodeURIComponent(connectionId)}`);
-        const data = await response.json();
-
-        if (!response.ok || !data.ok) {
-            throw new Error(data.message || "Failed to load session limits");
-        }
-
-        document.getElementById("slNodes").textContent = data.summary.nodes;
-        document.getElementById("slTotal").textContent = data.summary.total_sessions;
-        document.getElementById("slActive").textContent = data.summary.active_sessions;
-        document.getElementById("slIdle").textContent = data.summary.idle_sessions;
-        document.getElementById("slIdleTxn").textContent = data.summary.idle_in_transaction_sessions;
-
-        if (!data.rows || data.rows.length === 0) {
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="13" class="text-muted">Нет данных.</td>
-                </tr>
-            `;
-        } else {
-            tbody.innerHTML = data.rows.map(row => {
-                const nodeClass =
-                    row.node_type === "MASTER/COORDINATOR"
-                        ? "table-primary"
-                        : "";
-
-                return `
-                    <tr class="${nodeClass}">
-                        <td>${row.node_type || ""}</td>
-                        <td>${row.segment_id}</td>
-                        <td>${row.hostname || ""}</td>
-                        <td>${row.address || ""}</td>
-                        <td>${row.port || ""}</td>
-                        <td><strong>${row.total_sessions}</strong></td>
-                        <td class="text-primary fw-bold">${row.active_sessions}</td>
-                        <td>${row.idle_sessions}</td>
-                        <td class="text-danger fw-bold">${row.idle_in_transaction_sessions}</td>
-                        <td>${row.max_connections}</td>
-                        <td>${row.superuser_reserved_connections}</td>
-                        <td>${row.free_connections}</td>
-                        <td>${sessionLimitBadge(row.used_percent)}</td>
-                    </tr>
-                `;
-            }).join("");
-        }
-
-        messageBox.className = "alert alert-success mb-3";
-        messageBox.textContent = "Session limits loaded.";
-
-    } catch (err) {
-        messageBox.className = "alert alert-danger mb-3";
-        messageBox.textContent = err.message;
-
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="13" class="text-danger">${err.message}</td>
-            </tr>
-        `;
-    }
-}
-
 
 function setSessionMessage(message, type = "warning") {
     const box = document.getElementById("sessionLimitsMessage");
@@ -455,16 +616,32 @@ function renderSessionLimits(data) {
 
     const body = document.getElementById("sessionLimitsBody");
 
+    // safe cell builder — textContent only, never innerHTML with DB values
+    function cell(value, cls, bold) {
+        const td = document.createElement("td");
+        if (cls) { td.className = cls; }
+        const val = value == null ? "" : String(value);
+        if (bold) {
+            const b = document.createElement("b");
+            b.textContent = val;
+            td.appendChild(b);
+        } else {
+            td.textContent = val;
+        }
+        return td;
+    }
+
+    body.replaceChildren();
+
     if (!rows.length) {
-        body.innerHTML = `
-            <tr>
-                <td colspan="13" class="text-muted">Нет данных.</td>
-            </tr>
-        `;
+        const tr = document.createElement("tr");
+        tr.appendChild(cell("Нет данных.", "text-muted"));
+        tr.firstChild.colSpan = 13;
+        body.appendChild(tr);
         return;
     }
 
-    body.innerHTML = rows.map(row => {
+    rows.forEach(row => {
         const used = Number(row.used_percent || 0);
         let usedClass = "text-success";
 
@@ -474,31 +651,33 @@ function renderSessionLimits(data) {
             usedClass = "text-warning fw-bold";
         }
 
-        return `
-            <tr>
-                <td>${row.node_type || ""}</td>
-                <td>${row.segment_id ?? ""}</td>
-                <td>${row.hostname || ""}</td>
-                <td>${row.address || ""}</td>
-                <td>${row.port || ""}</td>
-                <td><b>${row.total_sessions || 0}</b></td>
-                <td class="text-primary"><b>${row.active_sessions || 0}</b></td>
-                <td>${row.idle_sessions || 0}</td>
-                <td class="text-danger"><b>${row.idle_in_transaction_sessions || 0}</b></td>
-                <td>${row.max_connections || 0}</td>
-                <td>${row.superuser_reserved_connections || 0}</td>
-                <td>${row.free_connections || 0}</td>
-                <td class="${usedClass}">${used.toFixed(2)}%</td>
-            </tr>
-        `;
-    }).join("");
+        const tr = document.createElement("tr");
+        tr.appendChild(cell(row.node_type || ""));
+        tr.appendChild(cell(row.segment_id ?? ""));
+        tr.appendChild(cell(row.hostname || ""));
+        tr.appendChild(cell(row.address || ""));
+        tr.appendChild(cell(row.port || ""));
+        tr.appendChild(cell(row.total_sessions || 0, null, true));
+        tr.appendChild(cell(row.active_sessions || 0, "text-primary", true));
+        tr.appendChild(cell(row.idle_sessions || 0));
+        tr.appendChild(cell(row.idle_in_transaction_sessions || 0, "text-danger", true));
+        tr.appendChild(cell(row.max_connections || 0));
+        tr.appendChild(cell(row.superuser_reserved_connections || 0));
+        tr.appendChild(cell(row.free_connections || 0));
+        tr.appendChild(cell(used.toFixed(2) + "%", usedClass));
+        body.appendChild(tr);
+    });
+
+    if (window.gpMotion) {
+        window.gpMotion.stagger(body.querySelectorAll("tr"), { step: 16, y: 6, dur: 200 });
+    }
 }
 
 async function loadSessionLimitsStats() {
     const select = document.getElementById("dashboardConnectionId");
 
     if (!select || !select.value) {
-        setSessionMessage("Выбери connection на Dashboard.", "warning");
+        setSessionMessage("Выбери connection, чтобы посмотреть загрузку сессий.", "warning");
         return;
     }
 
@@ -540,4 +719,8 @@ document.addEventListener("DOMContentLoaded", function () {
 });
 </script>
 
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='vendor/chartjs/chart.umd.min.js') }}"></script>
 {% endblock %}

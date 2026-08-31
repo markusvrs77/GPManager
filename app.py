@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 import threading
+import config
 from config import APP_HOST, APP_PORT, APP_DEBUG
 from db import init_db
 from modules.connections import (
@@ -24,10 +25,14 @@ from modules.vacuum_analyze import run_vacuum_analyze_job
 from job_manager import (
     create_job,
     create_job_items,
+    get_active_jobs,
     get_job,
     get_job_items,
     get_latest_job,
+    list_recent_jobs,
     mark_interrupted_jobs_on_startup,
+    close_orphan_items,
+    request_stop_job,
     set_stop_flag,
 )
 from modules.skew_analyzer import (
@@ -52,14 +57,66 @@ from modules.reorganize import (
 from modules.gpcopy import (
     run_gpcopy_job,
     build_gpcopy_date_include_json_preview,
+    build_retry_config,
     get_date_columns_for_table,
     get_gpcopy_date_columns,
 )
 
 from modules.dashboard import get_session_limits_stats
 
+import json as _json
+from datetime import datetime as _datetime
+
+import scheduler as gpm_scheduler
+import scheduler_store
+from modules.date_window import resolve_date_window
+
+# Реестр раннеров для планировщика (spec §5): job_type -> существующая функция.
+gpm_scheduler.register_runner("gpcopy", run_gpcopy_job)
+gpm_scheduler.register_runner("gpcopy_date", run_gpcopy_job)
+gpm_scheduler.register_runner("vacuum", run_vacuum_analyze_job)
+gpm_scheduler.register_runner("skew", run_skew_job)
+gpm_scheduler.register_runner("reorganize", run_reorganize_job)
+
+from modules.gpcopy_increment import (
+    run_gpcopy_increment_job,
+    get_dest_watermark,
+    build_increment_items,
+)
+from modules.gpcopy_partition import (
+    run_gpcopy_partition_diff_job,
+    diff_partitions,
+)
+
+gpm_scheduler.register_runner("gpcopy_increment", run_gpcopy_increment_job)
+gpm_scheduler.register_runner("gpcopy_partition_diff", run_gpcopy_partition_diff_job)
+gpm_scheduler.register_runner("gpcopy_sync", run_gpcopy_sync_job)
+
+from modules.sync_transport import pick_transport, run_copy_pipe_job
+
+gpm_scheduler.register_runner("copy_pipe", run_copy_pipe_job)
+
+from modules.gpbackup import (
+    list_backups as list_backup_records,
+    run_gpbackup_job,
+    run_gprestore_job,
+)
+
+gpm_scheduler.register_runner("gpbackup", run_gpbackup_job)
+gpm_scheduler.register_runner("gprestore", run_gprestore_job)
+
+from modules.pg_backup import run_pg_dump_job, run_pg_restore_job
+
+gpm_scheduler.register_runner("pg_dump", run_pg_dump_job)
+gpm_scheduler.register_runner("pg_restore", run_pg_restore_job)
+
 
 app = Flask(__name__)
+
+# вкладка Kafka живёт отдельным Blueprint: app.py и так слишком большой
+from kafka_routes import kafka_bp  # noqa: E402
+
+app.register_blueprint(kafka_bp)
 
 
 @app.route("/")
@@ -82,31 +139,60 @@ def dashboard_page():
 
 @app.route("/connections")
 def connections_page():
-    connections = list_connections()
+    # у каждого тулкита свои подключения: pg - только PostgreSQL,
+    # gp (по умолчанию) - все остальные
+    toolkit = (request.args.get("toolkit") or "gp").strip().lower()
+
+    if toolkit not in ("gp", "pg"):
+        toolkit = "gp"
+
+    connections = [
+        c for c in list_connections()
+        if ((c.get("db_type") or "greenplum") == "postgres") == (toolkit == "pg")
+    ]
+
     return render_template(
         "connections.html",
         connections=connections,
+        toolkit=toolkit,
     )
 
 
 @app.route("/connections/add", methods=["POST"])
 def add_connection():
+    data = request.form.to_dict()
+    # возвращаемся на страницу того тулкита, откуда добавляли
+    toolkit = (data.pop("toolkit", "") or "gp").strip().lower()
+
+    if toolkit not in ("gp", "pg"):
+        toolkit = "gp"
+
+    if toolkit == "pg":
+        data["db_type"] = "postgres"
+
     try:
-        create_connection(request.form.to_dict())
-        return redirect(url_for("connections_page"))
+        create_connection(data)
+        return redirect(url_for("connections_page", toolkit=toolkit))
     except Exception as e:
-        connections = list_connections()
+        connections = [
+            c for c in list_connections()
+            if ((c.get("db_type") or "greenplum") == "postgres")
+            == (toolkit == "pg")
+        ]
         return render_template(
             "connections.html",
             connections=connections,
+            toolkit=toolkit,
             error=str(e),
         )
 
 
 @app.route("/connections/delete/<int:connection_id>", methods=["POST"])
 def remove_connection(connection_id):
+    toolkit = (request.form.get("toolkit") or "gp").strip().lower()
     delete_connection(connection_id)
-    return redirect(url_for("connections_page"))
+    return redirect(url_for("connections_page",
+                            toolkit=toolkit if toolkit == "pg" else None))
 
 
 @app.route("/objects")
@@ -249,27 +335,17 @@ def api_skew_start():
         }), 400
 
     try:
+        # items создаёт сам create_job из config.tables (action = SKEW);
+        # раньше здесь был второй create_job_items - каждая таблица
+        # попадала в задачу дважды и анализировалась повторно
         job_id = create_job(
             job_type="skew",
             connection_id=int(connection_id),
             config={
                 "connection_id": int(connection_id),
+                "action": "SKEW",
                 "tables": tables,
             },
-        )
-
-        create_job_items(
-            job_id=job_id,
-            items=[
-                {
-                    "schema_name": item.get("schema") or item.get("schema_name"),
-                    "table_name": item.get("table") or item.get("table_name"),
-                    "action": "SKEW",
-                }
-                for item in tables
-                if (item.get("schema") or item.get("schema_name"))
-                and (item.get("table") or item.get("table_name"))
-            ],
         )
 
         import threading
@@ -313,6 +389,255 @@ def api_get_job(job_id):
             "job": job,
         }
     )
+
+@app.route("/api/gpcopy/precheck", methods=["POST"])
+def api_gpcopy_precheck():
+    """Предпроверка DDL: сравнение колонок источника и приёмника."""
+    data = request.get_json(silent=True) or {}
+    tables = data.get("tables") or []
+
+    if not data.get("source_connection_id") or not data.get("dest_connection_id"):
+        return jsonify({"ok": False,
+                        "message": "source и dest подключения обязательны"}), 400
+
+    if not tables:
+        return jsonify({"ok": False, "message": "Не выбраны таблицы"}), 400
+
+    try:
+        from modules.ddl_check import precheck_tables
+
+        result = precheck_tables(
+            data["source_connection_id"], data["dest_connection_id"], tables,
+        )
+        return jsonify({"ok": True, **result})
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/gpcopy/add-columns", methods=["POST"])
+def api_gpcopy_add_columns():
+    """Досоздать в приёмнике колонки, которых не хватает до источника."""
+    data = request.get_json(silent=True) or {}
+    tables = data.get("tables") or []
+
+    if not data.get("dest_connection_id") or not tables:
+        return jsonify({"ok": False,
+                        "message": "dest_connection_id и tables обязательны"}), 400
+
+    try:
+        from modules.ddl_check import add_missing_columns
+
+        results = add_missing_columns(data["dest_connection_id"], tables)
+        return jsonify({
+            "ok": True,
+            "results": results,
+            "added": sum(r["added"] for r in results),
+            "failed": sum(1 for r in results if not r["ok"]),
+        })
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/gpcopy/create-tables", methods=["POST"])
+def api_gpcopy_create_tables():
+    """Создать в приёмнике объекты, которых там нет (по DDL источника)."""
+    data = request.get_json(silent=True) or {}
+    tables = data.get("tables") or []
+
+    if (not data.get("source_connection_id")
+            or not data.get("dest_connection_id") or not tables):
+        return jsonify({"ok": False,
+                        "message": "source, dest и tables обязательны"}), 400
+
+    try:
+        from modules.ddl_check import create_missing_objects
+
+        results = create_missing_objects(
+            data["source_connection_id"], data["dest_connection_id"], tables,
+        )
+        return jsonify({
+            "ok": True,
+            "results": results,
+            "created": sum(1 for r in results if r["ok"]),
+            "statements": sum(r["statements"] for r in results),
+            "failed": sum(1 for r in results if not r["ok"]),
+        })
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/gpcopy/rename-columns", methods=["POST"])
+def api_gpcopy_rename_columns():
+    """Привести имена колонок приёмника к именам источника."""
+    data = request.get_json(silent=True) or {}
+    tables = data.get("tables") or []
+
+    if not data.get("dest_connection_id") or not tables:
+        return jsonify({"ok": False,
+                        "message": "dest_connection_id и tables обязательны"}), 400
+
+    try:
+        from modules.ddl_check import apply_column_renames
+
+        results = apply_column_renames(data["dest_connection_id"], tables)
+        return jsonify({
+            "ok": True,
+            "results": results,
+            "renamed": sum(r["renamed"] for r in results),
+            "failed": sum(1 for r in results if not r["ok"]),
+        })
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/gpcopy/recreate-tables", methods=["POST"])
+def api_gpcopy_recreate_tables():
+    """
+    Пересоздать таблицы в приёмнике по DDL источника (DROP + CREATE).
+    Разрушает данные в приёмнике — вызывается только по явной команде
+    пользователя из интерфейса.
+    """
+    data = request.get_json(silent=True) or {}
+    tables = data.get("tables") or []
+
+    if (not data.get("source_connection_id")
+            or not data.get("dest_connection_id") or not tables):
+        return jsonify({"ok": False,
+                        "message": "source, dest и tables обязательны"}), 400
+
+    try:
+        from modules.ddl_check import recreate_tables
+
+        results = recreate_tables(
+            data["source_connection_id"], data["dest_connection_id"], tables,
+        )
+        return jsonify({
+            "ok": True,
+            "results": results,
+            "created": sum(1 for r in results if r["ok"]),
+            "failed": sum(1 for r in results if not r["ok"]),
+        })
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/gpcopy/fix-deps", methods=["POST"])
+def api_gpcopy_fix_deps():
+    """Досоздать в приёмнике зависимости: расширения, функции, sequences."""
+    data = request.get_json(silent=True) or {}
+    tables = data.get("tables") or []
+
+    if (not data.get("source_connection_id")
+            or not data.get("dest_connection_id") or not tables):
+        return jsonify({"ok": False,
+                        "message": "source, dest и tables обязательны"}), 400
+
+    try:
+        from modules.ddl_check import apply_dependency_fixes
+
+        results = apply_dependency_fixes(
+            data["source_connection_id"], data["dest_connection_id"], tables,
+        )
+        return jsonify({
+            "ok": True,
+            "results": results,
+            "created": sum(1 for r in results if r["ok"]),
+            "failed": sum(1 for r in results if not r["ok"]),
+        })
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/gpcopy/retry-failed", methods=["POST"])
+def api_gpcopy_retry_failed():
+    """Новая задача только по упавшим партициям исходной gpcopy-задачи."""
+    data = request.get_json(silent=True) or {}
+    job_id = data.get("job_id")
+
+    if not job_id:
+        return jsonify({"ok": False, "message": "job_id обязателен"}), 400
+
+    job = get_job(int(job_id))
+
+    if not job:
+        return jsonify({"ok": False, "message": "Задача не найдена"}), 404
+
+    # партиционная задача падает так же и хранит тот же список упавших
+    if job.get("job_type") not in ("gpcopy", "gpcopy_partition_diff"):
+        return jsonify({
+            "ok": False,
+            "message": "Дозагрузка упавших доступна для полного копирования "
+                       "и синхронизации партиций",
+        }), 400
+
+    config = _json.loads(job.get("config_json") or "{}")
+    failed_leaves = [tuple(p) for p in (config.get("failed_leaves") or [])]
+
+    if not failed_leaves:
+        return jsonify({
+            "ok": False,
+            "message": "У задачи нет сохранённого списка упавших партиций "
+                       "(она запускалась до этой версии или упала целиком) — "
+                       "перезапусти копирование обычным способом",
+        }), 400
+
+    try:
+        retry_config = build_retry_config(
+            config, failed_leaves,
+            existing_mode=data.get("existing_mode") or "truncate",
+        )
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    retry_config["retry_of_job_id"] = int(job_id)
+
+    new_job_id = create_job(
+        job_type="gpcopy",
+        connection_id=job.get("connection_id"),
+        config=retry_config,
+    )
+
+    # льём ровно то, что осталось после отсева готового и родителей
+    retry_tables = retry_config.get("selected_tables") or []
+
+    create_job_items(
+        job_id=new_job_id,
+        items=[
+            {
+                "schema_name": t["schema"],
+                "table_name": t["table"],
+                "action": "GPCOPY RETRY",
+            }
+            for t in retry_tables
+        ],
+    )
+
+    threading.Thread(
+        target=run_gpcopy_job,
+        args=(new_job_id,),
+        daemon=True,
+    ).start()
+
+    return jsonify({
+        "ok": True,
+        "job_id": new_job_id,
+        "total_items": len(retry_tables),
+        "message": "Дозагрузка {} объектов запущена (из {} упавших записей "
+                   "в логе)".format(len(retry_tables), len(failed_leaves)),
+    })
+
 
 @app.route("/api/jobs/<int:job_id>/status")
 def api_job_status(job_id):
@@ -379,11 +704,8 @@ def api_stop_job(job_id):
                 "message": "Job not found",
             }), 404
 
-        status = (
-            job.get("status")
-            if isinstance(job, dict)
-            else get_item_value(job, "status")
-        )
+        # get_job() всегда отдаёт dict (job_manager.get_job)
+        status = job.get("status")
 
         if status in ("done", "failed", "cancelled", "interrupted"):
             return jsonify({
@@ -395,12 +717,6 @@ def api_stop_job(job_id):
 
         # Важно: ставим stop flag, а не убиваем Flask/thread напрямую
         request_stop_job(job_id)
-
-        try:
-            mark_job_stopping(job_id)
-        except Exception:
-            # Если такой функции нет — не падаем
-            pass
 
         return jsonify({
             "ok": True,
@@ -416,6 +732,75 @@ def api_stop_job(job_id):
             "message": str(e),
             "traceback": traceback.format_exc(),
         }), 500
+
+
+def _read_job_log(job_id, tail_bytes=200000):
+    """Хвост файла лога задачи: (текст, путь, размер) или (None, путь, 0)."""
+    job = get_job(job_id)
+
+    if not job:
+        return None, None, 0
+
+    path = job.get("log_file")
+
+    if not path or not os.path.exists(path):
+        return None, path, 0
+
+    size = os.path.getsize(path)
+
+    with open(path, "rb") as fh:
+        if tail_bytes and size > tail_bytes:
+            fh.seek(size - tail_bytes)
+            # первая строка после seek почти наверняка обрезана
+            fh.readline()
+
+        data = fh.read()
+
+    return data.decode("utf-8", "replace"), path, size
+
+
+@app.route("/api/jobs/<int:job_id>/log")
+def api_job_log(job_id):
+    """Полный лог внешнего инструмента (gpcopy / gpbackup / pg_dump)."""
+    full = request.args.get("full") == "1"
+    text, path, size = _read_job_log(job_id, 0 if full else 200000)
+
+    if text is None:
+        return jsonify({
+            "ok": False,
+            "path": path,
+            "message": ("Файл лога недоступен: " + str(path)) if path
+                       else "Лог не найден — задача его не оставила",
+        }), 404
+
+    from modules.gpcopy import extract_failure_cause
+
+    return jsonify({
+        "ok": True,
+        "path": path,
+        "size": size,
+        "truncated": (not full) and size > 200000,
+        "text": text,
+        "cause": extract_failure_cause(text),
+    })
+
+
+@app.route("/api/jobs/<int:job_id>/log.txt")
+def api_job_log_download(job_id):
+    """Скачать лог целиком — чтобы приложить к тикету."""
+    text, _path, _size = _read_job_log(job_id, 0)
+
+    if text is None:
+        return jsonify({"ok": False, "message": "Лог не найден"}), 404
+
+    return app.response_class(
+        text,
+        mimetype="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition":
+                'attachment; filename="job_{}.log"'.format(job_id),
+        },
+    )
 
 
 @app.route("/api/jobs/<int:job_id>/skew-results")
@@ -470,6 +855,48 @@ def api_get_active_jobs():
             "jobs": get_active_jobs(job_type),
         }
     )
+
+
+@app.route("/api/jobs/recent")
+def api_jobs_recent():
+    types_arg = (request.args.get("types") or "").strip()
+    job_types = [t.strip() for t in types_arg.split(",") if t.strip()] or None
+    limit = request.args.get("limit", 20, type=int)
+
+    jobs = list_recent_jobs(job_types, limit)
+
+    # источник → назначение для ленты запусков; config_json наружу
+    # не отдаём (там огромные списки таблиц)
+    try:
+        conn_names = {c["id"]: c["name"] for c in list_connections()}
+    except Exception:
+        conn_names = {}
+
+    for j in jobs:
+        try:
+            cfg = _json.loads(j.pop("config_json", None) or "{}")
+        except Exception:
+            cfg = {}
+
+        src = cfg.get("source_connection_id") or j.get("connection_id")
+        dst = cfg.get("dest_connection_id")
+
+        try:
+            j["source_name"] = conn_names.get(int(src)) if src else None
+        except Exception:
+            j["source_name"] = None
+        try:
+            j["dest_name"] = conn_names.get(int(dst)) if dst else None
+        except Exception:
+            j["dest_name"] = None
+
+        # операция задачи (VACUUM / ANALYZE / …) — для ленты запусков
+        j["action"] = cfg.get("action")
+
+    return jsonify({
+        "ok": True,
+        "jobs": jobs,
+    })
 
 
 @app.route("/api/skew-results/<int:result_id>/segments")
@@ -778,6 +1205,24 @@ def vacuum_page():
         latest_vacuum_job=latest_vacuum_job,
     )
 
+@app.route("/api/vacuum/advisor")
+def api_vacuum_advisor():
+    """Ассистент: рекомендации VACUUM/ANALYZE по статистике таблиц."""
+    connection_id = request.args.get("connection_id", type=int)
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    try:
+        from modules.vacuum_advisor import advise
+
+        return jsonify(advise(connection_id))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
 @app.route("/api/vacuum/start", methods=["POST"])
 def api_vacuum_start():
     data = request.get_json(silent=True) or {}
@@ -827,10 +1272,13 @@ def api_vacuum_start():
         for item in selected_tables:
             schema_name = None
             table_name = None
+            item_action = None
 
             if isinstance(item, dict):
                 schema_name = item.get("schema") or item.get("schema_name")
                 table_name = item.get("table") or item.get("table_name")
+                # своя операция у таблицы (ассистент): валидируем так же
+                item_action = str(item.get("action") or "").upper().strip()
 
             elif isinstance(item, str):
                 value = item.strip()
@@ -850,12 +1298,15 @@ def api_vacuum_start():
 
             seen.add(key)
 
-            unique_tables.append(
-                {
-                    "schema": schema_name,
-                    "table": table_name,
-                }
-            )
+            entry = {
+                "schema": schema_name,
+                "table": table_name,
+            }
+
+            if item_action and item_action in allowed_actions:
+                entry["action"] = item_action
+
+            unique_tables.append(entry)
 
         if not unique_tables:
             return jsonify(
@@ -865,12 +1316,18 @@ def api_vacuum_start():
                 }
             ), 400
 
+        try:
+            workers = int(data.get("workers") or 1)
+        except Exception:
+            workers = 1
+
         job_id = create_job(
             job_type="vacuum_analyze",
             connection_id=int(connection_id),
             config={
                 "source": "web",
                 "action": action,
+                "workers": max(1, min(workers, 8)),
                 "tables": unique_tables,
             },
         )
@@ -899,43 +1356,33 @@ def api_vacuum_start():
         ), 500
 
 
-def update_job_status(job_id, status, error_message=None):
-    with sqlite_cursor(commit=True) as cur:
-        if error_message is not None:
-            cur.execute(
-                """
-                UPDATE jobs
-                SET status = ?,
-                    error_message = ?
-                WHERE id = ?
-                """,
-                (
-                    status,
-                    str(error_message),
-                    job_id,
-                ),
-            )
-        else:
-            cur.execute(
-                """
-                UPDATE jobs
-                SET status = ?
-                WHERE id = ?
-                """,
-                (
-                    status,
-                    job_id,
-                ),
-            )
-
-
 @app.route("/gpcopy")
 def gpcopy_page():
-    connections = list_connections()
+    # синхронизация строго внутри тулкита: pg - только PostgreSQL,
+    # gp (по умолчанию) - Greenplum и прочие не-PG
+    toolkit = (request.args.get("toolkit") or "gp").strip().lower()
+
+    if toolkit not in ("gp", "pg"):
+        toolkit = "gp"
+
+    connections = [
+        c for c in list_connections()
+        if ((c.get("db_type") or "greenplum") == "postgres") == (toolkit == "pg")
+    ]
 
     return render_template(
-        "gpcopy.html",
+        "gpcopy_pipeline.html",
         connections=connections,
+        toolkit=toolkit,
+    )
+
+
+@app.route("/gpcopy/classic")
+def gpcopy_classic_page():
+    # Старый интерфейс — оставлен на переходный период.
+    return render_template(
+        "gpcopy.html",
+        connections=list_connections(),
     )
 
 
@@ -1057,8 +1504,27 @@ def api_gpcopy_start():
             "validate_count": validate_count,
         }
 
+        # выбор транспорта по типам СУБД: gpcopy для GP→GP,
+        # copy_pipe (COPY-стрим) для PG↔PG / PG↔GP
+        from modules.connections import get_connection_by_id as _conn_cfg
+
+        src_cfg = _conn_cfg(source_connection_id) or {}
+        dst_cfg = _conn_cfg(dest_connection_id) or {}
+        transport = pick_transport(
+            src_cfg.get("db_type"), dst_cfg.get("db_type")
+        )
+
+        if transport == "copy_pipe":
+            job_type = "copy_pipe"
+            runner = run_copy_pipe_job
+            action = "COPY"
+        else:
+            job_type = "gpcopy"
+            runner = run_gpcopy_job
+            action = "GPCOPY"
+
         job_id = create_job(
-            job_type="gpcopy",
+            job_type=job_type,
             connection_id=source_connection_id,
             config=config,
         )
@@ -1069,14 +1535,14 @@ def api_gpcopy_start():
                 {
                     "schema_name": item["schema"],
                     "table_name": item["table"],
-                    "action": "GPCOPY",
+                    "action": action,
                 }
                 for item in unique_tables
             ],
         )
 
         threading.Thread(
-            target=run_gpcopy_job,
+            target=runner,
             args=(job_id,),
             daemon=True,
         ).start()
@@ -1084,9 +1550,16 @@ def api_gpcopy_start():
         return jsonify({
             "ok": True,
             "job_id": job_id,
+            "transport": transport,
             "total_items": len(unique_tables),
-            "message": "gpcopy job started",
+            "message": "%s job started" % job_type,
         })
+
+    except ValueError as e:
+        return jsonify({
+            "ok": False,
+            "message": str(e),
+        }), 400
 
     except Exception as e:
         return jsonify({
@@ -1302,11 +1775,20 @@ def api_gpcopy_start_date():
         })
 
     try:
+        # gpcopy требует ровно один из флагов skip-existing/truncate/drop/append.
+        # Для среза по датам дефолт — append (догрузка периода, остальные
+        # данные назначения не трогаем).
+        flag_chosen = any(
+            bool(data.get(k))
+            for k in ("append", "truncate", "drop", "skip_existing")
+        )
+
         job_id = create_job(
             job_type="gpcopy",
             connection_id=int(source_connection_id),
             config={
-                "mode": "date",
+                # run_gpcopy_job включает JSON-срезы только на mode="date_filter"
+                "mode": "date_filter",
                 "source_connection_id": int(source_connection_id),
                 "dest_connection_id": int(dest_connection_id),
                 "destination_connection_id": int(dest_connection_id),
@@ -1319,7 +1801,7 @@ def api_gpcopy_start_date():
                 "jobs": data.get("jobs") or 4,
                 "on_segment_threshold": data.get("on_segment_threshold", -1),
 
-                "append": bool(data.get("append")),
+                "append": bool(data.get("append")) or not flag_chosen,
                 "truncate": bool(data.get("truncate")),
                 "drop": bool(data.get("drop")),
                 "skip_existing": bool(data.get("skip_existing")),
@@ -1366,16 +1848,8 @@ def api_gpcopy_start_date():
         }), 500
 
 def get_app_sqlite_path():
-    db_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "instance",
-        "gp_reorganize_center.sqlite3"
-    )
-
-    if not os.path.exists(db_path):
-        db_path = os.path.join("instance", "gp_reorganize_center.sqlite3")
-
-    return db_path
+    # Единый источник пути к БД (config.SQLITE_DB_PATH), подменяемый в тестах.
+    return config.SQLITE_DB_PATH
 
 
 def sqlite_rows(query, params=None):
@@ -1650,13 +2124,1218 @@ def api_gpcopy_sync_apply():
             "traceback": traceback.format_exc(),
         }), 500
 
+@app.route("/health")
+def health_page():
+    return render_template(
+        "health.html",
+        connections=list_connections(),
+    )
+
+
+@app.route("/backups")
+def backups_page():
+    return render_template(
+        "backups.html",
+        connections=list_connections(),
+    )
+
+
+@app.route("/api/backup/list")
+def api_backup_list():
+    tool = (request.args.get("tool") or "").strip() or None
+    return jsonify({"ok": True, "backups": list_backup_records(tool=tool)})
+
+
+@app.route("/pg/backups")
+def pg_backups_page():
+    pg_connections = [
+        c for c in list_connections()
+        if (c.get("db_type") or "greenplum") == "postgres"
+    ]
+    return render_template("pg_backups.html", connections=pg_connections)
+
+
+@app.route("/api/pg/databases")
+def api_pg_databases():
+    """Список БД на сервере PG-подключения (для выбора базы дампа)."""
+    connection_id = request.args.get("connection_id", type=int)
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    try:
+        from modules.gpcopy import open_psycopg2_connection_by_cfg
+        from modules.connections import get_connection_by_id as _cfg
+
+        conn_cfg = _cfg(connection_id)
+
+        if not conn_cfg:
+            return jsonify({"ok": False, "message": "Подключение не найдено"}), 400
+
+        conn = open_psycopg2_connection_by_cfg(conn_cfg)
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT datname FROM pg_database "
+                    "WHERE NOT datistemplate ORDER BY datname"
+                )
+                dbs = [r[0] for r in cur.fetchall()]
+        finally:
+            conn.close()
+
+        return jsonify({
+            "ok": True,
+            "databases": dbs,
+            "default": conn_cfg.get("database_name"),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:1000]}), 500
+
+
+@app.route("/api/pg/backup/start", methods=["POST"])
+def api_pg_backup_start():
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    from modules.connections import get_connection_by_id as _cfg
+    from modules.pg_backup import build_pg_dump_command, make_timestamp
+
+    conn_cfg = _cfg(int(connection_id))
+
+    if not conn_cfg:
+        return jsonify({"ok": False, "message": "Подключение не найдено"}), 400
+
+    config = {
+        "connection_id": int(connection_id),
+        # база дампа: можно выбрать любую на сервере подключения
+        "dbname": (data.get("dbname") or "").strip()
+        or conn_cfg.get("database_name") or conn_cfg.get("database"),
+        "backup_dir": (data.get("backup_dir") or "").strip(),
+        "backup_timestamp": make_timestamp(),
+        "include_schemas": data.get("include_schemas") or "",
+        "include_tables": data.get("include_tables") or "",
+        "compression_level": data.get("compression_level"),
+        "data_only": bool(data.get("data_only")),
+        "schema_only": bool(data.get("schema_only")),
+        "pg_dump_path": (data.get("pg_dump_path") or "").strip(),
+    }
+
+    try:
+        build_pg_dump_command(dict(config))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    job_id = create_job(
+        job_type="pg_dump",
+        connection_id=int(connection_id),
+        config=config,
+    )
+
+    create_job_items(
+        job_id=job_id,
+        items=[{
+            "schema_name": config["dbname"] or "",
+            "table_name": "pg_dump {}".format(config["backup_timestamp"]),
+            "action": "PG_DUMP",
+        }],
+    )
+
+    threading.Thread(target=run_pg_dump_job, args=(job_id,),
+                     daemon=True).start()
+
+    return jsonify({"ok": True, "job_id": job_id, "message": "Дамп запущен"})
+
+
+@app.route("/api/pg/backup/restore", methods=["POST"])
+def api_pg_backup_restore():
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+
+    if not connection_id or not data.get("backup_timestamp") \
+            or not data.get("dbname"):
+        return jsonify({
+            "ok": False,
+            "message": "connection_id, backup_timestamp и dbname обязательны",
+        }), 400
+
+    from modules.pg_backup import (
+        build_pg_restore_command,
+        dump_file_path,
+    )
+
+    config = {
+        "connection_id": int(connection_id),
+        "dump_file": dump_file_path(
+            (data.get("backup_dir") or "").strip(),
+            str(data.get("dbname")),
+            str(data.get("backup_timestamp")),
+        ),
+        "target_db": (data.get("target_db") or data.get("dbname") or "").strip(),
+        "create_db": bool(data.get("create_db")),
+        "clean": bool(data.get("clean")),
+        "data_only": bool(data.get("data_only")),
+        "jobs": data.get("jobs") or 1,
+        "pg_restore_path": (data.get("pg_restore_path") or "").strip(),
+    }
+
+    try:
+        build_pg_restore_command(dict(config))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    job_id = create_job(
+        job_type="pg_restore",
+        connection_id=int(connection_id),
+        config=config,
+    )
+
+    create_job_items(
+        job_id=job_id,
+        items=[{
+            "schema_name": config["target_db"],
+            "table_name": "pg_restore {}".format(data.get("backup_timestamp")),
+            "action": "PG_RESTORE",
+        }],
+    )
+
+    threading.Thread(target=run_pg_restore_job, args=(job_id,),
+                     daemon=True).start()
+
+    return jsonify({"ok": True, "job_id": job_id,
+                    "message": "Восстановление запущено"})
+
+
+@app.route("/api/backup/start", methods=["POST"])
+def api_backup_start():
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    config = {
+        "connection_id": int(connection_id),
+        "backup_type": data.get("backup_type") or "full",
+        "backup_dir": (data.get("backup_dir") or "").strip(),
+        "include_schemas": data.get("include_schemas") or "",
+        "include_tables": data.get("include_tables") or "",
+        "jobs": data.get("jobs") or 1,
+        "compression_level": data.get("compression_level"),
+        "gpbackup_path": (data.get("gpbackup_path") or "").strip(),
+        "extra_args": data.get("extra_args") or "",
+    }
+
+    try:
+        # валидация конфига до создания задачи (понятная ошибка сразу)
+        from modules.connections import get_connection_by_id as _cfg
+        from modules.gpbackup import build_gpbackup_command
+
+        conn_cfg = _cfg(int(connection_id))
+
+        if not conn_cfg:
+            return jsonify({"ok": False, "message": "Подключение не найдено"}), 400
+
+        probe = dict(config)
+        probe.setdefault(
+            "dbname",
+            conn_cfg.get("database_name") or conn_cfg.get("database"),
+        )
+        build_gpbackup_command(probe)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    job_id = create_job(
+        job_type="gpbackup",
+        connection_id=int(connection_id),
+        config=config,
+    )
+
+    create_job_items(
+        job_id=job_id,
+        items=[{
+            "schema_name": conn_cfg.get("database_name") or "",
+            "table_name": "gpbackup ({})".format(config["backup_type"]),
+            "action": "GPBACKUP",
+        }],
+    )
+
+    threading.Thread(target=run_gpbackup_job, args=(job_id,), daemon=True).start()
+
+    return jsonify({"ok": True, "job_id": job_id, "message": "Бэкап запущен"})
+
+
+@app.route("/api/backup/restore", methods=["POST"])
+def api_backup_restore():
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+    backup_timestamp = data.get("backup_timestamp")
+
+    if not connection_id or not backup_timestamp:
+        return jsonify({
+            "ok": False,
+            "message": "connection_id и backup_timestamp обязательны",
+        }), 400
+
+    config = {
+        "connection_id": int(connection_id),
+        "backup_timestamp": str(backup_timestamp),
+        "backup_dir": (data.get("backup_dir") or "").strip(),
+        "redirect_db": (data.get("redirect_db") or "").strip(),
+        "create_db": bool(data.get("create_db")),
+        "data_only": bool(data.get("data_only")),
+        "include_tables": data.get("include_tables") or "",
+        "jobs": data.get("jobs") or 1,
+        "gprestore_path": (data.get("gprestore_path") or "").strip(),
+    }
+
+    try:
+        from modules.gpbackup import build_gprestore_command
+
+        build_gprestore_command(config)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    job_id = create_job(
+        job_type="gprestore",
+        connection_id=int(connection_id),
+        config=config,
+    )
+
+    create_job_items(
+        job_id=job_id,
+        items=[{
+            "schema_name": config["redirect_db"] or "",
+            "table_name": "gprestore {}".format(backup_timestamp),
+            "action": "GPRESTORE",
+        }],
+    )
+
+    threading.Thread(target=run_gprestore_job, args=(job_id,), daemon=True).start()
+
+    return jsonify({"ok": True, "job_id": job_id, "message": "Восстановление запущено"})
+
+
+@app.route("/api/backup/sync-disk", methods=["POST"])
+def api_backup_sync_disk():
+    """Реестр <- диск: gpbackup_manager list-backups с координатора."""
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    try:
+        from modules.gpbackup import sync_disk_backups
+
+        result = sync_disk_backups(
+            int(connection_id),
+            manager_path=(data.get("gpbackup_manager_path") or "").strip() or None,
+        )
+        return jsonify({"ok": True, **result})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/backup/report", methods=["POST"])
+def api_backup_report():
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+    backup_timestamp = data.get("backup_timestamp")
+
+    if not connection_id or not backup_timestamp:
+        return jsonify({
+            "ok": False,
+            "message": "connection_id и backup_timestamp обязательны",
+        }), 400
+
+    try:
+        from modules.gpbackup import get_backup_report
+
+        report = get_backup_report(int(connection_id), str(backup_timestamp))
+        return jsonify({"ok": True, "report": report[-20000:]})
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/backup/delete", methods=["POST"])
+def api_backup_delete():
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+    backup_timestamp = data.get("backup_timestamp")
+
+    if not connection_id or not backup_timestamp:
+        return jsonify({
+            "ok": False,
+            "message": "connection_id и backup_timestamp обязательны",
+        }), 400
+
+    try:
+        from modules.gpbackup import delete_disk_backup
+
+        delete_disk_backup(int(connection_id), str(backup_timestamp))
+        return jsonify({"ok": True, "message": "Копия удалена с диска"})
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/grants")
+def grants_page():
+    toolkit = (request.args.get("toolkit") or "gp").strip().lower()
+
+    if toolkit not in ("gp", "pg"):
+        toolkit = "gp"
+
+    connections = [
+        c for c in list_connections()
+        if ((c.get("db_type") or "greenplum") == "postgres") == (toolkit == "pg")
+    ]
+
+    return render_template(
+        "grants.html",
+        connections=connections,
+        toolkit=toolkit,
+    )
+
+
+@app.route("/api/grants/overview")
+def api_grants_overview():
+    """Срез прав: пользователи, гранты на таблицы, граф связей."""
+    connection_id = request.args.get("connection_id", type=int)
+    force = request.args.get("force") == "1"
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    try:
+        from modules.grants import collect_grants
+
+        return jsonify(collect_grants(connection_id, force=force))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/grants/schema-matrix")
+def api_grants_schema_matrix():
+    """Матрица «пользователи × таблицы» внутри одной схемы (drill)."""
+    connection_id = request.args.get("connection_id", type=int)
+    schema = (request.args.get("schema") or "").strip()
+
+    if not connection_id or not schema:
+        return jsonify({"ok": False,
+                        "message": "connection_id и schema обязательны"}), 400
+
+    force = request.args.get("force") == "1"
+
+    try:
+        from modules.grants import collect_schema_matrix
+
+        return jsonify(
+            collect_schema_matrix(connection_id, schema, force=force))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/health/overview")
+def api_health_overview():
+    connection_id = request.args.get("connection_id", type=int)
+    force = request.args.get("force") == "1"
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    try:
+        from modules.db_health import collect_health
+        return jsonify(collect_health(connection_id, force=force))
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+# ============================================================
+# Scheduler (spec §8)
+# ============================================================
+
+@app.route("/schedules")
+def schedules_page():
+    # у каждого тулкита свои расписания: gp (по умолчанию) | pg
+    toolkit = (request.args.get("toolkit") or "gp").strip().lower()
+
+    if toolkit not in ("gp", "pg"):
+        toolkit = "gp"
+
+    return render_template(
+        "schedules.html",
+        connections=list_connections(),
+        toolkit=toolkit,
+    )
+
+
+@app.route("/api/schedules", methods=["GET", "POST"])
+def api_schedules():
+    if request.method == "GET":
+        return jsonify({"ok": True, "schedules": scheduler_store.list_schedules()})
+
+    data = request.get_json(silent=True) or {}
+
+    try:
+        schedule_id = scheduler_store.create_schedule({
+            "name": data.get("name"),
+            "job_type": data.get("job_type"),
+            "cron_expr": data.get("cron_expr"),
+            "config_json": _json.dumps(data.get("config") or {}, ensure_ascii=False),
+            "overlap_policy": data.get("overlap_policy"),
+            "max_retries": data.get("max_retries"),
+            "retry_delay_seconds": data.get("retry_delay_seconds"),
+            "notify_on": data.get("notify_on"),
+            "notify_channel_ids": _json.dumps(data.get("notify_channel_ids") or []),
+            "enabled": data.get("enabled", 1),
+        })
+        return jsonify({"ok": True, "id": schedule_id})
+    except (ValueError, KeyError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+
+@app.route("/api/schedules/<int:schedule_id>", methods=["PUT", "DELETE"])
+def api_schedule_item(schedule_id):
+    if request.method == "DELETE":
+        scheduler_store.delete_schedule(schedule_id)
+        return jsonify({"ok": True})
+
+    data = request.get_json(silent=True) or {}
+    update = {}
+
+    for key in (
+        "name", "job_type", "cron_expr", "overlap_policy",
+        "max_retries", "retry_delay_seconds", "notify_on", "enabled",
+    ):
+        if key in data:
+            update[key] = data[key]
+
+    if "config" in data:
+        update["config_json"] = _json.dumps(data["config"], ensure_ascii=False)
+
+    if "notify_channel_ids" in data:
+        update["notify_channel_ids"] = _json.dumps(data["notify_channel_ids"])
+
+    try:
+        scheduler_store.update_schedule(schedule_id, update)
+        return jsonify({"ok": True})
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+
+@app.route("/api/schedules/<int:schedule_id>/toggle", methods=["POST"])
+def api_schedule_toggle(schedule_id):
+    schedule = scheduler_store.get_schedule(schedule_id)
+
+    if not schedule:
+        return jsonify({"ok": False, "message": "Schedule not found"}), 404
+
+    new_enabled = 0 if schedule["enabled"] else 1
+    scheduler_store.set_enabled(schedule_id, new_enabled)
+    return jsonify({"ok": True, "enabled": new_enabled})
+
+
+@app.route("/api/schedules/<int:schedule_id>/run-now", methods=["POST"])
+def api_schedule_run_now(schedule_id):
+    try:
+        result = gpm_scheduler.run_now(schedule_id)
+        return jsonify({"ok": True, **result})
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 404
+
+
+@app.route("/api/schedules/<int:schedule_id>/runs")
+def api_schedule_runs(schedule_id):
+    return jsonify({"ok": True, "runs": scheduler_store.list_runs(schedule_id)})
+
+
+@app.route("/api/schedules/preview", methods=["POST"])
+def api_schedules_preview():
+    data = request.get_json(silent=True) or {}
+    out = {"ok": True}
+
+    cron_expr = data.get("cron_expr")
+
+    if cron_expr:
+        if not scheduler_store.validate_cron(cron_expr):
+            return jsonify({"ok": False, "message": "Invalid cron expression"}), 400
+
+        from croniter import croniter as _croniter
+
+        it = _croniter(cron_expr, _datetime.now())
+        out["next_runs"] = [
+            it.get_next(_datetime).strftime("%Y-%m-%d %H:%M:%S") for _ in range(5)
+        ]
+
+    date_window = data.get("date_window")
+
+    if date_window:
+        try:
+            date_from, date_to = resolve_date_window(date_window, _datetime.now())
+            out["date_from"] = date_from
+            out["date_to"] = date_to
+        except ValueError as e:
+            return jsonify({"ok": False, "message": str(e)}), 400
+
+    return jsonify(out)
+
+
+@app.route("/api/notification-channels", methods=["GET", "POST"])
+def api_notification_channels():
+    if request.method == "GET":
+        return jsonify({"ok": True, "channels": scheduler_store.list_channels()})
+
+    data = request.get_json(silent=True) or {}
+
+    try:
+        channel_id = scheduler_store.create_channel({
+            "name": data.get("name"),
+            "type": data.get("type") or "webhook",
+            "config_json": _json.dumps(data.get("config") or {}, ensure_ascii=False),
+            "enabled": data.get("enabled", 1),
+        })
+        return jsonify({"ok": True, "id": channel_id})
+    except KeyError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+
+@app.route("/api/notification-channels/<int:channel_id>", methods=["PUT", "DELETE"])
+def api_notification_channel_item(channel_id):
+    if request.method == "DELETE":
+        scheduler_store.delete_channel(channel_id)
+        return jsonify({"ok": True})
+
+    data = request.get_json(silent=True) or {}
+    update = {}
+
+    for key in ("name", "type", "enabled"):
+        if key in data:
+            update[key] = data[key]
+
+    if "config" in data:
+        update["config_json"] = _json.dumps(data["config"], ensure_ascii=False)
+
+    scheduler_store.update_channel(channel_id, update)
+    return jsonify({"ok": True})
+
+
+# ============================================================
+# Table catalog: массовый выбор/настройка (10k+ таблиц)
+# ============================================================
+
+import modules.table_catalog as table_catalog
+
+
+@app.route("/api/catalog")
+def api_catalog():
+    connection_id = request.args.get("connection_id", type=int)
+    force = request.args.get("force", 0, type=int)
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    try:
+        tables, cached_at = table_catalog.get_catalog(connection_id, force=bool(force))
+        return jsonify({
+            "ok": True,
+            "total": len(tables),
+            "cached_at": cached_at,
+            "schemas": table_catalog.catalog_summary(tables),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/search")
+def api_catalog_search():
+    connection_id = request.args.get("connection_id", type=int)
+    query = request.args.get("q", "")
+
+    try:
+        tables, _ts = table_catalog.get_catalog(connection_id)
+        found = table_catalog.search_tables(tables, query)
+        return jsonify({
+            "ok": True,
+            "tables": [{"schema": s, "table": t} for s, t in found],
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/schema-tables")
+def api_catalog_schema_tables():
+    connection_id = request.args.get("connection_id", type=int)
+    schema = (request.args.get("schema") or "").strip()
+
+    if not connection_id or not schema:
+        return jsonify({"ok": False, "message": "connection_id и schema обязательны"}), 400
+
+    try:
+        return jsonify({
+            "ok": True,
+            "tables": table_catalog.schema_tables_with_roles(connection_id, schema),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/expand-mask", methods=["POST"])
+def api_catalog_expand_mask():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables, _ts = table_catalog.get_catalog(int(data["connection_id"]))
+        matched = table_catalog.match_mask(tables, data.get("mask"))
+        return jsonify({
+            "ok": True,
+            "count": len(matched),
+            "tables": [{"schema": s, "table": t} for s, t in matched],
+        })
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/resolve-list", methods=["POST"])
+def api_catalog_resolve_list():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables, _ts = table_catalog.get_catalog(int(data["connection_id"]))
+        valid, invalid = table_catalog.parse_table_list(data.get("text"), tables)
+        return jsonify({
+            "ok": True,
+            "valid": [{"schema": s, "table": t} for s, t in valid],
+            "invalid": invalid,
+        })
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/resolve-columns", methods=["POST"])
+def api_catalog_resolve_columns():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables = [
+            (t["schema"], t["table"])
+            for t in (data.get("tables") or [])
+        ]
+        priority = [
+            c.strip() for c in (data.get("priority") or []) if str(c).strip()
+        ]
+
+        if not tables or not priority:
+            return jsonify({
+                "ok": False, "message": "tables и priority обязательны",
+            }), 400
+
+        columns_by_table = table_catalog.fetch_columns_for_candidates(
+            int(data["connection_id"]), tables, priority,
+        )
+
+        if data.get("fallback_any_date"):
+            # Фолбэк: у таблиц без колонок из приоритета берём первую
+            # date/timestamp колонку (не у всех таблиц колонки зовутся одинаково).
+            _base_resolved, base_missing = table_catalog.pick_columns(
+                columns_by_table, priority,
+            )
+            date_cols = table_catalog.fetch_date_columns_bulk(
+                int(data["connection_id"]), base_missing,
+            )
+            resolved, missing = table_catalog.pick_columns_with_fallback(
+                columns_by_table, priority, date_cols,
+            )
+
+            return jsonify({
+                "ok": True,
+                "resolved": [
+                    {"schema": s, "table": t,
+                     "column": info["column"], "via": info["via"]}
+                    for (s, t), info in sorted(resolved.items())
+                ],
+                "missing": [{"schema": s, "table": t} for s, t in missing],
+            })
+
+        resolved, missing = table_catalog.pick_columns(columns_by_table, priority)
+
+        return jsonify({
+            "ok": True,
+            "resolved": [
+                {"schema": s, "table": t, "column": c, "via": "priority"}
+                for (s, t), c in sorted(resolved.items())
+            ],
+            "missing": [{"schema": s, "table": t} for s, t in missing],
+        })
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/primary-keys", methods=["POST"])
+def api_catalog_primary_keys():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables = [(t["schema"], t["table"]) for t in (data.get("tables") or [])]
+        keys = table_catalog.fetch_primary_keys(int(data["connection_id"]), tables)
+
+        return jsonify({
+            "ok": True,
+            "keys": [
+                {"schema": s, "table": t, "columns": cols}
+                for (s, t), cols in sorted(keys.items())
+            ],
+            "missing": [
+                {"schema": s, "table": t}
+                for s, t in tables if (s, t) not in keys
+            ],
+        })
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/resolve-keys", methods=["POST"])
+def api_catalog_resolve_keys():
+    """Ключи для sync: PK -> уникальный индекс -> unresolved (на вычисление)."""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables = [(t["schema"], t["table"]) for t in (data.get("tables") or [])]
+
+        if not tables:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        connection_id = int(data["connection_id"])
+
+        pk_map, unique_map = table_catalog.fetch_unique_indexes(
+            connection_id, tables,
+        )
+        resolved, unresolved = table_catalog.resolve_keys_hierarchy(
+            tables, pk_map, unique_map,
+        )
+
+        # ключи, найденные раньше (в том числе дорогим поиском по данным),
+        # берём из базы — второй раз искать незачем
+        saved = table_catalog.load_sync_keys(connection_id, tables)
+        still_unresolved = []
+
+        for key in unresolved:
+            info = saved.get(key)
+
+            if info:
+                resolved[key] = {"columns": info["columns"],
+                                 "source": info["source"] or "saved",
+                                 "saved_at": info.get("found_at")}
+            else:
+                still_unresolved.append(key)
+
+        # найденное по каталогу тоже запоминаем — дешевле следующий заход
+        for (schema, table), info in resolved.items():
+            if (schema, table) not in saved:
+                try:
+                    table_catalog.save_sync_key(
+                        connection_id, schema, table,
+                        info["columns"], info["source"])
+                except Exception:
+                    pass
+
+        try:
+            sizes = table_catalog.fetch_table_sizes(connection_id, tables)
+        except Exception:
+            sizes = {}
+
+        return jsonify({
+            "ok": True,
+            "resolved": [
+                {"schema": s, "table": t,
+                 "columns": info["columns"], "source": info["source"],
+                 "saved_at": info.get("saved_at")}
+                for (s, t), info in sorted(resolved.items())
+            ],
+            "unresolved": [{"schema": s, "table": t}
+                           for s, t in still_unresolved],
+            "sizes": {
+                "{}.{}".format(s, t): v for (s, t), v in sizes.items()
+            },
+        })
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/sync-keys", methods=["POST", "DELETE"])
+def api_catalog_sync_keys():
+    """Сохранённые ключи синхронизации: запомнить или забыть."""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        connection_id = int(data["connection_id"])
+
+        if request.method == "DELETE":
+            removed = 0
+
+            for t in data.get("tables") or []:
+                removed += table_catalog.forget_sync_key(
+                    connection_id, t["schema"], t["table"]) or 0
+
+            return jsonify({"ok": True, "removed": removed})
+
+        saved = 0
+
+        for t in data.get("tables") or []:
+            table_catalog.save_sync_key(
+                connection_id, t["schema"], t["table"],
+                t.get("columns") or [], t.get("source") or "manual")
+            saved += 1
+
+        return jsonify({"ok": True, "saved": saved})
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/catalog/compute-unique", methods=["POST"])
+def api_catalog_compute_unique():
+    """Вычисление уникальной колонки по данным (нет ни PK, ни индексов)."""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        connection_id = int(data["connection_id"])
+        result = table_catalog.probe_unique_column(
+            connection_id,
+            data["schema"],
+            data["table"],
+            limit_candidates=int(data.get("limit_candidates") or 5),
+        )
+
+        # поиск по данным дорогой — результат сохраняем
+        if result.get("column"):
+            try:
+                table_catalog.save_sync_key(
+                    connection_id, data["schema"], data["table"],
+                    [result["column"]],
+                    "sampled" if result.get("confidence") == "sample"
+                    else "computed")
+            except Exception:
+                pass
+
+        return jsonify({"ok": True, **result})
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/table-sets", methods=["GET", "POST"])
+def api_table_sets():
+    if request.method == "GET":
+        connection_id = request.args.get("connection_id", type=int)
+        return jsonify({
+            "ok": True,
+            "sets": table_catalog.list_table_sets(connection_id),
+        })
+
+    data = request.get_json(silent=True) or {}
+
+    if not data.get("tables"):
+        return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+    set_id = table_catalog.create_table_set(data)
+    return jsonify({"ok": True, "id": set_id})
+
+
+@app.route("/api/table-sets/<int:set_id>", methods=["GET", "DELETE"])
+def api_table_set_item(set_id):
+    if request.method == "DELETE":
+        table_catalog.delete_table_set(set_id)
+        return jsonify({"ok": True})
+
+    ts = table_catalog.get_table_set(set_id)
+
+    if not ts:
+        return jsonify({"ok": False, "message": "Set not found"}), 404
+
+    return jsonify({"ok": True, "set": ts})
+
+
+# ============================================================
+# gpcopy v2: increment + partition-diff
+# ============================================================
+
+@app.route("/api/gpcopy/increment/preview", methods=["POST"])
+def api_gpcopy_increment_preview():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        from db import get_connection_by_id as _get_conn
+
+        dest_cfg = _get_conn(int(data["dest_connection_id"]))
+        source_cfg = _get_conn(int(data["source_connection_id"]))
+        tables = data.get("tables") or []
+
+        if not tables:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        watermarks = {}
+        preview = []
+
+        for entry in tables:
+            schema = entry.get("schema")
+            table = entry.get("table")
+            column = entry.get("watermark_column")
+
+            if not (schema and table and column):
+                return jsonify({
+                    "ok": False,
+                    "message": "schema/table/watermark_column обязательны",
+                }), 400
+
+            wm = get_dest_watermark(dest_cfg, schema, table, column)
+            watermarks[(schema, table)] = wm
+            preview.append({
+                "schema": schema,
+                "table": table,
+                "watermark_column": column,
+                "watermark": str(wm) if wm is not None else None,
+            })
+
+        items = build_increment_items(
+            tables, watermarks,
+            data.get("source_db") or "src", data.get("dest_db") or "dst",
+        )
+
+        for row, item in zip(preview, items):
+            row["sql"] = item["sql"]
+
+        return jsonify({"ok": True, "tables": preview})
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/gpcopy/increment/start", methods=["POST"])
+def api_gpcopy_increment_start():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables = data.get("tables") or []
+
+        if not tables:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        job_id = create_job(
+            job_type="gpcopy_increment",
+            connection_id=int(data["source_connection_id"]),
+            config=data,
+        )
+
+        threading.Thread(
+            target=run_gpcopy_increment_job, args=(job_id,), daemon=True
+        ).start()
+
+        return jsonify({"ok": True, "job_id": job_id})
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+
+@app.route("/api/gpcopy/partition-diff/preview", methods=["POST"])
+def api_gpcopy_partition_diff_preview():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        from db import get_connection_by_id as _get_conn
+
+        source_cfg = _get_conn(int(data["source_connection_id"]))
+        dest_cfg = _get_conn(int(data["dest_connection_id"]))
+
+        schema = data.get("schema")
+        table = data.get("table")
+
+        if not (schema and table):
+            return jsonify({"ok": False, "message": "schema/table обязательны"}), 400
+
+        diff_rows, _leaves = diff_partitions(source_cfg, dest_cfg, schema, table)
+
+        return jsonify({
+            "ok": True,
+            "partitions": diff_rows,
+            "to_copy": [r for r in diff_rows if r["action"] != "skip"],
+        })
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/gpcopy/partition-diff/preview-bulk", methods=["POST"])
+def api_gpcopy_partition_diff_preview_bulk():
+    """Быстрый diff по статистике каталога для пачки таблиц (один запрос на сторону)."""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        from db import get_connection_by_id as _get_conn
+        from modules.gpcopy_partition import diff_partitions_stats
+
+        source_cfg = _get_conn(int(data["source_connection_id"]))
+        dest_cfg = _get_conn(int(data["dest_connection_id"]))
+
+        tables = [
+            (t["schema"], t["table"])
+            for t in (data.get("tables") or [])
+        ]
+        if not tables:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        diff_by_root, leaves_by_root = diff_partitions_stats(
+            source_cfg, dest_cfg, tables,
+            exact=bool(data.get("exact")),
+        )
+
+        out = []
+        total_copy = 0
+        for (schema, table) in tables:
+            rows = diff_by_root.get((schema, table)) or []
+            leaves = leaves_by_root.get((schema, table)) or {}
+            missing = sum(1 for r in rows if r["action"] == "copy_missing")
+            changed = sum(1 for r in rows if r["action"] == "copy_changed")
+            total_copy += missing + changed
+
+            # детализация по ВСЕМ партициям — фильтры (все/разл./совпад.) в UI
+            detail = [
+                {
+                    "partition": r["partition"],
+                    "schema": (leaves.get(r["partition"]) or (schema,))[0],
+                    "src": r["src_count"],
+                    "dest": r["dest_count"],
+                    "action": r["action"],
+                }
+                for r in rows
+            ]
+
+            out.append({
+                "schema": schema,
+                "table": table,
+                "partitions": len(rows),
+                "missing": missing,
+                "changed": changed,
+                "to_copy": missing + changed,
+                "detail": detail,
+            })
+
+        return jsonify({"ok": True, "tables": out, "total_to_copy": total_copy})
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/gpcopy/partition-diff/start", methods=["POST"])
+def api_gpcopy_partition_diff_start():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        tables = data.get("tables") or []
+
+        if not tables:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        job_id = create_job(
+            job_type="gpcopy_partition_diff",
+            connection_id=int(data["source_connection_id"]),
+            config=data,
+        )
+
+        threading.Thread(
+            target=run_gpcopy_partition_diff_job, args=(job_id,), daemon=True
+        ).start()
+
+        return jsonify({"ok": True, "job_id": job_id})
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+
+@app.route("/api/notification-channels/<int:channel_id>/test", methods=["POST"])
+def api_notification_channel_test(channel_id):
+    channel = scheduler_store.get_channel(channel_id)
+
+    if not channel:
+        return jsonify({"ok": False, "message": "Channel not found"}), 404
+
+    import notifiers as _notifiers
+
+    ok, error = _notifiers.send(channel, {
+        "schedule": "test-event",
+        "job_type": "test",
+        "status": "test",
+        "fired_at": _datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "error": None,
+        "job_id": None,
+    })
+
+    return jsonify({"ok": ok, "message": error})
+
+
 if __name__ == "__main__":
     init_db()
-    
-    interrupted_jobs = mark_interrupted_jobs_on_startup()
+
+    # переподхват после рестарта: внешние бинари (gpcopy/gpbackup) живут
+    # сами — цепляемся к pid и логу; in-process задачи (vacuum, reorganize,
+    # skew, sync, copy_pipe) перезапускаем с места остановки
+    from modules.gpbackup import resume_unfinished_backup_jobs
+    from modules.gpcopy import resume_unfinished_gpcopy_jobs
+    from modules.job_resume import resume_inprocess_jobs
+
+    from modules.pg_backup import resume_unfinished_pg_jobs
+
+    resumed_jobs = resume_unfinished_gpcopy_jobs()
+    resumed_jobs += resume_unfinished_backup_jobs()
+    resumed_jobs += resume_unfinished_pg_jobs()
+    resumed_jobs += resume_inprocess_jobs(exclude_ids=resumed_jobs)
+
+    if resumed_jobs:
+        print("Resumed jobs after restart:", resumed_jobs)
+
+    interrupted_jobs = mark_interrupted_jobs_on_startup(exclude_ids=resumed_jobs)
 
     if interrupted_jobs:
         print("Interrupted jobs after application startup:", interrupted_jobs)
+
+    # старые остановленные запуски: задача cancelled, а строки внутри
+    # так и висят в running — закрываем их при первом же старте
+    orphan_items = close_orphan_items()
+
+    if orphan_items:
+        print("Closed stale job items after startup:", orphan_items)
+
+    from scheduler import start_scheduler
+    start_scheduler()
 
     app.run(
         host=APP_HOST,

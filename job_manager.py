@@ -3,7 +3,7 @@ import threading
 from datetime import datetime
 import os
 import sqlite3
-from db import sqlite_cursor
+from db import sqlite_cursor, get_sqlite_connection
 
 
 STOP_FLAGS = {}
@@ -12,22 +12,11 @@ RUNNING_THREADS = {}
 def get_job_manager_db_connection():
     """
     SQLite connection для job_manager.
-    Используем стандартный путь instance/gp_reorganize_center.sqlite3.
+    Единый источник пути к БД — db.get_sqlite_connection() (config.SQLITE_DB_PATH),
+    чтобы тесты могли подменить путь на временный файл.
     """
 
-    db_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "instance",
-        "gp_reorganize_center.sqlite3"
-    )
-
-    if not os.path.exists(db_path):
-        db_path = os.path.join("instance", "gp_reorganize_center.sqlite3")
-
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-
-    return conn
+    return get_sqlite_connection()
 
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -87,6 +76,12 @@ def create_job(job_type, connection_id, config):
             if not schema_name or not table_name:
                 continue
 
+            # у таблицы может быть своя операция (ассистент vacuum:
+            # каждой таблице — то, что ей рекомендовано)
+            row_action = str(
+                item.get("action") or item_action
+            ).upper().strip()
+
             cur.execute(
                 """
                 INSERT INTO job_items (
@@ -102,12 +97,30 @@ def create_job(job_type, connection_id, config):
                     job_id,
                     schema_name,
                     table_name,
-                    item_action,
+                    row_action,
                     "queued",
                 ),
             )
 
         return job_id
+
+
+def requeue_interrupted_items(job_id):
+    """
+    Прерванные рестартом строки — обратно в очередь; done/failed/skipped
+    не трогаем. Используется при переподхвате in-process задач.
+    """
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            UPDATE job_items
+            SET status = 'queued', error_message = NULL
+            WHERE job_id = ?
+              AND status IN ('running', 'stopping', 'pending')
+            """,
+            (job_id,),
+        )
+        return cur.rowcount
 
 
 def get_job(job_id):
@@ -154,7 +167,11 @@ def get_job_items(job_id):
                 started_at,
                 finished_at,
                 duration_seconds,
-                error_message
+                error_message,
+                COALESCE(size_bytes, 0) AS size_bytes,
+                COALESCE(bytes_done, 0) AS bytes_done,
+                COALESCE(parts_total, 0) AS parts_total,
+                COALESCE(parts_done, 0) AS parts_done
             FROM job_items
             WHERE job_id = ?
             ORDER BY id
@@ -195,7 +212,95 @@ def mark_job_done(job_id):
         )
 
 
+# строки, которые ещё «в работе»: их и надо закрывать вместе с задачей
+OPEN_ITEM_STATUSES = ("queued", "running", "stopping", "pending")
+
+
+def close_open_items(job_id, status, message=None):
+    """
+    Даёт финальный статус строкам, оборвавшимся вместе с задачей.
+
+    Остановка убивает gpcopy на полуслове, и его объекты так и остаются
+    в running: сама задача уже cancelled, а внутри у неё «копируется».
+    Уже готовые (done/failed/skipped) не трогаем.
+    """
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            UPDATE job_items
+            SET status = ?,
+                finished_at = ?,
+                error_message =
+                    CASE
+                        WHEN (error_message IS NULL OR error_message = '')
+                             AND ? IS NOT NULL
+                        THEN ?
+                        ELSE error_message
+                    END
+            WHERE job_id = ?
+              AND status IN ('queued', 'running', 'stopping', 'pending')
+            """,
+            (
+                status,
+                now_str(),
+                message,
+                message,
+                job_id,
+            ),
+        )
+        return cur.rowcount
+
+
+# чем закрывать строки задачи, которая давно завершилась
+ORPHAN_ITEM_STATUS = {
+    "cancelled": "cancelled",
+    "interrupted": "interrupted",
+    "failed": "interrupted",
+    "done": "done",
+}
+
+
+def close_orphan_items():
+    """
+    Уборка при старте: задача завершилась, а её строки остались
+    в running/queued. Так выглядят все запуски, остановленные до того,
+    как статусы стали закрываться. Возвращает число починенных строк.
+    """
+    with sqlite_cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT j.id AS id, j.status AS status
+            FROM jobs j
+            JOIN job_items i ON i.job_id = j.id
+            WHERE j.status IN ('done', 'failed', 'cancelled', 'interrupted')
+              AND i.status IN ('queued', 'running', 'stopping', 'pending')
+            """
+        )
+        rows = [(int(r["id"]), str(r["status"])) for r in cur.fetchall()]
+
+    fixed = 0
+
+    for job_id, status in rows:
+        message = None
+
+        if status != "done":
+            message = "Задача завершилась ({}) — объект не докопирован".format(
+                status
+            )
+
+        fixed += close_open_items(
+            job_id, ORPHAN_ITEM_STATUS.get(status, "interrupted"), message
+        )
+        refresh_job_progress(job_id)
+
+    return fixed
+
+
 def mark_job_failed(job_id, error_message):
+    close_open_items(
+        job_id, "interrupted", "Задача упала — объект не докопирован"
+    )
+
     refresh_job_progress(job_id)
 
     with sqlite_cursor(commit=True) as cur:
@@ -215,7 +320,10 @@ def mark_job_failed(job_id, error_message):
         )
 
 
-def mark_job_cancelled(job_id):
+def mark_job_cancelled(job_id, error_message=None):
+    # иначе внутри отменённой задачи объекты навсегда остаются «копируется»
+    close_open_items(job_id, "cancelled", "Задача остановлена пользователем")
+
     refresh_job_progress(job_id)
 
     with sqlite_cursor(commit=True) as cur:
@@ -223,11 +331,13 @@ def mark_job_cancelled(job_id):
             """
             UPDATE jobs
             SET status = 'cancelled',
-                finished_at = ?
+                finished_at = ?,
+                error_message = COALESCE(?, error_message)
             WHERE id = ?
             """,
             (
                 now_str(),
+                str(error_message) if error_message else None,
                 job_id,
             ),
         )
@@ -362,6 +472,115 @@ def mark_item_skipped(item_id, reason):
         )
 
 
+def _weighted_progress(cur, job_id):
+    """
+    Прогресс по объёму данных, если у элементов проставлен size_bytes.
+    Готовые/пропущенные/упавшие таблицы дают полный вес, текущая — свои
+    bytes_done. Возвращает процент или None (тогда считаем по числу таблиц).
+    """
+    cur.execute(
+        """
+        SELECT
+            SUM(COALESCE(size_bytes, 0)) AS total_bytes,
+            SUM(
+                CASE
+                    WHEN status IN ('done', 'skipped', 'failed', 'interrupted')
+                        THEN COALESCE(size_bytes, 0)
+                    WHEN status = 'running'
+                        THEN MIN(COALESCE(bytes_done, 0), COALESCE(size_bytes, 0))
+                    ELSE 0
+                END
+            ) AS moved_bytes
+        FROM job_items
+        WHERE job_id = ?
+        """,
+        (job_id,),
+    )
+
+    row = dict(cur.fetchone())
+    total_bytes = row.get("total_bytes") or 0
+
+    if not total_bytes:
+        return None
+
+    moved = row.get("moved_bytes") or 0
+    return round(min(moved / float(total_bytes), 1.0) * 100, 2)
+
+
+def set_item_size(item_id, size_bytes):
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE job_items SET size_bytes = ? WHERE id = ?",
+            (int(size_bytes or 0), item_id),
+        )
+
+
+def set_item_bytes(item_id, bytes_done):
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE job_items SET bytes_done = ? WHERE id = ?",
+            (int(bytes_done or 0), item_id),
+        )
+
+
+def set_item_parts(item_id, parts_done=None, parts_total=None):
+    """Счётчики партиций таблицы (live-прогресс gpcopy по одному объекту)."""
+    fields = []
+    params = []
+
+    if parts_done is not None:
+        fields.append("parts_done = ?")
+        params.append(int(parts_done))
+
+    if parts_total is not None:
+        fields.append("parts_total = ?")
+        params.append(int(parts_total))
+
+    if not fields:
+        return
+
+    params.append(item_id)
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE job_items SET {} WHERE id = ?".format(", ".join(fields)),
+            params,
+        )
+
+
+def update_job_config(job_id, config):
+    """Перезаписывает config_json задачи (например, сохранить failed_leaves)."""
+    import json as _json
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE jobs SET config_json = ? WHERE id = ?",
+            (_json.dumps(config, ensure_ascii=False), job_id),
+        )
+
+
+def set_job_progress(job_id, progress_percent, done_items=None, total_items=None):
+    """Прямая установка прогресса (для потоковых раннеров вроде gpcopy)."""
+    fields = ["progress_percent = ?"]
+    params = [round(float(progress_percent), 2)]
+
+    if done_items is not None:
+        fields.append("done_items = ?")
+        params.append(int(done_items))
+
+    if total_items is not None:
+        fields.append("total_items = ?")
+        params.append(int(total_items))
+
+    params.append(job_id)
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE jobs SET {} WHERE id = ?".format(", ".join(fields)),
+            params,
+        )
+
+
 def refresh_job_progress(job_id):
     with sqlite_cursor(commit=True) as cur:
         cur.execute(
@@ -386,7 +605,13 @@ def refresh_job_progress(job_id):
 
         finished_items = done_items + failed_items + skipped_items
 
-        if total_items > 0:
+        # если известны размеры таблиц — считаем по объёму данных,
+        # иначе по числу завершённых таблиц (как раньше)
+        weighted = _weighted_progress(cur, job_id)
+
+        if weighted is not None:
+            progress_percent = weighted
+        elif total_items > 0:
             progress_percent = round((finished_items / float(total_items)) * 100, 2)
         else:
             progress_percent = 0
@@ -480,12 +705,54 @@ def get_latest_job(job_type=None):
 
     return dict(row) if row else None
 
-def mark_interrupted_jobs_on_startup():
+def set_job_runtime(job_id, pid=None, log_file=None):
+    """PID внешнего процесса и путь к его логу — для переподхвата после рестарта."""
+    fields = []
+    params = []
+
+    if pid is not None:
+        fields.append("pid = ?")
+        params.append(int(pid))
+
+    if log_file is not None:
+        fields.append("log_file = ?")
+        params.append(str(log_file))
+
+    if not fields:
+        return
+
+    params.append(job_id)
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE jobs SET {} WHERE id = ?".format(", ".join(fields)),
+            params,
+        )
+
+
+def list_unfinished_jobs():
+    """Задачи, оставшиеся активными после рестарта приложения."""
+    with sqlite_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, job_type, status, connection_id, config_json,
+                   log_file, pid
+            FROM jobs
+            WHERE status IN ('queued', 'running', 'stopping')
+            ORDER BY id
+            """
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def mark_interrupted_jobs_on_startup(exclude_ids=None):
     """
     При старте приложения переводит зависшие jobs в interrupted.
     Нужно на случай, если Flask был перезапущен во время выполнения background thread.
+    exclude_ids — задачи, которые удалось переподхватить (не трогаем).
     """
 
+    exclude = set(int(x) for x in (exclude_ids or []))
     interrupted_job_ids = []
 
     with sqlite_cursor(commit=True) as cur:
@@ -498,7 +765,10 @@ def mark_interrupted_jobs_on_startup():
         )
 
         rows = cur.fetchall()
-        interrupted_job_ids = [int(row["id"]) for row in rows]
+        interrupted_job_ids = [
+            int(row["id"]) for row in rows
+            if int(row["id"]) not in exclude
+        ]
 
         if not interrupted_job_ids:
             return []
@@ -602,6 +872,46 @@ def get_active_jobs(job_type=None):
 
         return [dict(row) for row in cur.fetchall()]
 
+
+def list_recent_jobs(job_types=None, limit=20):
+    """
+    Последние jobs (любых статусов) для ленты запусков.
+    job_types — список типов (None = все), новые первыми.
+    """
+    limit = max(1, min(int(limit or 20), 100))
+
+    sql = """
+        SELECT
+            id,
+            job_type,
+            status,
+            connection_id,
+            total_items,
+            done_items,
+            failed_items,
+            skipped_items,
+            progress_percent,
+            started_at,
+            finished_at,
+            error_message,
+            config_json
+        FROM jobs
+    """
+    params = []
+
+    if job_types:
+        placeholders = ",".join("?" for _ in job_types)
+        sql += " WHERE job_type IN ({})".format(placeholders)
+        params.extend(job_types)
+
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+
+    with sqlite_cursor() as cur:
+        cur.execute(sql, params)
+        return [dict(row) for row in cur.fetchall()]
+
+
 def create_job_items(job_id, items):
     """
     Создаёт job_items для job.
@@ -686,6 +996,11 @@ def update_job_status(job_id, status, error_message=None, log_file=None):
 
     if status == "stopping":
         return set_stop_flag(job_id)
+
+    if status == "interrupted":
+        close_open_items(
+            job_id, "interrupted", "Задача прервана — объект не докопирован"
+        )
 
     # fallback для interrupted / queued / любых других статусов
     with sqlite_cursor(commit=True) as cur:

@@ -1,0 +1,573 @@
+{% extends "base.html" %}
+
+{% block title %}Синхронизация данных · Opsentri{% endblock %}
+
+{% block content %}
+<style>
+/* ============ gpcopy pipeline («конвейер задачи») ============ */
+.gpp { max-width: 1060px; margin: 0 auto; }
+.gpp h2 { font-size: 22px; margin-bottom: 2px; }
+.gpp .gpp-sub { color: var(--text-muted); font-size: 13px; margin-bottom: 18px; }
+
+.gpp-pipe { display: flex; align-items: stretch; gap: 14px;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 14px 18px; margin-bottom: 14px; }
+.gpp-db { flex: 1; background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); padding: 10px 14px; position: relative;
+  transition: border-color var(--dur-fast) var(--ease); }
+.gpp-db:hover { border-color: var(--a1); }
+.gpp-db .lbl { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 4px; }
+.gpp-db select { display: none; }
+.gpp-db .meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.gpp-db .meta .ok { color: var(--ok); }
+
+/* стильный дропдаун подключений */
+.gpp-dbbtn { display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; width: 100%; background: transparent; border: none; color: var(--text);
+  font-weight: 600; font-size: 14.5px; padding: 0; cursor: pointer; text-align: left;
+  font-family: inherit; }
+.gpp-dbbtn .chev { color: var(--text-muted); font-size: 11px;
+  transition: transform var(--dur-fast) var(--ease); }
+.gpp-dbbtn.open .chev { transform: rotate(180deg); color: var(--a1); }
+.gpp-dd { position: absolute; left: 8px; right: 8px; top: calc(100% + 6px);
+  z-index: 100; background: var(--solid); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow); padding: 6px;
+  display: none; }
+.gpp-dd.show { display: block; animation: gppDdIn var(--dur-fast) var(--ease); }
+@keyframes gppDdIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .gpp-dd.show { animation: none; } }
+.gpp-dd .opt { display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 9px 12px; border-radius: 8px; font-size: 13.5px;
+  cursor: pointer; color: var(--text); }
+.gpp-dd .opt:hover { background: rgba(99, 102, 241, .14); }
+.gpp-dd .opt .sub { color: var(--text-muted); font-size: 12px; }
+.gpp-dd .opt.cur { font-weight: 650; }
+.gpp-dd .opt.cur .name { background: var(--accent-grad);
+  -webkit-background-clip: text; background-clip: text; color: transparent; }
+.gpp-dd .opt .ck { color: var(--a1); }
+.gpp-arrow { align-self: center; font-size: 22px; color: var(--a1); flex: none; }
+
+.gpp-step { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 18px 20px; margin-bottom: 14px; position: relative; }
+.gpp-step .n { position: absolute; left: -1px; top: -1px; background: var(--accent-grad);
+  color: #fff; font-size: 12px; font-weight: 700; border-radius: var(--radius) 0 10px 0;
+  padding: 3px 12px; }
+.gpp-step h3 { font-size: 15px; margin: 10px 0 12px; }
+.gpp-step h3 .mut { color: var(--text-muted); font-weight: 400; }
+
+.gpp-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.gpp-chip { background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill); padding: 4px 12px; font-size: 13px; }
+.gpp-chip b { color: var(--a2); }
+.gpp-chip .x { color: var(--text-muted); margin-left: 6px; cursor: pointer; border: none;
+  background: none; padding: 0 2px; font-size: 13px; }
+.gpp-chip .x:hover { color: var(--crit); }
+
+.gpp-btn { background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--text); border-radius: 9px; padding: 8px 16px; font-size: 14px;
+  cursor: pointer; transition: border-color var(--dur-fast) var(--ease); }
+.gpp-btn:hover { border-color: var(--a1); }
+.gpp-btn:disabled { opacity: .5; cursor: default; }
+.gpp-btn.primary { background: var(--accent-grad); border: none; color: #fff; font-weight: 650; }
+.gpp-btn.ghost { background: transparent; }
+.gpp-btn.big { padding: 12px 28px; font-size: 15px; }
+.gpp-btn.sm { padding: 4px 12px; font-size: 12.5px; }
+
+.gpp-modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+@media (max-width: 900px) { .gpp-modes { grid-template-columns: repeat(2, 1fr); } }
+.gpp-mode { background: var(--surface-2); border: 1.5px solid var(--hairline);
+  border-radius: 12px; padding: 12px; cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease); }
+.gpp-mode:hover { border-color: var(--text-muted); }
+.gpp-mode.sel { border-color: var(--a1); background: rgba(99, 102, 241, .10); }
+.gpp-mode .ic { font-size: 20px; }
+.gpp-mode .t { font-weight: 650; font-size: 13.5px; margin: 6px 0 2px; }
+.gpp-mode .d { font-size: 11.5px; color: var(--text-muted); line-height: 1.35; }
+
+.gpp-params { margin-top: 14px; padding: 14px; background: var(--surface-2);
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm); display: none; }
+.gpp-params.show { display: block; }
+.gpp-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+.gpp-f { display: flex; flex-direction: column; gap: 4px; }
+.gpp-f label { font-size: 11.5px; color: var(--text-muted); }
+.gpp-f input, .gpp-f select { background: var(--solid); border: 1px solid var(--hairline);
+  color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 13.5px; min-width: 170px; }
+.gpp-hint { font-size: 12.5px; color: var(--text-muted); margin-top: 8px; }
+.gpp-hint .good { color: var(--ok); }
+.gpp-hint .warn { color: var(--warn); }
+.gpp-hint .bad { color: var(--crit); }
+details.gpp-exp { margin-top: 12px; }
+details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
+
+.gpp-when { display: flex; gap: 10px; margin-bottom: 14px; }
+.gpp-when .opt { flex: 1; text-align: center; padding: 10px; border: 1.5px solid var(--hairline);
+  border-radius: var(--radius-sm); cursor: pointer; background: var(--surface-2); font-size: 14px; }
+.gpp-when .opt.sel { border-color: var(--a1); background: rgba(99, 102, 241, .10); }
+
+.gpp-summary { background: var(--surface-2); border-left: 3px solid var(--a1);
+  border-radius: 8px; padding: 12px 16px; font-size: 14px; margin: 14px 0; }
+.gpp-summary b { color: var(--a2); }
+.gpp-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.gpp-auto { display: flex; align-items: center; gap: 7px; margin: 0;
+  font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
+.gpp-log-full { max-height: 420px; overflow: auto; margin: 0;
+  font-size: 11.5px; line-height: 1.45; white-space: pre-wrap;
+  word-break: break-word; background: var(--surface-2);
+  border: 1px solid var(--hairline); border-radius: 8px;
+  padding: 10px; }
+.gpp-msg { font-size: 13px; margin-top: 10px; }
+.gpp-msg.err { color: var(--crit); }
+.gpp-msg.ok { color: var(--ok); }
+
+.gpp-runs .run { display: flex; align-items: center; gap: 14px; padding: 10px 4px;
+  border-bottom: 1px solid var(--hairline); font-size: 13.5px; cursor: pointer;
+  border-radius: 8px; }
+.gpp-runs .run:hover { background: var(--row-hover); }
+.gpp-runs .run:last-child { border-bottom: none; }
+
+/* шторка деталей запуска (раскрывается под строкой) */
+.gpp-run-drawer { background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); padding: 12px 14px; margin: 2px 0 10px;
+  cursor: default; }
+.gpp-run-drawer .meta-line { color: var(--text-muted); font-size: 12.5px;
+  margin-bottom: 8px; }
+.gpp-runs .run .chev { color: var(--text-muted); font-size: 10px; flex: none; }
+.gpp-runs .run .rlab { flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.gpp-runs .run .what { font-family: var(--font-mono); font-size: 12px;
+  color: var(--a2); }
+.gpp-err { background: var(--surface-2); border: 1px solid var(--crit);
+  border-radius: var(--radius-sm); padding: 10px 12px; margin: 10px 0;
+  max-height: 220px; overflow: auto; }
+.gpp-err pre { margin: 0; font-family: var(--font-mono); font-size: 12px;
+  color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.gpp-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.gpp-dot.g { background: var(--ok); }
+.gpp-dot.b { background: var(--a1); box-shadow: 0 0 8px var(--a1); }
+.gpp-dot.r { background: var(--crit); }
+.gpp-dot.i { background: var(--idle); }
+.gpp-bar { flex: 0 1 120px; height: 6px; background: var(--surface-2); border-radius: 4px;
+  overflow: hidden; min-width: 60px; }
+.gpp-bar i { display: block; height: 100%; background: var(--accent-grad); border-radius: 4px; }
+.gpp-bar i.done { background: var(--ok); }
+.gpp-bar i.fail { background: var(--crit); }
+/* индикатор «в работе» без точного процента (таблицы без партиций) */
+.gpp-bar i.ind { width: 38%; animation: gppSlide 1.1s linear infinite; }
+@keyframes gppSlide {
+  from { margin-left: -38%; }
+  to { margin-left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gpp-bar i.ind { animation: none; width: 100%; opacity: .45; }
+}
+.gpp-runs .meta { color: var(--text-muted); font-size: 12px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 34%; flex: none; }
+
+/* selector modal */
+.gpp-overlay { position: fixed; inset: 0; background: rgba(5, 6, 12, .6);
+  display: none; align-items: center; justify-content: center; z-index: 1050; }
+.gpp-overlay.show { display: flex; }
+.gpp-modal { width: min(880px, 94vw); max-height: 88vh; overflow: auto;
+  background: var(--solid); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 22px; box-shadow: var(--shadow); }
+.gpp-modal h4 { margin: 0 0 4px; font-size: 17px; }
+.gpp-modal .ms { color: var(--text-muted); font-size: 12.5px; margin-bottom: 14px; }
+.gpp-bigsearch { width: 100%; background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--text); border-radius: var(--radius-sm); padding: 12px 16px; font-size: 15px;
+  margin-bottom: 10px; }
+.gpp-selgrid { display: grid; grid-template-columns: 1fr 300px; gap: 16px; }
+@media (max-width: 760px) { .gpp-selgrid { grid-template-columns: 1fr; } }
+.gpp-scw { margin-bottom: 6px; }
+.gpp-sc { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 7px 10px; border: 1px solid var(--hairline); border-radius: 8px;
+  font-size: 13px; background: var(--surface-2); cursor: pointer; }
+.gpp-sc:hover { border-color: var(--a1); }
+.gpp-sc.open { border-radius: 8px 8px 0 0; }
+.gpp-sc code { font-family: var(--font-mono); font-size: .92em; }
+.gpp-sc .chev { color: var(--text-muted); font-size: 10px; margin-right: 6px; }
+.gpp-sc .cnt { color: var(--text-muted); }
+.gpp-sc .selcnt { color: var(--a2); font-weight: 650; }
+.gpp-sc-panel { border: 1px solid var(--hairline); border-top: none;
+  border-radius: 0 0 8px 8px; padding: 8px 10px; background: var(--solid); }
+.gpp-sc-filter { width: 100%; background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--text); border-radius: 8px; padding: 6px 10px; font-size: 12.5px;
+  margin-bottom: 6px; }
+.gpp-tbl-list { max-height: 240px; overflow-y: auto; }
+.gpp-tbl-row { display: flex; align-items: center; gap: 8px; padding: 2px 6px;
+  font-size: 12.5px; font-family: var(--font-mono); cursor: pointer;
+  border-radius: 6px; margin: 0; }
+.gpp-tbl-row:hover { background: var(--row-hover); }
+.gpp-tbl-row input { accent-color: var(--a1); }
+.gpp-prt-badge { color: var(--a2); font-size: 11px; border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill); padding: 1px 8px; margin-left: 6px;
+  cursor: pointer; white-space: nowrap; }
+.gpp-prt-badge:hover { border-color: var(--a1); }
+
+/* список найденных ключей (инкремент по ключу) */
+.gpp-key-list { margin-top: 8px; max-height: 220px; overflow-y: auto; }
+.gpp-key-row { display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; font-family: var(--font-mono); font-size: 12.5px; padding: 3px 8px;
+  border-radius: 6px; }
+.gpp-key-row:nth-child(odd) { background: var(--surface); }
+.gpp-key-row .cols { color: var(--text-muted); }
+/* текст ошибки по таблице показываем целиком, с переносом */
+.gpp-key-row { align-items: flex-start; }
+.gpp-key-row .cols.err { display: block; margin-top: 2px; white-space: pre-wrap;
+  word-break: break-word; font-size: 11.5px; color: var(--crit); }
+.gpp-key-badge { font-size: 10.5px; border-radius: var(--radius-pill);
+  padding: 1px 8px; border: 1px solid var(--hairline); color: var(--text-muted);
+  white-space: nowrap; }
+.gpp-key-badge.pk { color: var(--ok); border-color: var(--ok); }
+.gpp-key-badge.uniq { color: var(--a2); border-color: var(--a2); }
+.gpp-key-badge.comp { color: var(--warn); border-color: var(--warn); }
+.gpp-key-badge.none { color: var(--crit); border-color: var(--crit); }
+.gpp-key-badge.man { color: var(--a1); border-color: var(--a1); }
+.gpp-key-row.off { opacity: .45; }
+.gpp-key-row .edit { color: var(--text-muted); cursor: pointer; margin-left: 6px; }
+.gpp-key-row .edit:hover { color: var(--a2); }
+.gpp-key-row input[type="checkbox"] { accent-color: var(--a1); margin-right: 8px; }
+.gpp-key-row .colinput { background: var(--surface-2); border: 1px solid var(--a1);
+  color: var(--text); border-radius: 6px; padding: 1px 6px; font-size: 12px;
+  font-family: var(--font-mono); width: 180px; }
+.gpp-wm-chip { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);
+  white-space: nowrap; }
+
+/* активная задача внутри шага КАК */
+.gpp-active { display: flex; align-items: center; gap: 12px;
+  background: var(--surface-2); border: 1px solid var(--a1);
+  border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 8px;
+  font-size: 13.5px; }
+.gpp-active .gpp-bar { max-width: 220px; }
+.gpp-active .what { font-family: var(--font-mono); font-size: 12.5px;
+  color: var(--a2); }
+.gpp-ring { position: relative; width: 46px; height: 46px; flex: none; }
+.gpp-ring svg { width: 46px; height: 46px; transform: rotate(-90deg); }
+.gpp-ring circle { fill: none; stroke-width: 4; }
+.gpp-ring .bg { stroke: var(--hairline); }
+.gpp-ring .fg { stroke: var(--a1); stroke-linecap: round;
+  transition: stroke-dasharray var(--dur) var(--ease); }
+.gpp-ring .pct { position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center; font-size: 11px;
+  font-weight: 700; font-variant-numeric: tabular-nums; }
+.gpp-ring.ind svg { animation: gppSpin 1s linear infinite; }
+/* Явные from/to — Chrome не анимирует одиночное to поверх базового transform */
+@keyframes gppSpin {
+  from { transform: rotate(-90deg); }
+  to { transform: rotate(270deg); }
+}
+@media (prefers-reduced-motion: reduce) { .gpp-ring.ind svg { animation: none; } }
+.gpp-btn.stop { border-color: var(--crit); color: var(--crit); }
+.gpp-btn.stop:hover { background: rgba(239, 68, 68, .12); }
+.gpp-sidebl { background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); padding: 12px; margin-bottom: 10px; }
+.gpp-sidebl .t { font-size: 11.5px; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 8px; }
+.gpp-sidebl textarea { width: 100%; background: var(--solid); border: 1px solid var(--hairline);
+  color: var(--text); border-radius: 8px; padding: 8px; font-size: 12.5px;
+  font-family: var(--font-mono); }
+.gpp-search-res { max-height: 220px; overflow-y: auto; margin-bottom: 10px; }
+.gpp-search-res .hit { display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 8px; font-size: 12.5px; font-family: var(--font-mono);
+  border-radius: 6px; cursor: pointer; }
+.gpp-search-res .hit:hover { background: var(--row-hover); }
+.gpp-search-res .hit.in { color: var(--ok); }
+.gpp-modal .foot { display: flex; justify-content: space-between; align-items: center;
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--hairline); }
+</style>
+
+<div class="gpp">
+    <div class="gpp-sub">
+        Задача читается сверху вниз: откуда → куда → что → как → когда.
+        <a href="/gpcopy/classic">Классический интерфейс</a>
+    </div>
+
+    <!-- PIPELINE HEADER -->
+    <div class="gpp-pipe">
+        <div class="gpp-db">
+            <div class="lbl">Источник</div>
+            <select id="gppSrc">
+                {% for c in connections if (c.role or 'both') != 'dest' %}
+                <option value="{{ c.id }}"
+                        data-name="{{ c.name }}"
+                        data-db="{{ c.database or c.dbname or '' }}"
+                        data-host="{{ c.host or '' }}">{{ c.name }}{% if c.database or c.dbname %} · {{ c.database or c.dbname }}{% endif %}</option>
+                {% endfor %}
+            </select>
+            <div class="meta" id="gppSrcMeta">каталог не загружен</div>
+        </div>
+        <div class="gpp-arrow">→</div>
+        <div class="gpp-db">
+            <div class="lbl">Назначение</div>
+            <select id="gppDst">
+                {% for c in connections if (c.role or 'both') != 'source' %}
+                <option value="{{ c.id }}"
+                        data-name="{{ c.name }}"
+                        data-db="{{ c.database or c.dbname or '' }}"
+                        data-host="{{ c.host or '' }}">{{ c.name }}{% if c.database or c.dbname %} · {{ c.database or c.dbname }}{% endif %}</option>
+                {% endfor %}
+            </select>
+            <div class="meta" id="gppDstMeta">&nbsp;</div>
+        </div>
+        <button class="gpp-btn sm" id="gppCatalogRefresh" title="Обновить каталог"
+                style="align-self: center;">⟳</button>
+    </div>
+
+    <!-- STEP 1: WHAT -->
+    <div class="gpp-step">
+        <div class="n">1 · ЧТО</div>
+        <h3>Таблицы <span class="mut" id="gppSelCount">— ничего не выбрано</span></h3>
+        <div class="gpp-chips" id="gppSelChips"></div>
+        <div class="gpp-chips" style="margin-top: 10px;">
+            <button class="gpp-btn" id="gppOpenSel">＋ Выбрать таблицы</button>
+            <button class="gpp-btn ghost" id="gppClearSel" style="color: var(--text-muted);">Очистить</button>
+        </div>
+    </div>
+
+    <!-- STEP 2: HOW -->
+    <div class="gpp-step">
+        <div class="n">2 · КАК</div>
+        <h3>Режим копирования</h3>
+        <div class="gpp-modes" id="gppModes" data-toolkit="{{ toolkit or 'gp' }}">
+            <div class="gpp-mode sel" data-m="full"><div class="ic">📦</div>
+                <div class="t">Полное</div>
+                <div class="d">Вся таблица целиком. Первая загрузка.</div></div>
+            {% if (toolkit or 'gp') != 'pg' %}
+            <div class="gpp-mode" data-m="inc"><div class="ic">⚡</div>
+                <div class="t">Инкремент</div>
+                <div class="d">Догрузка разницы: по watermark или точно по ключу.</div></div>
+            <div class="gpp-mode" data-m="date"><div class="ic">📅</div>
+                <div class="t">По датам</div>
+                <div class="d">Срез за период. Колонки подберутся сами.</div></div>
+            <div class="gpp-mode" data-m="part"><div class="ic">🧩</div>
+                <div class="t">Партиции</div>
+                <div class="d">Только партиции, отличающиеся от источника.</div></div>
+            {% endif %}
+        </div>
+        {% if (toolkit or 'gp') == 'pg' %}
+        <div class="gpp-hint">
+            PostgreSQL: перенос идёт напрямую через COPY — доступно полное
+            копирование. Режимы по датам, инкремент и партиции работают
+            через gpcopy и живут в Greenplum Toolkit.
+        </div>
+        {% endif %}
+
+        <div class="gpp-params show" id="gppP-full">
+            <div class="gpp-row">
+                <div class="gpp-f"><label>Существующие таблицы</label>
+                    <select id="gppFullExisting">
+                        <option value="truncate">--truncate (перезаписать данные)</option>
+                        <option value="drop">--drop (пересоздать)</option>
+                        <option value="skip_existing">--skip-existing (пропустить)</option>
+                        <option value="append">--append (дописать)</option>
+                    </select></div>
+            </div>
+        </div>
+
+        <div class="gpp-params" id="gppP-inc">
+            <div class="gpp-when" id="gppIncStrategy" style="margin-bottom: 12px;">
+                <div class="opt sel" data-s="watermark">⚡ По watermark (append, для логов)</div>
+                <div class="opt" data-s="key">🔁 По ключу (INSERT/UPDATE/DELETE)</div>
+            </div>
+
+            <div id="gppIncWm">
+                <div class="gpp-row">
+                    <div class="gpp-f" style="flex: 1;"><label>Watermark-колонки (приоритет, через запятую)</label>
+                        <input id="gppIncPriority" value="id, date_change$, updated_at" style="min-width: 300px;"></div>
+                    <button class="gpp-btn" id="gppIncCheck">Проверить колонки</button>
+                    <button class="gpp-btn" id="gppIncWmPreview" title="Текущий max(колонка) в назначении">Watermark-превью</button>
+                </div>
+                <div class="gpp-hint" id="gppIncHint">Не у всех таблиц колонка называется одинаково —
+                    перечисли варианты, для остальных возьмём первую date/timestamp-колонку.</div>
+                <input class="gpp-sc-filter" id="gppIncFilter" placeholder="Фильтр по списку…"
+                       style="display: none; margin-top: 8px;">
+                <div class="gpp-key-list" id="gppIncList"></div>
+            </div>
+
+            <div id="gppIncKey" style="display: none;">
+                <div class="gpp-row">
+                    <button class="gpp-btn" id="gppSyncKeys">Ключи: PK + уник. индексы</button>
+                    <button class="gpp-btn" id="gppSyncCompute">Найти уникальную колонку (по данным)</button>
+                    <label class="gpp-hint" style="margin: 0;">за заход
+                        <select id="gppComputeCap" style="margin-left: 6px;">
+                            <option value="20">20 таблиц</option>
+                            <option value="100" selected>100 таблиц</option>
+                            <option value="500">500 таблиц</option>
+                            <option value="all">все (долго)</option>
+                        </select></label>
+                </div>
+                <div class="gpp-hint" id="gppSyncHint">Ключ ищем по иерархии: PK → кратчайший
+                    уникальный индекс → вычисление по данным (для таблиц без индексов).</div>
+                <input class="gpp-sc-filter" id="gppKeyFilter"
+                       placeholder="Фильтр по списку…" style="display: none;">
+                <div class="gpp-key-list" id="gppKeyList"></div>
+                <div class="gpp-hint" id="gppKeyMore"></div>
+                <div class="gpp-hint" id="gppFallbackHint"></div>
+            </div>
+        </div>
+
+        <div class="gpp-params" id="gppP-date">
+            <div class="gpp-row">
+                <div class="gpp-f"><label>Период</label>
+                    <select id="gppDatePreset">
+                        <option value="yesterday">Вчера</option>
+                        <option value="today">Сегодня</option>
+                        <option value="last7">Последние 7 дней</option>
+                        <option value="last_month">Прошлый месяц</option>
+                        <option value="custom">Свой диапазон…</option>
+                    </select></div>
+                <div class="gpp-f" id="gppDateFromF" style="display: none;"><label>С (включительно)</label>
+                    <input id="gppDateFrom" type="date" style="min-width: 140px;"></div>
+                <div class="gpp-f" id="gppDateToF" style="display: none;"><label>По (не включая)</label>
+                    <input id="gppDateTo" type="date" style="min-width: 140px;"></div>
+                <div class="gpp-f" style="flex: 1;"><label>Колонки дат (приоритет)</label>
+                    <input id="gppDatePriority" value="date_change$, updated_at, created_at"
+                           style="min-width: 260px;"></div>
+                <button class="gpp-btn" id="gppDateCheck">Проверить колонки</button>
+            </div>
+            <div class="gpp-hint" id="gppDateHint">Колонка подбирается автоматически для каждой
+                таблицы одним запросом; без совпадений — первая date/timestamp-колонка.</div>
+        </div>
+
+        <div class="gpp-params" id="gppP-part">
+            <div class="gpp-hint" style="margin-top: 0;">Сравниваем leaf-партиции источника и
+                назначения по статистике каталога (мгновенно, один запрос на сторону) —
+                перельём только отличающиеся (<code>--truncate</code>).</div>
+            <div class="gpp-row" style="margin-top: 10px;">
+                <button class="gpp-btn" id="gppPartPreviewBtn">Показать diff</button>
+                <label class="gpp-hint" style="margin: 0; cursor: pointer;">
+                    <input type="checkbox" id="gppPartExact" style="accent-color: var(--a1);">
+                    Точный пересчёт COUNT(*) — медленнее, но не зависит от свежести ANALYZE
+                </label>
+                <label class="gpp-hint" style="margin: 0; cursor: pointer;"
+                       title="Список отличающихся партиций считается в момент старта задачи, а не берётся из этого превью">
+                    <input type="checkbox" id="gppPartAuto" checked
+                           style="accent-color: var(--a1);">
+                    Считать расхождение при каждом запуске (нужно для расписания)
+                </label>
+            </div>
+            <div class="gpp-key-list" id="gppPartPreview" style="margin-top: 8px;"></div>
+        </div>
+
+        <div id="gppActiveJobs" style="margin-top: 14px;"></div>
+
+        <details class="gpp-exp">
+            <summary>Эксперт: gpcopy path · jobs · threshold · extra args</summary>
+            <div class="gpp-params show" style="margin-top: 8px;">
+                <div class="gpp-row">
+                    <div class="gpp-f"><label>jobs</label>
+                        <input id="gppJobs" value="4" style="min-width: 70px;"></div>
+                    <div class="gpp-f"><label>on-segment-threshold</label>
+                        <input id="gppThreshold" value="-1" style="min-width: 70px;"></div>
+                    <div class="gpp-f" style="flex: 1;"><label>gpcopy path</label>
+                        <input id="gppPath" value="/usr/local/gpdb/greenplum-db/bin/gpcopy"
+                               style="min-width: 320px;"></div>
+                    <div class="gpp-f"><label>extra args</label>
+                        <input id="gppExtra" value="" style="min-width: 160px;"></div>
+                </div>
+            </div>
+        </details>
+    </div>
+
+    <!-- STEP 3: WHEN -->
+    <div class="gpp-step">
+        <div class="n">3 · КОГДА</div>
+        <div class="gpp-when" id="gppWhen" style="margin-top: 12px;">
+            <div class="opt sel" data-w="now">▶ Запустить сейчас</div>
+            <div class="opt" data-w="sched">🗓 По расписанию</div>
+        </div>
+        <div class="gpp-params" id="gppP-sched">
+            <div class="gpp-row">
+                <div class="gpp-f" style="flex: 1; min-width: 320px;">
+                    <label>Когда запускать</label>
+                    <div id="gppSchedPicker"></div>
+                    <input type="hidden" id="gppSchedCron" value="0 2 * * *">
+                </div>
+                <div class="gpp-f" style="flex: 1;"><label>Имя</label>
+                    <input id="gppSchedName" placeholder="nightly-dwh-increment"></div>
+            </div>
+            <div class="gpp-hint" id="gppSchedNext"></div>
+        </div>
+
+        <div class="gpp-summary" id="gppSummary"></div>
+
+        <div class="gpp-actions">
+            <button class="gpp-btn primary big" id="gppGo">▶ Запустить</button>
+            <button class="gpp-btn ghost" id="gppDdlCheck"
+                    title="Сравнить колонки и типы источника и приёмника до запуска">
+                ⚖ Проверить DDL</button>
+            <button class="gpp-btn ghost" id="gppSaveSet">Сохранить как набор</button>
+            <label class="gpp-auto" for="gppAutoCreate"
+                   title="Перед запуском создать в приёмнике недостающие таблицы, партиции и зависимости">
+                <input type="checkbox" id="gppAutoCreate" checked>
+                создавать недостающее в приёмнике</label>
+        </div>
+        <div id="gppDdlBox" style="margin-top: 10px;"></div>
+        <div class="gpp-msg" id="gppMsg"></div>
+    </div>
+
+    <!-- RUNS FEED -->
+    <div class="gpp-step">
+        <h3 style="margin-top: 0;">Запуски</h3>
+        <div class="gpp-runs" id="gppRuns">
+            <div class="gpp-hint">Пока нет запусков.</div>
+        </div>
+    </div>
+</div>
+
+<!-- TABLE SELECTOR MODAL -->
+<div class="gpp-overlay" id="gppSelModal" role="dialog" aria-modal="true"
+     aria-labelledby="gppSelTitle">
+    <div class="gpp-modal">
+        <h4 id="gppSelTitle">Выбор таблиц <span id="gppSelModalMeta"
+            style="color: var(--text-muted); font-weight: 400;"></span></h4>
+        <div class="ms">Поиск, маска, схемы целиком, вставка списка, наборы.
+            Выбор — счётчиками, без рендера тысяч строк.</div>
+
+        <input class="gpp-bigsearch" id="gppSelSearch"
+               placeholder="Поиск…  или маска: dwh_dm.fact_* (Enter — выбрать всё найденное)">
+        <div class="gpp-search-res" id="gppSelSearchResults"></div>
+
+        <div class="gpp-selgrid">
+            <div id="gppSelSchemas"></div>
+            <div>
+                <div class="gpp-sidebl">
+                    <div class="t">Наборы</div>
+                    <div class="gpp-chips" id="gppSelSets"></div>
+                    <div class="gpp-row" style="margin-top: 8px;">
+                        <input id="gppSelSetName" placeholder="имя набора"
+                               style="flex: 1; background: var(--solid); border: 1px solid var(--hairline);
+                                      color: var(--text); border-radius: 8px; padding: 5px 8px; font-size: 12.5px;">
+                        <button class="gpp-btn sm" id="gppSelSetSave">Сохранить</button>
+                    </div>
+                </div>
+                <div class="gpp-sidebl">
+                    <div class="t">Вставить список</div>
+                    <textarea id="gppSelPaste" rows="4"
+                              placeholder="dwh.orders&#10;dwh.payments"></textarea>
+                    <button class="gpp-btn sm" id="gppSelPasteApply" style="margin-top: 6px;">Добавить</button>
+                    <div class="gpp-hint" id="gppSelPasteResult" style="margin-top: 6px;"></div>
+                </div>
+                <div class="gpp-sidebl">
+                    <div class="t">Итог</div>
+                    <div style="font-size: 20px; font-weight: 700;" id="gppSelTotal">0</div>
+                    <div style="font-size: 12px; color: var(--text-muted);" id="gppSelTotalSchemas"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="foot">
+            <button class="gpp-btn ghost" id="gppSelCancel">Закрыть</button>
+            <button class="gpp-btn primary" id="gppSelDone">Готово</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=11"></script>
+{% endblock %}

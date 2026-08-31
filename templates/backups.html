@@ -1,0 +1,500 @@
+{% extends "base.html" %}
+
+{% block title %}Резервные копии · Opsentri{% endblock %}
+
+{% block content %}
+
+<style>
+/* ============ резервные копии (gpbackup / gprestore) ============ */
+.gpb { max-width: 1240px; }
+
+.gpb-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+  gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .gpb-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.gpb-panel { background: var(--surface); border: 1px solid var(--glass-border);
+  border-radius: var(--radius); padding: 16px 18px; min-width: 0; }
+.gpb-panel h6 { font-size: 11.5px; font-weight: 800; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-muted); margin: 0 0 14px;
+  display: flex; align-items: center; gap: 9px; }
+.gpb-panel h6::before { content: ""; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent-grad); flex: none; }
+
+.gpb-row { display: flex; align-items: flex-start; gap: 12px; padding: 11px 4px;
+  border-bottom: 1px solid var(--hairline); font-size: 13px; min-width: 0; }
+.gpb-row:last-child { border-bottom: none; }
+.gpb-ts { font-family: var(--font-mono); font-weight: 700; flex: none; }
+.gpb-meta { color: var(--text-muted); font-size: 12px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gpb-tag { font-size: 10.5px; font-weight: 800; border-radius: var(--radius-pill);
+  padding: 2px 9px; flex: none;
+  background: color-mix(in srgb, var(--a1) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--a1) 40%, transparent); }
+.gpb-st { font-size: 10.5px; font-weight: 800; border-radius: var(--radius-pill);
+  padding: 2px 9px; flex: none; margin-left: auto; }
+.gpb-st.done { color: var(--ok); border: 1px solid var(--ok); }
+.gpb-st.failed { color: var(--crit); border: 1px solid var(--crit); }
+.gpb-st.deleted { color: var(--text-muted); border: 1px solid var(--hairline); }
+
+.gpb-report { width: 100%; margin-top: 8px; background: var(--surface-2);
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  padding: 10px 12px; font-family: var(--font-mono); font-size: 11.5px;
+  white-space: pre-wrap; word-break: break-word; max-height: 340px;
+  overflow-y: auto; }
+
+.gpb-restore { background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); padding: 12px; margin-top: 8px; width: 100%; }
+.gpb-restore .frow { display: flex; gap: 10px; flex-wrap: wrap;
+  align-items: flex-end; margin-bottom: 10px; }
+.gpb-restore label { display: block; font-size: 11px; font-weight: 700;
+  letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted);
+  margin-bottom: 3px; }
+.gpb-hint { color: var(--text-muted); font-size: 12.5px; }
+.gpb-msg { font-size: 13px; margin-top: 10px; }
+.gpb-msg.err { color: var(--crit); }
+.gpb-msg.ok { color: var(--ok); }
+</style>
+
+<div class="gpb">
+    <div class="gpb-grid">
+
+        <!-- новый бэкап -->
+        <div class="gpb-panel">
+            <h6>Новый бэкап (gpbackup)</h6>
+
+            <label class="form-label">Подключение</label>
+            <select id="gpbConn" class="form-select form-select-sm mb-3">
+                {% for c in connections %}
+                <option value="{{ c.id }}">
+                    {{ c.name }} / {{ c.host }} / {{ c.database_name or c.database or '' }}
+                </option>
+                {% endfor %}
+            </select>
+
+            <label class="form-label">Тип</label>
+            <select id="gpbType" class="form-select form-select-sm mb-3">
+                <option value="full">Полный</option>
+                <option value="incremental">Инкрементальный (нужен полный до него)</option>
+                <option value="metadata_only">Только метаданные (DDL)</option>
+                <option value="data_only">Только данные</option>
+            </select>
+
+            <label class="form-label">Каталог бэкапа</label>
+            <input id="gpbDir" class="form-control form-control-sm mb-1"
+                   placeholder="/data/backups">
+            <div class="gpb-hint mb-3">
+                Пусто — каталоги данных сегментов (по умолчанию gpbackup).
+                Для восстановления на другой кластер нужен общий/NFS путь.
+            </div>
+
+            <label class="form-label">Схемы (по одной в строке, пусто = вся БД)</label>
+            <textarea id="gpbSchemas" class="form-control form-control-sm mb-3"
+                      rows="2" placeholder="dwh_dds&#10;dwh_dm"></textarea>
+
+            <label class="form-label">Таблицы (schema.table, по одной в строке)</label>
+            <textarea id="gpbTables" class="form-control form-control-sm mb-3"
+                      rows="2" placeholder="dwh_stage.s01_t_bal"></textarea>
+
+            <div class="row g-2 mb-3">
+                <div class="col-6">
+                    <label class="form-label">Потоки (--jobs)</label>
+                    <input id="gpbJobs" type="number" min="1" max="32" value="4"
+                           class="form-control form-control-sm">
+                </div>
+                <div class="col-6">
+                    <label class="form-label">Сжатие (1-9)</label>
+                    <input id="gpbCompression" type="number" min="0" max="9"
+                           placeholder="по умолч." class="form-control form-control-sm">
+                </div>
+            </div>
+
+            <button class="btn btn-primary w-100" id="gpbStart" type="button">
+                Создать бэкап
+            </button>
+
+            <div class="d-flex gap-2 mt-2 align-items-center flex-wrap">
+                <select id="gpbFreq" class="form-select form-select-sm"
+                        style="max-width: 130px;">
+                    <option value="daily">Ежедневно</option>
+                    <option value="weekly">Еженедельно</option>
+                    <option value="hourly">Ежечасно</option>
+                </select>
+                <select id="gpbDow" class="form-select form-select-sm"
+                        style="max-width: 90px; display: none;">
+                    <option value="1">Пн</option><option value="2">Вт</option>
+                    <option value="3">Ср</option><option value="4">Чт</option>
+                    <option value="5">Пт</option><option value="6">Сб</option>
+                    <option value="0">Вс</option>
+                </select>
+                <input type="time" id="gpbTime" value="02:00"
+                       class="form-control form-control-sm"
+                       style="max-width: 110px;">
+                <button class="btn btn-sm btn-outline-primary flex-grow-1"
+                        id="gpbSchedule" type="button"
+                        title="Создать расписание с настройками формы выше">
+                    ⏰ Запланировать
+                </button>
+            </div>
+            <div class="gpb-msg" id="gpbMsg"></div>
+        </div>
+
+        <!-- список копий -->
+        <div class="gpb-panel">
+            <h6>Копии
+                <span style="margin-left: auto; display: flex; gap: 8px;">
+                <button class="btn btn-sm btn-outline-secondary" id="gpbSyncDisk"
+                        type="button"
+                        title="gpbackup_manager list-backups: подтянуть копии с диска, включая сделанные мимо Opsentri">С диска</button>
+                <button class="btn btn-sm btn-outline-primary"
+                        onclick="gpbLoad()" type="button">Обновить</button></span></h6>
+            <div id="gpbList"><div class="gpb-hint">Загрузка…</div></div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+(function () {
+    "use strict";
+
+    function esc(s) {
+        return String(s == null ? "" : s)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    function msg(text, cls) {
+        var el = document.getElementById("gpbMsg");
+        el.className = "gpb-msg" + (cls ? " " + cls : "");
+        el.textContent = text || "";
+    }
+
+    var TYPE_LABELS = {
+        full: "полный", incremental: "инкремент",
+        metadata_only: "метаданные", data_only: "данные"
+    };
+
+    function fmtTs(ts) {
+        if (!ts || ts.length !== 14) { return ts || "—"; }
+        return ts.slice(6, 8) + "." + ts.slice(4, 6) + "." + ts.slice(0, 4) +
+            " " + ts.slice(8, 10) + ":" + ts.slice(10, 12);
+    }
+
+    var openRestore = null;
+    var openReport = null;      // {id, text} — развёрнутый отчёт display-report
+
+    window.gpbLoad = function () {
+        fetch("/api/backup/list?tool=gpbackup")
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                var box = document.getElementById("gpbList");
+
+                if (!d.ok || !d.backups.length) {
+                    box.innerHTML = '<div class="gpb-hint">Копий пока нет — ' +
+                        "создай первую слева.</div>";
+                    return;
+                }
+
+                box.innerHTML = d.backups.map(function (b) {
+                    var restorable = b.status === "done" && b.backup_timestamp;
+                    var deletable = b.status !== "deleted" && b.backup_timestamp;
+                    return '<div class="gpb-row" style="flex-wrap: wrap;">' +
+                        '<span class="gpb-tag">' +
+                        esc(TYPE_LABELS[b.backup_type] || b.backup_type) + "</span>" +
+                        '<div style="min-width: 0; flex: 1;">' +
+                        '<div class="gpb-ts">' + esc(b.backup_timestamp || "—") +
+                        ' <span class="gpb-meta">· ' + esc(fmtTs(b.backup_timestamp)) +
+                        "</span></div>" +
+                        '<div class="gpb-meta">' + esc(b.connection_name || ("#" + b.connection_id)) +
+                        " · " + esc(b.dbname || "") +
+                        (b.backup_dir ? " · " + esc(b.backup_dir) : " · каталог по умолчанию") +
+                        "</div></div>" +
+                        '<span class="gpb-st ' + esc(b.status) + '">' + esc(b.status) + "</span>" +
+                        (b.backup_timestamp
+                            ? ' <button class="btn btn-sm btn-outline-secondary" ' +
+                              'onclick="gpbToggleReport(' + b.id + ', \'' +
+                              esc(b.backup_timestamp) + '\', ' + b.connection_id +
+                              ')">Отчёт</button>'
+                            : "") +
+                        (restorable
+                            ? ' <button class="btn btn-sm btn-outline-primary" ' +
+                              'onclick="gpbToggleRestore(' + b.id + ')">Восстановить</button>'
+                            : "") +
+                        (deletable
+                            ? ' <button class="btn btn-sm btn-outline-danger" ' +
+                              'title="Удалить копию с диска (gpbackup_manager delete-backup)" ' +
+                              'onclick="gpbDelete(\'' + esc(b.backup_timestamp) +
+                              '\', ' + b.connection_id + ')">✕</button>'
+                            : "") +
+                        (openRestore === b.id ? restoreFormHtml(b) : "") +
+                        (openReport && openReport.id === b.id
+                            ? '<div class="gpb-report">' + esc(openReport.text) + "</div>"
+                            : "") +
+                        "</div>";
+                }).join("");
+            })
+            .catch(function () {});
+    };
+
+    window.gpbToggleReport = function (id, timestamp, connectionId) {
+        if (openReport && openReport.id === id) {
+            openReport = null;
+            gpbLoad();
+            return;
+        }
+
+        openReport = { id: id, text: "Загружаю отчёт…" };
+        gpbLoad();
+
+        fetch("/api/backup/report", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                connection_id: connectionId, backup_timestamp: timestamp,
+            }),
+        }).then(function (r) { return r.json(); }).then(function (d) {
+            if (!openReport || openReport.id !== id) { return; }
+            openReport.text = d.ok ? d.report : ("Ошибка: " + d.message);
+            gpbLoad();
+        }).catch(function (e) {
+            if (!openReport || openReport.id !== id) { return; }
+            openReport.text = "Ошибка: " + e;
+            gpbLoad();
+        });
+    };
+
+    window.gpbDelete = function (timestamp, connectionId) {
+        var text = "Удалить копию " + timestamp + " с диска? Файлы бэкапа " +
+            "будут стёрты безвозвратно (gpbackup_manager delete-backup).";
+
+        var go = function () {
+            fetch("/api/backup/delete", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    connection_id: connectionId, backup_timestamp: timestamp,
+                }),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                if (window.gpToast) {
+                    gpToast(d.ok ? "Копия удалена с диска" : d.message,
+                        d.ok ? "success" : "error");
+                } else if (!d.ok) { alert(d.message); }
+                gpbLoad();
+            });
+        };
+
+        if (window.gpConfirm) {
+            window.gpConfirm(text).then(function (yes) { if (yes) { go(); } });
+        } else if (confirm(text)) { go(); }
+    };
+
+    function restoreFormHtml(b) {
+        return '<div class="gpb-restore" onclick="event.stopPropagation()">' +
+            '<div class="frow">' +
+            '<div><label>Куда (подключение)</label>' +
+            '<select id="gprConn" class="form-select form-select-sm">' +
+            document.getElementById("gpbConn").innerHTML + "</select></div>" +
+            '<div><label>Redirect-db (пусто = исходная)</label>' +
+            '<input id="gprRedirect" class="form-control form-control-sm" ' +
+            'placeholder="adb_restored"></div>' +
+            '<div><label>&nbsp;</label><div class="form-check">' +
+            '<input class="form-check-input" type="checkbox" id="gprCreateDb">' +
+            '<label class="form-check-label" for="gprCreateDb" ' +
+            'style="text-transform: none; font-size: 12.5px;">создать БД</label></div></div>' +
+            '<div><label>&nbsp;</label><div class="form-check">' +
+            '<input class="form-check-input" type="checkbox" id="gprDataOnly">' +
+            '<label class="form-check-label" for="gprDataOnly" ' +
+            'style="text-transform: none; font-size: 12.5px;">только данные</label></div></div>' +
+            "</div>" +
+            '<button class="btn btn-sm btn-primary" ' +
+            'onclick="gpbRestore(' + b.id + ', \'' + esc(b.backup_timestamp) + '\', \'' +
+            esc(b.backup_dir || "") + '\')">Запустить восстановление</button>' +
+            "</div>";
+    }
+
+    window.gpbToggleRestore = function (id) {
+        openRestore = openRestore === id ? null : id;
+        gpbLoad();
+    };
+
+    window.gpbRestore = function (id, timestamp, backupDir) {
+        var conn = document.getElementById("gprConn").value;
+        var body = {
+            connection_id: parseInt(conn, 10),
+            backup_timestamp: timestamp,
+            backup_dir: backupDir,
+            redirect_db: document.getElementById("gprRedirect").value.trim(),
+            create_db: document.getElementById("gprCreateDb").checked,
+            data_only: document.getElementById("gprDataOnly").checked,
+        };
+
+        var go = function () {
+            fetch("/api/backup/restore", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                if (!d.ok) {
+                    if (window.gpToast) { gpToast(d.message, "error"); }
+                    else { alert(d.message); }
+                    return;
+                }
+                openRestore = null;
+                gpbLoad();
+                if (window.gpToast) {
+                    gpToast("Восстановление запущено: задача #" + d.job_id, "success");
+                }
+            });
+        };
+
+        var text = "Восстановить бэкап " + timestamp +
+            (body.redirect_db ? " в БД «" + body.redirect_db + "»" : " поверх исходной БД") +
+            "? Существующие данные могут быть перезаписаны.";
+
+        if (window.gpConfirm) {
+            window.gpConfirm(text).then(function (yes) { if (yes) { go(); } });
+        } else if (confirm(text)) { go(); }
+    };
+
+    document.getElementById("gpbStart").addEventListener("click", function () {
+        var btn = this;
+        btn.disabled = true;
+        msg("Запускаю gpbackup…");
+
+        fetch("/api/backup/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                connection_id: parseInt(document.getElementById("gpbConn").value, 10),
+                backup_type: document.getElementById("gpbType").value,
+                backup_dir: document.getElementById("gpbDir").value,
+                include_schemas: document.getElementById("gpbSchemas").value,
+                include_tables: document.getElementById("gpbTables").value,
+                jobs: parseInt(document.getElementById("gpbJobs").value, 10) || 1,
+                compression_level:
+                    parseInt(document.getElementById("gpbCompression").value, 10) || null,
+            }),
+        }).then(function (r) { return r.json(); }).then(function (d) {
+            btn.disabled = false;
+
+            if (!d.ok) { msg(d.message || "Ошибка", "err"); return; }
+
+            msg("Бэкап запущен — задача #" + d.job_id +
+                ". Прогресс в «Запусках» на дашборде.", "ok");
+            setTimeout(gpbLoad, 1500);
+        }).catch(function (e) {
+            btn.disabled = false;
+            msg(String(e), "err");
+        });
+    });
+
+    document.getElementById("gpbSyncDisk").addEventListener("click", function () {
+        var btn = this;
+        btn.disabled = true;
+        btn.textContent = "Читаю диск…";
+
+        fetch("/api/backup/sync-disk", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                connection_id: parseInt(document.getElementById("gpbConn").value, 10),
+            }),
+        }).then(function (r) { return r.json(); }).then(function (d) {
+            btn.disabled = false;
+            btn.textContent = "С диска";
+
+            if (window.gpToast) {
+                gpToast(d.ok
+                    ? "На диске " + d.found + " копий, добавлено в реестр: " + d.added
+                    : d.message, d.ok ? "success" : "error");
+            } else if (!d.ok) { alert(d.message); }
+
+            gpbLoad();
+        }).catch(function (e) {
+            btn.disabled = false;
+            btn.textContent = "С диска";
+            if (window.gpToast) { gpToast(String(e), "error"); }
+        });
+    });
+
+    // календарное время -> cron (ежедневно/еженедельно/ежечасно)
+    function gpbCronExpr() {
+        var freq = document.getElementById("gpbFreq").value;
+        var hm = (document.getElementById("gpbTime").value || "02:00").split(":");
+        var h = parseInt(hm[0], 10) || 0;
+        var m = parseInt(hm[1], 10) || 0;
+
+        if (freq === "hourly") { return m + " * * * *"; }
+        if (freq === "weekly") {
+            return m + " " + h + " * * " +
+                document.getElementById("gpbDow").value;
+        }
+        return m + " " + h + " * * *";
+    }
+
+    var freqSel = document.getElementById("gpbFreq");
+
+    if (freqSel) {
+        freqSel.addEventListener("change", function () {
+            document.getElementById("gpbDow").style.display =
+                freqSel.value === "weekly" ? "" : "none";
+            // для ежечасного важны только минуты
+            document.getElementById("gpbTime").title =
+                freqSel.value === "hourly"
+                    ? "Каждый час в указанную минуту" : "Время запуска";
+        });
+    }
+
+    // расписание с текущими настройками формы (например, ночной бэкап)
+    var schedBtn = document.getElementById("gpbSchedule");
+
+    if (schedBtn) {
+        schedBtn.addEventListener("click", function () {
+            var connSel = document.getElementById("gpbConn");
+            var connName = (connSel.options[connSel.selectedIndex] || {})
+                .text || "";
+
+            schedBtn.disabled = true;
+
+            fetch("/api/schedules", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: ("gpbackup " + connName.split("/")[0]).trim(),
+                    job_type: "gpbackup",
+                    cron_expr: gpbCronExpr(),
+                    overlap_policy: "skip",
+                    config: {
+                        connection_id: parseInt(connSel.value, 10),
+                        backup_type: document.getElementById("gpbType").value,
+                        backup_dir: document.getElementById("gpbDir").value,
+                        include_schemas:
+                            document.getElementById("gpbSchemas").value,
+                        include_tables:
+                            document.getElementById("gpbTables").value,
+                        jobs: parseInt(
+                            document.getElementById("gpbJobs").value, 10) || 1,
+                        compression_level: parseInt(
+                            document.getElementById("gpbCompression").value,
+                            10) || null,
+                    },
+                }),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                schedBtn.disabled = false;
+                msg(d.ok
+                    ? "Расписание создано — управление на вкладке «Расписания»."
+                    : (d.message || "Ошибка создания расписания"),
+                    d.ok ? "ok" : "err");
+            }).catch(function (e) {
+                schedBtn.disabled = false;
+                msg(String(e), "err");
+            });
+        });
+    }
+
+    gpbLoad();
+    setInterval(gpbLoad, 15000);
+})();
+</script>
+
+{% endblock %}

@@ -1,0 +1,2620 @@
+{% extends "base.html" %}
+
+{% block title %}Пользователи и гранты · Opsentri{% endblock %}
+
+{% block content %}
+
+<style>
+/* ============ пользователи и гранты ============ */
+.gr { max-width: 1560px; }
+
+.gr-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px; margin-bottom: 16px; }
+@media (max-width: 1200px) { .gr-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.gr-card { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 14px 16px; min-width: 0; }
+.gr-card .k { font-size: 10.5px; font-weight: 800; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-muted); }
+.gr-card .v { font-size: 30px; font-weight: 800; line-height: 1.15;
+  margin: 6px 0 2px; font-variant-numeric: tabular-nums; }
+.gr-card .d { font-size: 12px; color: var(--text-muted); }
+.gr-card.alert .v { color: var(--crit); }
+
+.gr-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 10px 12px; margin-bottom: 14px; }
+.gr-bar input.q { flex: 1 1 260px; min-width: 200px; }
+.gr-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.gr-chip { font-size: 12px; padding: 4px 11px; border-radius: var(--radius-pill);
+  border: 1px solid var(--hairline); background: var(--surface-2);
+  color: var(--text-muted); cursor: pointer; white-space: nowrap;
+  transition: color var(--dur-fast), border-color var(--dur-fast); }
+.gr-chip:hover { color: var(--a2); }
+.gr-chip.on { color: #fff; background: var(--accent-grad);
+  border-color: transparent; font-weight: 700; }
+
+.gr-panel { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); overflow: hidden; }
+
+/* --- список --- */
+.gr-head { display: flex; align-items: center; gap: 12px; padding: 9px 16px;
+  font-size: 10.5px; font-weight: 800; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--text-muted);
+  border-bottom: 1px solid var(--hairline); }
+.gr-head .sp { flex: 1 1 auto; }
+.gr-head .c-priv { width: 200px; }
+.gr-head .c-risk { width: 120px; text-align: right; }
+.gr-head .c-act { width: 130px; text-align: right; }
+
+.gr-user { border-bottom: 1px solid var(--hairline); }
+.gr-user:last-child { border-bottom: none; }
+.gr-urow { display: flex; align-items: center; gap: 12px; padding: 11px 16px;
+  cursor: pointer; min-width: 0; transition: background var(--dur-fast); }
+.gr-urow:hover { background: var(--surface-2); }
+.gr-chev { width: 12px; flex: none; color: var(--text-muted); font-size: 10px; }
+.gr-ava { width: 26px; height: 26px; border-radius: 8px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 800; color: #fff;
+  background: var(--accent-grad); }
+.gr-ava.grp { background: #475569; }
+.gr-ava.su { background: linear-gradient(135deg, #ef4444, #f59e0b); }
+.gr-uname { font-family: var(--font-mono); font-weight: 700; font-size: 13px;
+  white-space: nowrap; }
+.gr-badge { font-size: 9.5px; font-weight: 800; letter-spacing: .05em;
+  text-transform: uppercase; padding: 2px 7px; border-radius: var(--radius-pill);
+  border: 1px solid var(--hairline); color: var(--text-muted); flex: none; }
+.gr-badge.su { color: var(--crit); border-color: var(--crit); }
+.gr-badge.login { color: var(--a2); border-color: var(--a2); }
+.gr-sub { font-size: 12px; color: var(--text-muted); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1 1 auto; }
+.gr-privs { display: flex; gap: 3px; width: 200px; flex: none; }
+.gr-p { width: 21px; height: 19px; border-radius: 5px; font-size: 10px;
+  font-weight: 800; display: flex; align-items: center; justify-content: center;
+  background: var(--surface-2); border: 1px solid var(--hairline);
+  color: color-mix(in srgb, var(--text-muted) 70%, transparent); }
+.gr-p.on { color: #fff; border-color: transparent;
+  background: color-mix(in srgb, var(--a1) 75%, transparent); }
+.gr-p.on.w { background: color-mix(in srgb, var(--warn) 80%, transparent);
+  color: #1a1206; }
+.gr-p.on.dng { background: color-mix(in srgb, var(--crit) 80%, transparent); }
+.gr-risk { width: 120px; text-align: right; font-size: 12px; flex: none;
+  color: var(--text-muted); white-space: nowrap; }
+.gr-risk .dot { display: inline-block; width: 7px; height: 7px;
+  border-radius: 50%; margin: 0 4px 0 6px; }
+.gr-risk.high .dot { background: var(--crit); }
+.gr-risk.medium .dot { background: var(--warn); }
+.gr-risk.low .dot { background: var(--ok); }
+.gr-act { width: 130px; text-align: right; font-size: 11.5px; flex: none;
+  color: var(--text-muted); white-space: nowrap; }
+
+.gr-body { background: var(--surface-2);
+  border-top: 1px solid var(--hairline); padding: 10px 16px 14px 40px; }
+.gr-bhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+.gr-bhead .acts { margin-left: auto; display: flex; gap: 10px; }
+.gr-link { color: var(--a2); cursor: pointer; font-size: 12px; }
+.gr-link:hover { text-decoration: underline; }
+.gr-link.danger { color: var(--crit); }
+
+.gr-tlist { border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  overflow: hidden; }
+.gr-trow { display: flex; align-items: center; gap: 12px; padding: 8px 12px;
+  font-size: 12.5px; cursor: pointer; min-width: 0;
+  border-bottom: 1px solid var(--hairline); background: var(--surface); }
+.gr-trow:last-child { border-bottom: none; }
+.gr-trow:hover { background: var(--surface-2); }
+.gr-tname { font-family: var(--font-mono); font-size: 12px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1 1 auto; }
+.gr-tname .sc { color: var(--text-muted); }
+.gr-tmeta { font-size: 11.5px; color: var(--text-muted); white-space: nowrap;
+  flex: none; }
+.gr-src { font-size: 11.5px; white-space: nowrap; flex: none; width: 150px;
+  text-align: right; overflow: hidden; text-overflow: ellipsis; }
+.gr-src.role { color: var(--a2); }
+.gr-src.direct { color: var(--text-muted); }
+
+.gr-det { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: 14px; padding: 12px; background: var(--surface-2);
+  border-bottom: 1px solid var(--hairline); }
+@media (max-width: 1000px) { .gr-det { grid-template-columns: minmax(0, 1fr); } }
+.gr-det h6 { font-size: 10px; font-weight: 800; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--text-muted); margin: 0 0 8px; }
+.gr-col { display: flex; align-items: baseline; gap: 10px; padding: 5px 2px;
+  border-bottom: 1px dashed var(--hairline); font-size: 12px; }
+.gr-col:last-child { border-bottom: none; }
+.gr-col .cn { font-family: var(--font-mono); flex: 1 1 auto; }
+.gr-col .cp { color: var(--text-muted); font-size: 11.5px; }
+.gr-sql { font-family: var(--font-mono); font-size: 11.5px;
+  white-space: pre-wrap; word-break: break-word; background: var(--bg);
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  padding: 10px 12px; color: var(--a2); max-height: 200px; overflow: auto; }
+.gr-owner { font-size: 11.5px; color: var(--text-muted); margin-top: 8px; }
+.gr-empty { padding: 26px 16px; color: var(--text-muted); font-size: 13px;
+  text-align: center; }
+.gr-more { padding: 8px 12px; font-size: 12px; color: var(--text-muted); }
+
+/* --- граф --- */
+.gr-graph { display: grid; grid-template-columns: minmax(0, 1fr) 230px; }
+@media (max-width: 1000px) { .gr-graph { grid-template-columns: minmax(0, 1fr); } }
+.gr-canvas-wrap { position: relative; height: 620px; }
+#grCanvas { width: 100%; height: 100%; display: block; cursor: grab; }
+#grCanvas.drag { cursor: grabbing; }
+.gr-legend { position: absolute; left: 12px; bottom: 10px; font-size: 11.5px;
+  color: var(--text-muted); display: flex; flex-direction: column; gap: 4px; }
+.gr-legend i { display: inline-block; width: 8px; height: 8px;
+  border-radius: 50%; margin-right: 7px; vertical-align: middle; }
+.gr-tip { position: absolute; right: 12px; bottom: 10px; font-size: 11px;
+  color: var(--text-muted); }
+.gr-side { border-left: 1px solid var(--hairline); padding: 14px;
+  display: flex; flex-direction: column; gap: 12px; }
+.gr-side h6 { font-size: 10px; font-weight: 800; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--text-muted); margin: 0;
+  display: flex; align-items: center; }
+.gr-side h6 .rst { margin-left: auto; color: var(--a2); cursor: pointer;
+  font-weight: 600; text-transform: none; letter-spacing: 0; }
+.gr-sw { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.gr-sw label { flex: 1 1 auto; cursor: pointer; }
+.gr-rng label { font-size: 11.5px; color: var(--text-muted);
+  margin-bottom: 2px; display: flex; }
+.gr-rng label span { margin-left: auto; font-variant-numeric: tabular-nums; }
+.gr-rng input { width: 100%; }
+.gr-selbox { font-size: 12.5px; color: var(--text-muted); }
+.gr-selbox b { color: var(--text); }
+.gr-selbox .nb { font-family: var(--font-mono); font-size: 11.5px;
+  display: block; padding: 2px 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.gr-drill { font-size: 12px; color: var(--a2); cursor: pointer; }
+.gr-drill:hover { text-decoration: underline; }
+
+/* --- матрица пользователи × схемы --- */
+.gr-mx-wrap { overflow: auto; max-height: 640px; }
+table.gr-mx { border-collapse: separate; border-spacing: 0; font-size: 12px;
+  min-width: 100%; }
+table.gr-mx th, table.gr-mx td { padding: 6px 8px; white-space: nowrap;
+  border-bottom: 1px solid var(--hairline); }
+table.gr-mx thead th { position: sticky; top: 0; z-index: 3;
+  background-color: var(--bg);
+  background-image: linear-gradient(var(--surface), var(--surface));
+  font-size: 10px; font-weight: 800; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--text-muted);
+  border-bottom: 1px solid var(--hairline); text-align: center; }
+table.gr-mx thead th.u, table.gr-mx tbody th { position: sticky; left: 0;
+  z-index: 2; text-align: left;
+  background-color: var(--bg);
+  background-image: linear-gradient(var(--surface), var(--surface)); }
+table.gr-mx thead th.u { z-index: 4; }
+table.gr-mx tbody th { font-family: var(--font-mono); font-weight: 700;
+  font-size: 11.5px; max-width: 210px; overflow: hidden;
+  text-overflow: ellipsis; }
+table.gr-mx tbody th .rk { display: inline-block; width: 6px; height: 6px;
+  border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+table.gr-mx tbody th .rk.high { background: var(--crit); }
+table.gr-mx tbody th .rk.medium { background: var(--warn); }
+table.gr-mx tbody th .rk.low { background: var(--ok); }
+table.gr-mx td { text-align: center; font-variant-numeric: tabular-nums;
+  color: var(--text-muted); }
+table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
+.gr-mx-legend { display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  padding: 10px 14px; font-size: 12px; color: var(--text-muted);
+  border-bottom: 1px solid var(--hairline); }
+.gr-mx-legend i { display: inline-block; width: 12px; height: 12px;
+  border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+
+.gr-mx-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 10px 14px; border-bottom: 1px solid var(--hairline);
+  font-size: 12.5px; }
+.gr-mx-crumb { font-weight: 700; }
+.gr-mx-crumb.back { color: var(--a2); cursor: pointer; }
+.gr-mx-crumb.back:hover { text-decoration: underline; }
+.gr-mx-sw { display: flex; align-items: center; gap: 7px; cursor: pointer;
+  color: var(--text-muted); margin: 0; }
+.gr-mx-hint { opacity: .7; }
+.gr-mx-note { margin-left: auto; color: var(--text-muted); }
+table.gr-mx tbody th .grp { display: inline-block; font-size: 9.5px;
+  font-weight: 800; letter-spacing: .04em; text-transform: uppercase;
+  padding: 1px 6px; margin-left: 6px; border-radius: var(--radius-pill);
+  border: 1px solid color-mix(in srgb, var(--a1) 45%, transparent);
+  color: var(--a2); }
+table.gr-mx tbody th .mem { display: block; font-size: 10.5px;
+  color: var(--text-muted); font-weight: 400; white-space: normal;
+  max-width: 210px; }
+table.gr-mx td.p { font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: .04em; }
+
+.gr-snap { font-size: 11.5px; color: var(--text-muted);
+  white-space: nowrap; }
+.gr-snap b { color: var(--text); font-weight: 600; }
+.gr-snap.stale b { color: var(--warn); }
+.gr-snap.none b { color: var(--crit); }
+
+/* --- поток (sankey) --- */
+.gr-flow-body { display: grid; grid-template-columns: minmax(0, 1fr) 268px; }
+@media (max-width: 1100px) {
+  .gr-flow-body { grid-template-columns: minmax(0, 1fr); }
+}
+#grFlow { padding: 8px 6px 14px; overflow: auto; max-height: 74vh; }
+.gr-flow-body .gr-side { overflow: auto; max-height: 74vh; }
+#grFlow svg { display: block; }
+#grFlow .lk { stroke: none; transition: fill-opacity var(--dur-fast); }
+#grFlow .nd { cursor: pointer; }
+#grFlow .nd rect { rx: 3; }
+#grFlow .nd text { font-size: 10.5px; fill: #cbd5e1; }
+#grFlow .nd.dim rect, #grFlow .nd.dim text { opacity: .25; }
+#grFlow .nd.on rect { stroke: #e2e8f0; stroke-width: 1.6; }
+#grFlow .nd.on text { fill: #fff; font-weight: 700; }
+#grFlow .nd text.val { fill: var(--text-muted); font-size: 9.5px; }
+#grFlow .nd text.su { fill: #f97066; }
+#grFlow .col-title { font-size: 10px; font-weight: 800; letter-spacing: .09em;
+  fill: var(--text-muted); text-transform: uppercase; }
+.gr-flow-act { display: inline-block; margin: 6px 6px 0 0; padding: 3px 9px;
+  border-radius: var(--radius-pill); cursor: pointer; font-size: 11.5px;
+  border: 1px solid color-mix(in srgb, var(--a1) 45%, transparent);
+  color: var(--a2); }
+.gr-flow-act:hover { background: color-mix(in srgb, var(--a1) 16%, transparent); }
+.gr-flow-brk { margin-top: 8px; font-size: 11.5px; }
+.gr-flow-brk div { display: flex; gap: 8px; padding: 2px 0;
+  border-bottom: 1px solid var(--hairline); cursor: pointer; }
+.gr-flow-brk div:hover { color: var(--a2); }
+.gr-flow-brk b { margin-left: auto; font-variant-numeric: tabular-nums; }
+</style>
+
+<div class="gr">
+
+    <div class="gr-cards">
+        <div class="gr-card"><div class="k">Пользователей</div>
+            <div class="v" id="grcUsers">—</div>
+            <div class="d" id="grcUsersD">&nbsp;</div></div>
+        <div class="gr-card"><div class="k">Таблиц с грантами</div>
+            <div class="v" id="grcTables">—</div>
+            <div class="d" id="grcTablesD">&nbsp;</div></div>
+        <div class="gr-card"><div class="k">Прав на запись</div>
+            <div class="v" id="grcWrite">—</div>
+            <div class="d">insert / update / delete</div></div>
+        <div class="gr-card alert"><div class="k">Требует ревью</div>
+            <div class="v" id="grcReview">—</div>
+            <div class="d">superuser и truncate</div></div>
+    </div>
+
+    <div class="gr-bar">
+        <input type="text" class="form-control form-control-sm q" id="grQ"
+               placeholder="поиск: пользователь, схема, таблица">
+        <div class="gr-chips" id="grConns">
+            {% for c in connections %}
+            <span class="gr-chip{% if loop.first %} on{% endif %}"
+                  data-conn="{{ c.id }}">{{ c.name }}</span>
+            {% endfor %}
+        </div>
+        <div class="gr-chips" id="grFilters">
+            <span class="gr-chip on" data-f="all">все права</span>
+            <span class="gr-chip" data-f="write">запись</span>
+            <span class="gr-chip" data-f="truncate">truncate</span>
+            <span class="gr-chip" data-f="read">только чтение</span>
+        </div>
+        <span class="gr-link" id="grExpandAll">развернуть все</span>
+        <div class="gr-chips" id="grView">
+            <span class="gr-chip on" data-v="matrix">матрица</span>
+            <span class="gr-chip" data-v="flow">поток</span>
+            <span class="gr-chip" data-v="list">список</span>
+            <span class="gr-chip" data-v="graph">граф</span>
+        </div>
+        <span class="gr-snap" id="grSnap" title="Данные показываются из
+сохранённого среза — источник не опрашивается, пока не нажать кнопку"></span>
+        <button class="btn btn-sm btn-outline-primary" id="grRefresh"
+                type="button">обновить срез</button>
+    </div>
+
+    <div class="gr-panel" id="grListPanel" style="display: none;">
+        <div class="gr-head">
+            <span style="width: 12px;"></span>
+            <span class="sp">Пользователь</span>
+            <span class="c-priv">Линия грантов</span>
+            <span class="c-risk">Таблиц / риск</span>
+            <span class="c-act">Активность</span>
+        </div>
+        <div id="grList"><div class="gr-empty">Выбери подключение — покажу
+            пользователей, их гранты на таблицы и связи.</div></div>
+    </div>
+
+    <div class="gr-panel" id="grMatrixPanel">
+        <div class="gr-mx-bar">
+            <span class="gr-mx-crumb" id="grMxCrumb">все схемы</span>
+            <label class="gr-mx-sw"><input type="checkbox" id="grMxRoles"
+                   class="form-check-input"> склеить одинаковые права
+                <span class="gr-mx-hint">(де-факто роли)</span></label>
+            <label class="gr-mx-sw"><input type="checkbox" id="grMxSeriate"
+                   class="form-check-input" checked> сортировать по похожести</label>
+            <span class="gr-mx-note" id="grMxNote"></span>
+        </div>
+        <div id="grMatrix"><div class="gr-empty">Загрузка…</div></div>
+    </div>
+
+    <div class="gr-panel" id="grFlowPanel" style="display: none;">
+        <div class="gr-mx-bar">
+            <span class="gr-mx-crumb" id="grFlowCrumb">пользователь →
+                через что → схема</span>
+            <label class="gr-mx-sw" for="grFlowWrite">
+                <input type="checkbox" id="grFlowWrite"
+                       class="form-check-input"> только права записи</label>
+            <span class="gr-mx-hint">клик по узлу — фокус на его потоке;
+                толщина — число таблиц, жёлтым — права записи</span>
+            <span class="gr-mx-note" id="grFlowNote"></span>
+        </div>
+        <div class="gr-flow-body">
+            <div id="grFlow"><div class="gr-empty">Загрузка…</div></div>
+            <div class="gr-side">
+                <h6>Узел <span class="rst" id="grFlowReset">сброс</span></h6>
+                <div class="gr-selbox" id="grFlowSel">кликни по узлу —
+                    покажу, из чего складывается его поток, и открою его
+                    в матрице, графе или списке</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="gr-panel" id="grGraphPanel" style="display: none;">
+        <div class="gr-graph">
+            <div class="gr-canvas-wrap">
+                <canvas id="grCanvas"></canvas>
+                <div class="gr-legend">
+                    <span><i style="background: #8b5cf6;"></i>пользователь / роль</span>
+                    <span><i style="background: #94a3b8;"></i>таблица</span>
+                    <span><i style="background: #475569;"></i>схема</span>
+                    <span style="opacity: .8;">— связь с правом записи</span>
+                </div>
+                <div class="gr-tip">колесо — масштаб · тяните узел (позиция
+                    запомнится) · клик — выделить · двойной клик — вписать</div>
+            </div>
+            <div class="gr-side">
+                <h6>Детализация <span class="rst" id="grGReset">сброс</span></h6>
+                <div class="gr-chips" id="grLevel">
+                    <span class="gr-chip on" data-l="schema">схемы</span>
+                    <span class="gr-chip" data-l="table">таблицы</span>
+                </div>
+                <div class="gr-drill" id="grDrill" style="display: none;"></div>
+
+                <input type="text" class="form-control form-control-sm"
+                       id="grGQ" placeholder="искать в графе…">
+                <div class="gr-sw"><label for="grGSelOnly">Только выделенное</label>
+                    <input class="form-check-input" type="checkbox"
+                           id="grGSelOnly"></div>
+                <div class="gr-sw"><label for="grGWrite">Только права записи</label>
+                    <input class="form-check-input" type="checkbox"
+                           id="grGWrite"></div>
+                <div class="gr-rng"><label>Мин. связей у узла
+                    <span id="grVMin">1</span></label>
+                    <input type="range" id="grMin" min="1" max="20" value="1"></div>
+
+                <h6 style="margin-top: 4px;">Силы</h6>
+                <div class="gr-rng"><label>Отталкивание <span id="grVRep">260</span></label>
+                    <input type="range" id="grRep" min="40" max="900" value="260"></div>
+                <div class="gr-rng"><label>Разлёт объектов
+                    <span id="grVOrb">200</span></label>
+                    <input type="range" id="grOrb" min="60" max="500" value="200"></div>
+                <div class="gr-rng"><label>Круг схемы <span id="grVSpr">160</span></label>
+                    <input type="range" id="grSpr" min="40" max="500" value="160"></div>
+
+                <h6 style="margin-top: 4px;">Выделено</h6>
+                <div class="gr-selbox" id="grSel">ничего не выбрано<br>
+                    <span style="font-size: 11.5px;">клик по узлу покажет его связи,
+                    клик по схеме — раскроет её таблицы</span></div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+(function () {
+    "use strict";
+
+    function $(id) { return document.getElementById(id); }
+
+    function esc(s) {
+        return String(s == null ? "" : s)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    function fmtN(n) { return Number(n || 0).toLocaleString("ru-RU"); }
+
+    var PRIV_LETTER = {
+        SELECT: "S", INSERT: "I", UPDATE: "U", DELETE: "D",
+        TRUNCATE: "T", REFERENCES: "R", TRIGGER: "G"
+    };
+    var PRIV_LIST = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE",
+                     "REFERENCES", "TRIGGER"];
+    var WRITE = ["INSERT", "UPDATE", "DELETE"];
+
+    var state = {
+        conn: null, data: null, view: "list", filter: "all", q: "",
+        openUsers: {}, openTables: {}, expandAll: false, loading: false
+    };
+
+    /* ---------------- линия грантов ---------------- */
+
+    function privRow(privs, grantable) {
+        var has = {};
+        (privs || []).forEach(function (p) { has[p] = true; });
+        var gr = {};
+        (grantable || []).forEach(function (p) { gr[p] = true; });
+
+        return '<div class="gr-privs">' + PRIV_LIST.map(function (p) {
+            var cls = "gr-p";
+            if (has[p]) {
+                cls += " on";
+                if (p === "TRUNCATE" || p === "DELETE") { cls += " dng"; }
+                else if (WRITE.indexOf(p) >= 0) { cls += " w"; }
+            }
+            var letter = PRIV_LETTER[p] + (has[p] && gr[p] ? "*" : "");
+            return '<span class="' + cls + '" title="' + esc(p) +
+                (gr[p] ? " (with grant option)" : "") + '">' +
+                esc(letter) + "</span>";
+        }).join("") + "</div>";
+    }
+
+    function matchUser(u) {
+        var q = state.q.toLowerCase();
+
+        if (state.filter === "write" && !u.risk.write_tables) { return false; }
+        if (state.filter === "truncate" && !u.risk.danger_tables) { return false; }
+        if (state.filter === "read" &&
+                (u.risk.write_tables || u.is_superuser)) { return false; }
+
+        if (!q) { return true; }
+        if (u.name.toLowerCase().indexOf(q) >= 0) { return true; }
+
+        return (u.tables || []).some(function (t) {
+            return (t.schema + "." + t.table).toLowerCase().indexOf(q) >= 0;
+        });
+    }
+
+    function visibleTables(u) {
+        var q = state.q.toLowerCase();
+
+        return (u.tables || []).filter(function (t) {
+            if (state.filter === "write" &&
+                    !WRITE.some(function (p) {
+                        return t.privileges.indexOf(p) >= 0; })) { return false; }
+            if (state.filter === "truncate" &&
+                    t.privileges.indexOf("TRUNCATE") < 0 &&
+                    t.privileges.indexOf("DELETE") < 0) { return false; }
+            if (state.filter === "read" &&
+                    WRITE.some(function (p) {
+                        return t.privileges.indexOf(p) >= 0; })) { return false; }
+            if (!q || u.name.toLowerCase().indexOf(q) >= 0) { return true; }
+            return (t.schema + "." + t.table).toLowerCase().indexOf(q) >= 0;
+        });
+    }
+
+    /* ---------------- список ---------------- */
+
+    function tableDetail(t) {
+        var cols = (t.columns || []).length
+            ? (t.columns || []).map(function (c) {
+                return '<div class="gr-col"><span class="cn">' +
+                    esc(c.name) + '</span><span class="cp">' +
+                    esc(c.privileges.join(", ")) + "</span></div>";
+            }).join("")
+            : '<div class="gr-col"><span class="cp">Колоночных грантов нет — ' +
+              "права выданы на таблицу целиком.</span></div>";
+
+        return '<div class="gr-det">' +
+            "<div><h6>Права на уровне колонок</h6>" + cols +
+            '<div class="gr-owner">владелец объекта · ' +
+            esc(t.owner || "—") +
+            (t.via_role ? " · получено через роль " + esc(t.via_role)
+                        : " · выдано напрямую") + "</div></div>" +
+            "<div><h6>DDL</h6>" +
+            '<div class="gr-sql">' + esc(t.grant_sql || "—") + "</div>" +
+            '<div style="margin-top: 8px; display: flex; gap: 12px;">' +
+            '<span class="gr-link" data-copy="' +
+            encodeURIComponent(t.grant_sql || "") + '">скопировать GRANT</span>' +
+            '<span class="gr-link danger" data-copy="' +
+            encodeURIComponent(t.revoke_sql || "") + '">скопировать REVOKE</span>' +
+            "</div></div></div>";
+    }
+
+    function userBody(u) {
+        var tables = visibleTables(u);
+
+        if (!tables.length) {
+            return '<div class="gr-body"><span class="gr-sub">' +
+                "Под текущий фильтр таблиц нет.</span></div>";
+        }
+
+        var writeCount = tables.filter(function (t) {
+            return WRITE.some(function (p) {
+                return t.privileges.indexOf(p) >= 0; });
+        }).length;
+
+        var shown = tables.slice(0, 200);
+        var script = tables.map(function (t) { return t.grant_sql; })
+            .filter(Boolean).join("\n");
+
+        return '<div class="gr-body">' +
+            '<div class="gr-bhead"><span>' + fmtN(tables.length) +
+            " объектов · " + fmtN(writeCount) + " с правом записи" +
+            (u.tables_count > (u.tables || []).length
+                ? " · всего у пользователя " + fmtN(u.tables_count)
+                : "") +
+            " — нажмите строку, чтобы увидеть колонки и DDL</span>" +
+            '<span class="acts">' +
+            '<span class="gr-link" data-copy="' +
+            encodeURIComponent(script) + '">скопировать GRANT-скрипт</span>' +
+            "</span></div>" +
+            '<div class="gr-tlist">' + shown.map(function (t) {
+                var key = u.name + "|" + t.schema + "." + t.table;
+                var open = !!state.openTables[key];
+
+                return '<div class="gr-trow" data-tkey="' + esc(key) + '">' +
+                    '<span class="gr-chev">' + (open ? "▾" : "▸") + "</span>" +
+                    '<span class="gr-tname"><span class="sc">' +
+                    esc(t.schema) + ".</span><b>" + esc(t.table) + "</b></span>" +
+                    privRow(t.privileges, t.grantable) +
+                    '<span class="gr-tmeta">' +
+                    (t.rows ? "~" + fmtN(t.rows) + " строк" : "—") + "</span>" +
+                    '<span class="gr-src ' + (t.via_role ? "role" : "direct") +
+                    '">' + (t.via_role ? "через роль " + esc(t.via_role)
+                                       : "напрямую") + "</span></div>" +
+                    (open ? tableDetail(t) : "");
+            }).join("") +
+            (tables.length > shown.length
+                ? '<div class="gr-more">…и ещё ' +
+                  fmtN(tables.length - shown.length) + " объектов</div>"
+                : "") +
+            "</div></div>";
+    }
+
+    function renderList() {
+        var box = $("grList");
+        var d = state.data;
+
+        if (!d) { return; }
+
+        var users = (d.users || []).filter(matchUser);
+
+        if (!users.length) {
+            box.innerHTML = '<div class="gr-empty">Ничего не найдено — ' +
+                "смени фильтр или поиск.</div>";
+            return;
+        }
+
+        box.innerHTML = users.map(function (u) {
+            var open = state.expandAll || !!state.openUsers[u.name];
+            var initials = u.name.replace(/[^A-Za-zА-Яа-я0-9]/g, "")
+                .slice(0, 2).toUpperCase();
+            var avaCls = u.is_superuser ? "su" : (u.kind === "group" ? "grp" : "");
+
+            return '<div class="gr-user">' +
+                '<div class="gr-urow" data-user="' + esc(u.name) + '">' +
+                '<span class="gr-chev">' + (open ? "▾" : "▸") + "</span>" +
+                '<span class="gr-ava ' + avaCls + '">' + esc(initials) + "</span>" +
+                '<span class="gr-uname">' + esc(u.name) + "</span>" +
+                (u.is_superuser
+                    ? '<span class="gr-badge su">superuser</span>'
+                    : (u.kind === "group"
+                        ? '<span class="gr-badge">группа</span>'
+                        : '<span class="gr-badge login">login</span>')) +
+                '<span class="gr-sub">' +
+                (u.schemas.length ? esc(u.schemas.slice(0, 4).join(" · ")) +
+                    (u.schemas.length > 4 ? " +" + (u.schemas.length - 4) : "")
+                    : "нет грантов") +
+                (u.member_of.length
+                    ? " · роли: " + esc(u.member_of.join(", ")) : "") +
+                "</span>" +
+                privRow(u.privileges, []) +
+                '<span class="gr-risk ' + esc(u.risk.level) + '">' +
+                fmtN(u.tables_count) + '<span class="dot"></span>' +
+                (u.risk.level === "high" ? "высокий"
+                    : u.risk.level === "medium" ? "средний" : "низкий") +
+                "</span>" +
+                '<span class="gr-act">' + esc(u.last_seen || "—") + "</span>" +
+                "</div>" + (open ? userBody(u) : "") + "</div>";
+        }).join("");
+
+        box.querySelectorAll("[data-user]").forEach(function (row) {
+            row.onclick = function () {
+                var name = row.getAttribute("data-user");
+
+                if (state.expandAll) {
+                    state.expandAll = false;
+                    $("grExpandAll").textContent = "развернуть все";
+                    (state.data.users || []).forEach(function (x) {
+                        state.openUsers[x.name] = true;
+                    });
+                }
+
+                state.openUsers[name] = !state.openUsers[name];
+                renderList();
+            };
+        });
+
+        box.querySelectorAll("[data-tkey]").forEach(function (row) {
+            row.onclick = function (ev) {
+                ev.stopPropagation();
+                var key = row.getAttribute("data-tkey");
+                state.openTables[key] = !state.openTables[key];
+                renderList();
+            };
+        });
+
+        box.querySelectorAll("[data-copy]").forEach(function (el) {
+            el.onclick = function (ev) {
+                ev.stopPropagation();
+                var text = decodeURIComponent(el.getAttribute("data-copy"));
+
+                if (!text) { return; }
+
+                var done = function () {
+                    if (window.gpToast) { gpToast("Скопировано в буфер", "success"); }
+                };
+
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(text).then(done, function () {});
+                } else {
+                    var ta = document.createElement("textarea");
+                    ta.value = text;
+                    document.body.appendChild(ta);
+                    ta.select();
+                    try { document.execCommand("copy"); done(); } catch (e) {}
+                    document.body.removeChild(ta);
+                }
+            };
+        });
+    }
+
+    /* ---------------- граф (силовая раскладка на canvas) ---------------- */
+
+    var G = {
+        nodes: [], links: [], byId: {}, sel: null, hover: null,
+        scale: 1, ox: 0, oy: 0, drag: null, dragMoved: false, pan: null,
+        raf: null, alpha: 1, canvas: null, ctx: null, w: 0, h: 0,
+        level: "schema",   // schema | table
+        drill: null        // раскрытая схема в режиме таблиц
+    };
+
+    function graphOpts() {
+        return {
+            level: G.level,
+            selOnly: $("grGSelOnly").checked,
+            writeOnly: $("grGWrite").checked,
+            minLinks: Number($("grMin").value),
+            rep: Number($("grRep").value),
+            orb: Number($("grOrb").value),
+            spr: Number($("grSpr").value),
+            q: ($("grGQ").value || "").toLowerCase()
+        };
+    }
+
+    function buildGraph() {
+        var d = state.data;
+
+        if (!d || !d.graph) { return; }
+
+        var o = graphOpts();
+        var prev = G.byId;
+        var g = d.graph;
+        var tableMode = G.level === "table" || G.drill;
+
+        G.nodes = [];
+        G.links = [];
+        G.byId = {};
+        G.sel = null;
+
+        function add(n, extra) {
+            var old = prev[n.id];
+            var node = {
+                id: n.id, type: n.type, label: n.label, schema: n.schema,
+                weight: n.weight || n.tables || 1, superuser: n.superuser,
+                x: old ? old.x : (Math.random() - 0.5) * 500,
+                y: old ? old.y : (Math.random() - 0.5) * 500,
+                vx: 0, vy: 0, deg: 0
+            };
+
+            if (extra) {
+                Object.keys(extra).forEach(function (k) { node[k] = extra[k]; });
+            }
+
+            G.nodes.push(node);
+            G.byId[n.id] = node;
+            return node;
+        }
+
+        // пользователи есть в обоих режимах
+        (g.nodes || []).forEach(function (n) {
+            if (n.type === "user") { add(n); }
+        });
+
+        if (!tableMode) {
+            // агрегированный режим: пользователи <-> схемы
+            (g.schema_nodes || []).forEach(function (n) {
+                add(n, { bubble: true });
+            });
+
+            (g.user_schema_links || []).forEach(function (l) {
+                if (o.writeOnly && !l.write) { return; }
+
+                var a = G.byId[l.source];
+                var b = G.byId[l.target];
+
+                if (!a || !b) { return; }
+
+                a.deg += 1;
+                b.deg += 1;
+                G.links.push({
+                    a: a, b: b, write: l.write,
+                    tables: l.tables, writeTables: l.write_tables
+                });
+            });
+        } else {
+            // детальный режим (по желанию — только выбранная схема)
+            (g.nodes || []).forEach(function (n) {
+                if (n.type !== "table") { return; }
+                if (G.drill && n.schema !== G.drill) { return; }
+                add(n);
+            });
+
+            (g.schema_nodes || []).forEach(function (n) {
+                if (G.drill && n.label !== G.drill) { return; }
+                add(n, { bubble: true });
+            });
+
+            (g.links || []).forEach(function (l) {
+                if (o.writeOnly && !l.write) { return; }
+
+                var a = G.byId[l.source];
+                var b = G.byId[l.target];
+
+                if (!a || !b) { return; }
+
+                a.deg += 1;
+                b.deg += 1;
+                G.links.push({ a: a, b: b, write: l.write });
+            });
+
+            // таблица тянется к своей схеме — кластеры как в obsidian
+            G.nodes.forEach(function (n) {
+                if (n.type !== "table" || !n.schema) { return; }
+
+                var s = G.byId["schema:" + n.schema];
+
+                if (s) { G.links.push({ a: n, b: s, schemaLink: true }); }
+            });
+        }
+
+        // прячем малосвязанный шум (одиночные таблицы и т.п.)
+        if (o.minLinks > 1) {
+            var keep = {};
+
+            G.nodes.forEach(function (n) {
+                if (n.type === "schema" || n.deg >= o.minLinks) {
+                    keep[n.id] = true;
+                }
+            });
+
+            G.nodes = G.nodes.filter(function (n) { return keep[n.id]; });
+            G.links = G.links.filter(function (l) {
+                return keep[l.a.id] && keep[l.b.id];
+            });
+            G.byId = {};
+            G.nodes.forEach(function (n) { G.byId[n.id] = n; });
+        }
+
+        // в агрегированном режиме пользователи свободны, в детальном —
+        // раскладка детерминированная (иначе 400 связей на узел рвут граф)
+        G.nodes.forEach(function (n) { n.pinned = false; });
+        layoutColumns();
+        renderDrill();
+        G.alpha = 1;
+        renderSelected();
+        loop();
+
+        // вписываем в кадр, когда раскладка успокоится
+        clearTimeout(G.fitT1);
+        clearTimeout(G.fitT2);
+        clearTimeout(G.fitT3);
+        G.fitT1 = setTimeout(fitView, 900);
+        G.fitT2 = setTimeout(fitView, 2400);
+        G.fitT3 = setTimeout(fitView, 4600);
+    }
+
+    /* --- сохранение позиций узлов между перезагрузками --- */
+
+    function posKey() {
+        return "gr-pos-" + state.conn + "-" +
+            (G.drill ? "drill:" + G.drill : G.level);
+    }
+
+    function loadPositions() {
+        try {
+            return JSON.parse(localStorage.getItem(posKey()) || "{}");
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function savePosition(node) {
+        try {
+            var all = loadPositions();
+            all[node.id] = [Math.round(node.homeX), Math.round(node.homeY)];
+            localStorage.setItem(posKey(), JSON.stringify(all));
+        } catch (e) {}
+    }
+
+    function clearPositions() {
+        try { localStorage.removeItem(posKey()); } catch (e) {}
+    }
+
+    /* --- двудольная раскладка: пользователи слева, объекты справа --- */
+
+    // радиус круга схемы: им регулируется, насколько широко её таблицы
+    // расходятся вокруг неё
+    function schemaOrbit(o) {
+        return Math.max(34, (o || graphOpts()).spr * 0.55);
+    }
+
+    function layoutColumns() {
+        var o = graphOpts();
+        var detail = G.level === "table" || G.drill;
+        var saved = loadPositions();
+
+        var users = G.nodes.filter(function (n) { return n.type === "user"; });
+        var schemas = G.nodes.filter(function (n) { return n.type === "schema"; });
+        var tables = G.nodes.filter(function (n) { return n.type === "table"; });
+
+        // свободу раздаём заново на каждой перекладке
+        G.nodes.forEach(function (n) { n.free = false; });
+
+        // «главная» схема пользователя — по ней сортируем колонку, чтобы
+        // связи шли почти горизонтально и меньше пересекались
+        var mainSchema = {};
+
+        G.links.forEach(function (l) {
+            if (l.schemaLink) { return; }
+
+            var user = l.a.type === "user" ? l.a
+                : (l.b.type === "user" ? l.b : null);
+            var other = l.a.type === "user" ? l.b : l.a;
+
+            if (!user) { return; }
+
+            var schema = other.type === "schema" ? other.label : other.schema;
+
+            if (!schema) { return; }
+
+            var m = mainSchema[user.id] = mainSchema[user.id] || {};
+            m[schema] = (m[schema] || 0) + 1;
+        });
+
+        var schemaIndex = {};
+
+        schemas.sort(function (a, b) {
+            return (b.weight || 0) - (a.weight || 0) ||
+                a.label.localeCompare(b.label);
+        });
+        schemas.forEach(function (n, i) { schemaIndex[n.label] = i; });
+
+        function userMain(u) {
+            var m = mainSchema[u.id] || {};
+            var best = null;
+            var bestN = -1;
+
+            Object.keys(m).forEach(function (s) {
+                if (m[s] > bestN) { bestN = m[s]; best = s; }
+            });
+
+            return best;
+        }
+
+        users.sort(function (a, b) {
+            var ia = schemaIndex[userMain(a)];
+            var ib = schemaIndex[userMain(b)];
+
+            ia = ia === undefined ? 999 : ia;
+            ib = ib === undefined ? 999 : ib;
+
+            return ia - ib || (b.deg || 0) - (a.deg || 0) ||
+                a.label.localeCompare(b.label);
+        });
+
+        // многоколоночная раскладка: иначе 70 пользователей вытягивают
+        // граф по вертикали и всё сжимается до нечитаемого масштаба
+        function columns(list, xRight, gap, perCol, colStep) {
+            var cols = Math.max(1, Math.ceil(list.length / perCol));
+            var mid = (Math.min(perCol, list.length) - 1) / 2;
+
+            list.forEach(function (n, i) {
+                var col = Math.floor(i / perCol);
+                var row = i % perCol;
+                var inCol = Math.min(perCol, list.length - col * perCol);
+
+                n.homeX = xRight - (cols - 1 - col) * colStep;
+                n.homeY = (row - (inCol - 1) / 2) * gap;
+            });
+
+            return cols;
+        }
+
+        var gapU = 30;
+        var perColU = users.length > 26 ? 20 : users.length;
+        var orbit = schemaOrbit(o);
+
+        // радиус круга каждой схемы — по числу её таблиц, чтобы плотность
+        // была ровной: у большой схемы круг шире, у мелкой уже
+        var tableCount = {};
+
+        tables.forEach(function (t) {
+            tableCount[t.schema] = (tableCount[t.schema] || 0) + 1;
+        });
+
+        var maxCount = Math.max(1, Math.max.apply(null,
+            [1].concat(Object.keys(tableCount).map(function (s) {
+                return tableCount[s];
+            }))));
+
+        schemas.forEach(function (n) {
+            var c = tableCount[n.label] || 0;
+
+            n.orbitR = detail && c
+                ? orbit * (0.4 + 0.6 * Math.sqrt(c / maxCount))
+                : 0;
+        });
+
+        var maxOrbit = Math.max.apply(null, [0].concat(
+            schemas.map(function (n) { return n.orbitR || 0; })));
+
+        // между схемами нужен зазор под их круги
+        var gapS = detail
+            ? Math.max(80, maxOrbit * 2 + 34)
+            : Math.max(62, o.spr * 0.4);
+        var xU = detail ? -(maxOrbit + 260) : -170;
+        var xS = detail ? maxOrbit + 40 : 190;
+
+        columns(users, xU, gapU, perColU, 165);
+        columns(schemas, xS, gapS,
+                schemas.length > 14 ? 12 : schemas.length,
+                detail ? maxOrbit * 2 + 60 : 170);
+
+        if (detail && tables.length) {
+            // объекты живут свободно, как в первой версии графа: «дом» —
+            // центр своей схемы, а конкретное место находит физика.
+            // Так таблицы не слипаются в плотный узор, а расходятся
+            // ровно настолько, насколько им хватает места.
+            var bySchema = {};
+
+            tables.forEach(function (t) {
+                (bySchema[t.schema] = bySchema[t.schema] || []).push(t);
+            });
+
+            Object.keys(bySchema).forEach(function (schema) {
+                var list = bySchema[schema];
+                var s = G.byId["schema:" + schema];
+                var cx = s ? s.homeX : 0;
+                var cy = s ? s.homeY : 0;
+                var total = list.length;
+                var R = (s && s.orbitR) || orbit;
+
+                list.forEach(function (t, i) {
+                    var ang = i * 2.39996;                 // золотой угол
+                    var rad = R * (0.35 + 0.65 *
+                        Math.sqrt((i + 0.5) / total));
+
+                    t.homeX = cx;
+                    t.homeY = cy;
+                    t.orbit = R;
+                    t.free = true;
+                    // стартовое облако вокруг схемы — дальше физика
+                    t.startX = cx + Math.cos(ang) * rad;
+                    t.startY = cy + Math.sin(ang) * rad;
+                });
+            });
+        }
+
+        // ручные позиции важнее автоматических
+        G.nodes.forEach(function (n) {
+            var p = saved[n.id];
+
+            if (p && p.length === 2) {
+                n.homeX = p[0];
+                n.homeY = p[1];
+                n.moved = true;
+                n.free = false;        // куда поставили — там и стоит
+            }
+
+            if (!n.spawned) {
+                n.x = n.startX === undefined ? n.homeX : n.startX;
+                n.y = n.startY === undefined ? n.homeY : n.startY;
+                n.spawned = true;
+            }
+
+            n.vx = 0;
+            n.vy = 0;
+            n.phase = n.phase === undefined
+                ? Math.random() * Math.PI * 2 : n.phase;
+        });
+    }
+
+
+    function fitView() {
+        if (!G.nodes.length || state.view !== "graph") { return; }
+
+        // раскладка детерминированная — вписываем целиком, с запасом
+        // под подписи
+        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+        G.nodes.forEach(function (n) {
+            if (n.x < minX) { minX = n.x; }
+            if (n.y < minY) { minY = n.y; }
+            if (n.x > maxX) { maxX = n.x; }
+            if (n.y > maxY) { maxY = n.y; }
+        });
+
+        var w = Math.max(1, maxX - minX);
+        var h = Math.max(1, maxY - minY);
+        var pad = 130;
+
+        G.scale = Math.max(0.15, Math.min(2.2,
+            Math.min((G.w - pad) / w, (G.h - pad) / h)));
+        G.ox = -((minX + maxX) / 2) * G.scale;
+        G.oy = -((minY + maxY) / 2) * G.scale;
+    }
+
+    var MAX_V = 9;          // ограничение скорости — иначе граф «взрывает»
+    var BOUND = 1400;       // мягкая граница полотна
+
+    // пользователи и схемы держатся своих колонок, объекты — свободны:
+    // их тянет к своей схеме и расталкивает друг от друга, как в первой
+    // версии графа. Без стягивания к центру — структура не разъезжается.
+    function step() {
+        var nodes = G.nodes;
+        var o = graphOpts();
+        var t = Date.now() / 1000;
+        var rep = o.rep * 1.1;                  // сила отталкивания
+        var reach = Math.max(70, o.orb);        // дальность разлёта
+        var i, j, a, b, dx, dy, dist, minDist, f;
+
+        for (i = 0; i < nodes.length; i++) {
+            a = nodes[i];
+
+            if (G.drag === a) { continue; }
+
+            if (a.free) {
+                // объект держится своей схемы на расстоянии её круга,
+                // но точное место выбирает сам
+                dx = a.homeX - a.x;
+                dy = a.homeY - a.y;
+                dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+                f = (dist - (a.orbit || 60)) * 0.014;
+
+                a.vx += dx / dist * f;
+                a.vy += dy / dist * f;
+
+                // живое блуждание — граф всё время слегка движется
+                a.vx += Math.cos(t * 0.85 + a.phase) * 0.17;
+                a.vy += Math.sin(t * 0.67 + a.phase * 1.7) * 0.17;
+            } else {
+                // пружина к своей позиции в колонке
+                a.vx += (a.homeX - a.x) * 0.035;
+                a.vy += (a.homeY - a.y) * 0.035;
+
+                // «дыхание»: медленное живое колебание
+                a.vx += Math.cos(t * 0.6 + a.phase) * 0.1;
+                a.vy += Math.sin(t * 0.5 + a.phase * 1.3) * 0.1;
+            }
+        }
+
+        // свободные объекты расходятся на расстоянии, колонки — только
+        // при реальном наложении
+        for (i = 0; i < nodes.length; i++) {
+            a = nodes[i];
+
+            for (j = i + 1; j < nodes.length; j++) {
+                b = nodes[j];
+                dx = b.x - a.x;
+                dy = b.y - a.y;
+                dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+
+                if ((a.free || b.free) && dist < reach) {
+                    f = Math.min(1.7, rep / (dist * dist));
+
+                    if (a.free && G.drag !== a) {
+                        a.vx -= dx / dist * f;
+                        a.vy -= dy / dist * f;
+                    }
+
+                    if (b.free && G.drag !== b) {
+                        b.vx += dx / dist * f;
+                        b.vy += dy / dist * f;
+                    }
+                }
+
+                minDist = (a.type === "table" && b.type === "table") ? 15 : 26;
+
+                if (dist >= minDist) { continue; }
+
+                var push = (minDist - dist) * 0.12;
+
+                dx = dx / dist * push;
+                dy = dy / dist * push;
+
+                if (G.drag !== a) { a.vx -= dx; a.vy -= dy; }
+                if (G.drag !== b) { b.vx += dx; b.vy += dy; }
+            }
+        }
+
+        nodes.forEach(function (n) {
+            if (G.drag === n) { return; }
+
+            n.vx *= n.free ? 0.9 : 0.84;
+            n.vy *= n.free ? 0.9 : 0.84;
+
+            var v = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+
+            if (v > MAX_V) {
+                n.vx = n.vx / v * MAX_V;
+                n.vy = n.vy / v * MAX_V;
+            }
+
+            n.x += n.vx;
+            n.y += n.vy;
+        });
+    }
+
+    function nodeRadius(n) {
+        // схема — крупный узел-«пузырь» (в детальном режиме чуть меньше)
+        if (n.type === "schema") {
+            var base = (G.level === "schema" && !G.drill) ? 9 : 7;
+            return base + Math.min(11, Math.sqrt(n.weight || 1) * 1.4);
+        }
+        if (n.type === "user") { return 5 + Math.min(6, n.deg / 6); }
+        return 3 + Math.min(4, n.weight);
+    }
+
+    function nodeColor(n) {
+        if (n.type === "user") { return n.superuser ? "#f97066" : "#8b5cf6"; }
+        if (n.type === "schema") { return "#475569"; }
+        return "#94a3b8";
+    }
+
+    function neighbors(n) {
+        var set = {};
+
+        G.links.forEach(function (l) {
+            if (l.a === n) { set[l.b.id] = true; }
+            if (l.b === n) { set[l.a.id] = true; }
+        });
+
+        return set;
+    }
+
+    function draw() {
+        var c = G.ctx;
+
+        if (!c) { return; }
+
+        var o = graphOpts();
+        var dpr = window.devicePixelRatio || 1;
+
+        c.setTransform(dpr, 0, 0, dpr, 0, 0);
+        c.clearRect(0, 0, G.w, G.h);
+        c.translate(G.w / 2 + G.ox, G.h / 2 + G.oy);
+        c.scale(G.scale, G.scale);
+
+        var sel = G.sel;
+        var near = sel ? neighbors(sel) : null;
+
+        function hidden(n) {
+            return o.selOnly && sel && n !== sel && !(near && near[n.id]);
+        }
+
+        function dim(n) {
+            if (o.q && n.label.toLowerCase().indexOf(o.q) < 0) { return true; }
+            if (sel && n !== sel && !(near && near[n.id])) { return true; }
+            return false;
+        }
+
+        // круг схемы: видно, какие таблицы к ней относятся
+        if (G.level === "table" || G.drill) {
+            G.nodes.forEach(function (n) {
+                if (n.type !== "schema" || hidden(n) || !n.orbitR) { return; }
+
+                c.beginPath();
+                c.arc(n.x, n.y, n.orbitR, 0, Math.PI * 2);
+                c.fillStyle = dim(n) ? "rgba(148,163,184,0.015)"
+                    : "rgba(139,92,246,0.05)";
+                c.fill();
+                c.strokeStyle = dim(n) ? "rgba(148,163,184,0.08)"
+                    : "rgba(148,163,184,0.3)";
+                c.setLineDash([5, 5]);
+                c.lineWidth = 1.4 / G.scale;
+                c.stroke();
+                c.setLineDash([]);
+            });
+        }
+
+        G.links.forEach(function (l) {
+            if (l.schemaLink) { return; }
+            if (hidden(l.a) || hidden(l.b)) { return; }
+
+            var faded = dim(l.a) && dim(l.b);
+            // толщина по числу таблиц (в агрегированном режиме)
+            var w = l.tables ? Math.min(5, 0.7 + Math.log(l.tables) / 1.6) : 0.9;
+
+            c.beginPath();
+            c.moveTo(l.a.x, l.a.y);
+            c.lineTo(l.b.x, l.b.y);
+            c.strokeStyle = l.write
+                ? (faded ? "rgba(245,158,11,0.08)" : "rgba(245,158,11,0.40)")
+                : (faded ? "rgba(148,163,184,0.06)" : "rgba(148,163,184,0.22)");
+            c.lineWidth = (l.write ? w : w * 0.75) / G.scale;
+            c.stroke();
+        });
+
+        G.nodes.forEach(function (n) {
+            if (hidden(n)) { return; }
+
+            var r = nodeRadius(n);
+
+            if (!r) { return; }
+
+            c.beginPath();
+            c.arc(n.x, n.y, r, 0, Math.PI * 2);
+            c.fillStyle = nodeColor(n);
+            c.globalAlpha = dim(n) ? 0.2 : (n.type === "schema" ? 0.85 : 1);
+            c.fill();
+
+            if (n === sel || n === G.hover) {
+                c.lineWidth = 2 / G.scale;
+                c.strokeStyle = "#e2e8f0";
+                c.stroke();
+            }
+
+            c.globalAlpha = 1;
+        });
+
+        // ---- подписи: рисуем по приоритету и без наложений ----
+        c.textAlign = "center";
+        c.textBaseline = "middle";
+
+        var boxes = [];
+
+        function free(x, y, w, h) {
+            for (var i = 0; i < boxes.length; i++) {
+                var b = boxes[i];
+
+                if (Math.abs(x - b.x) * 2 < w + b.w &&
+                        Math.abs(y - b.y) * 2 < h + b.h) {
+                    return false;
+                }
+            }
+
+            boxes.push({ x: x, y: y, w: w, h: h });
+            return true;
+        }
+
+        var order = G.nodes.slice().sort(function (a, b) {
+            function rank(n) {
+                if (n === sel) { return 0; }
+                if (n === G.hover) { return 1; }
+                if (near && near[n.id]) { return 2; }
+                if (n.type === "schema") { return 3; }
+                if (n.type === "user") { return 4; }
+                return 5;
+            }
+
+            var ra = rank(a);
+            var rb = rank(b);
+
+            return ra !== rb ? ra - rb : (b.deg || 0) - (a.deg || 0);
+        });
+
+        order.forEach(function (n) {
+            if (hidden(n)) { return; }
+
+            var isSchema = n.type === "schema";
+            var priority = n === sel || n === G.hover ||
+                (near && near[n.id]) || isSchema;
+
+            // таблицы подписываем только при увеличении или в фокусе;
+            // пользователей — всегда, лишние отсеет проверка наложения
+            if (!priority && n.type === "table" && G.scale < 1.6) { return; }
+
+            var size = (isSchema ? 11.5 : 10.5) / G.scale;
+
+            c.font = (isSchema ? "800 " : "") + size + "px " +
+                (isSchema ? "system-ui, sans-serif" : "ui-monospace, monospace");
+
+            var text = isSchema ? n.label.toUpperCase() : n.label;
+            var tw = c.measureText(text).width;
+            var ty = n.y - nodeRadius(n) - 9 / G.scale;
+
+            if (!free(n.x, ty, tw + 6 / G.scale, size * 1.5)) { return; }
+
+            c.globalAlpha = dim(n) ? 0.28 : 1;
+            c.fillStyle = isSchema ? "#cbd5e1" : "#e2e8f0";
+
+            // фон под подписью, чтобы читалось на связях
+            if (priority) {
+                c.globalAlpha = dim(n) ? 0.2 : 0.72;
+                c.fillStyle = "rgba(11,13,26,0.82)";
+                c.fillRect(n.x - tw / 2 - 3 / G.scale, ty - size * 0.72,
+                           tw + 6 / G.scale, size * 1.45);
+                c.globalAlpha = dim(n) ? 0.28 : 1;
+                c.fillStyle = isSchema ? "#e9d5ff" : "#e2e8f0";
+            }
+
+            c.fillText(text, n.x, ty);
+            c.globalAlpha = 1;
+        });
+    }
+
+    function loop() {
+        if (G.raf) { cancelAnimationFrame(G.raf); }
+
+        function tick() {
+            if (state.view === "graph") {
+                step();
+                draw();
+            }
+
+            G.raf = requestAnimationFrame(tick);
+        }
+
+        G.raf = requestAnimationFrame(tick);
+    }
+
+    function resizeCanvas() {
+        if (!G.canvas) { return; }
+
+        var wrap = G.canvas.parentElement;
+        var dpr = window.devicePixelRatio || 1;
+
+        G.w = wrap.clientWidth;
+        G.h = wrap.clientHeight;
+        G.canvas.width = Math.max(1, G.w * dpr);
+        G.canvas.height = Math.max(1, G.h * dpr);
+        G.ctx = G.canvas.getContext("2d");
+    }
+
+    function toWorld(ev) {
+        var rect = G.canvas.getBoundingClientRect();
+
+        return {
+            x: (ev.clientX - rect.left - G.w / 2 - G.ox) / G.scale,
+            y: (ev.clientY - rect.top - G.h / 2 - G.oy) / G.scale
+        };
+    }
+
+    function pick(pt) {
+        var best = null;
+        var bestD = 16 / G.scale;
+
+        G.nodes.forEach(function (n) {
+            var r = nodeRadius(n);
+
+            if (!r) { return; }   // невидимые «орбиты» схем не ловим
+
+            var dx = n.x - pt.x;
+            var dy = n.y - pt.y;
+            var d = Math.sqrt(dx * dx + dy * dy) - r;
+
+            if (d < bestD) { bestD = d; best = n; }
+        });
+
+        return best;
+    }
+
+    function renderDrill() {
+        var box = $("grDrill");
+
+        if (!box) { return; }
+
+        if (G.drill) {
+            box.style.display = "";
+            box.textContent = "← схема " + G.drill + " · назад ко всем";
+            box.onclick = function () {
+                G.drill = null;
+                G.level = "schema";
+                setLevelChip();
+                buildGraph();
+            };
+        } else {
+            box.style.display = "none";
+            box.onclick = null;
+        }
+    }
+
+    function setLevelChip() {
+        $("grLevel").querySelectorAll("[data-l]").forEach(function (chip) {
+            chip.classList.toggle("on",
+                chip.getAttribute("data-l") === G.level);
+        });
+    }
+
+    function renderSelected() {
+        var box = $("grSel");
+        var n = G.sel;
+
+        if (!n) {
+            box.innerHTML = "ничего не выбрано<br>" +
+                "<span style='font-size: 11.5px;'>клик по узлу покажет его связи</span>";
+            return;
+        }
+
+        var near = neighbors(n);
+        var names = Object.keys(near).map(function (id) {
+            return G.byId[id] || null;
+        }).filter(Boolean);
+
+        var writes = G.links.filter(function (l) {
+            return (l.a === n || l.b === n) && l.write;
+        }).length;
+
+        var tablesVia = 0;
+
+        G.links.forEach(function (l) {
+            if ((l.a === n || l.b === n) && l.tables) { tablesVia += l.tables; }
+        });
+
+        box.innerHTML = "<b>" + esc(n.label) + "</b><br>" +
+            (n.type === "user" ? "пользователь / роль"
+                : n.type === "table" ? "таблица · " + esc(n.schema || "")
+                : "схема · " + fmtN(n.weight) + " табл. с грантами") + "<br>" +
+            "связей: <b>" + names.length + "</b>, с записью: <b>" +
+            writes + "</b>" +
+            (tablesVia ? "<br>таблиц по связям: <b>" + fmtN(tablesVia) + "</b>"
+                       : "") +
+            (n.type === "schema" && !G.drill
+                ? '<br><span class="gr-drill" id="grDrillIn">раскрыть таблицы ' +
+                  "этой схемы →</span>"
+                : "") +
+            "<br>" +
+            names.slice(0, 12).map(function (x) {
+                return '<span class="nb">' + esc(x.label) + "</span>";
+            }).join("") +
+            (names.length > 12 ? "…и ещё " + (names.length - 12) : "");
+
+        var into = $("grDrillIn");
+
+        if (into) {
+            into.onclick = function () {
+                G.drill = n.label;
+                G.level = "table";
+                setLevelChip();
+                buildGraph();
+            };
+        }
+    }
+
+    function initGraph() {
+        G.canvas = $("grCanvas");
+        resizeCanvas();
+
+        window.addEventListener("resize", function () {
+            if (state.view === "graph") { resizeCanvas(); }
+        });
+
+        // двойной клик — вписать граф в кадр
+        G.canvas.addEventListener("dblclick", function () { fitView(); });
+
+        G.canvas.addEventListener("wheel", function (ev) {
+            ev.preventDefault();
+            var k = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
+            G.scale = Math.max(0.25, Math.min(4, G.scale * k));
+        }, { passive: false });
+
+        G.canvas.addEventListener("mousedown", function (ev) {
+            var n = pick(toWorld(ev));
+
+            G.dragMoved = false;
+
+            if (n) {
+                G.drag = n;
+                G.alpha = 1;
+            } else {
+                G.pan = { x: ev.clientX - G.ox, y: ev.clientY - G.oy };
+            }
+
+            G.canvas.classList.add("drag");
+        });
+
+        window.addEventListener("mousemove", function (ev) {
+            if (G.drag) {
+                var pt = toWorld(ev);
+                G.dragMoved = true;
+                G.drag.x = pt.x;
+                G.drag.y = pt.y;
+                // «дом» переезжает вместе с узлом — он там и останется
+                G.drag.homeX = pt.x;
+                G.drag.homeY = pt.y;
+                G.drag.moved = true;
+                G.drag.vx = 0;
+                G.drag.vy = 0;
+                return;
+            }
+
+            if (G.pan) {
+                G.dragMoved = true;
+                G.ox = ev.clientX - G.pan.x;
+                G.oy = ev.clientY - G.pan.y;
+                return;
+            }
+
+            if (state.view !== "graph") { return; }
+
+            G.hover = pick(toWorld(ev));
+        });
+
+        window.addEventListener("mouseup", function () {
+            if (G.drag && !G.dragMoved) {
+                G.sel = G.sel === G.drag ? null : G.drag;
+                renderSelected();
+            } else if (G.drag && G.dragMoved) {
+                // запоминаем, куда перетащили — переживёт перезагрузку
+                savePosition(G.drag);
+            }
+
+            G.drag = null;
+            G.pan = null;
+
+            if (G.canvas) { G.canvas.classList.remove("drag"); }
+        });
+
+        ["grGSelOnly", "grGWrite"].forEach(function (id) {
+            $(id).addEventListener("change", buildGraph);
+        });
+
+        $("grLevel").querySelectorAll("[data-l]").forEach(function (chip) {
+            chip.onclick = function () {
+                G.level = chip.getAttribute("data-l");
+                G.drill = null;
+                setLevelChip();
+                buildGraph();
+            };
+        });
+
+        $("grMin").addEventListener("input", function () {
+            $("grVMin").textContent = $("grMin").value;
+        });
+        $("grMin").addEventListener("change", buildGraph);
+
+        $("grGQ").addEventListener("input", function () { G.alpha = 0.4; });
+
+        [["grRep", "grVRep"], ["grOrb", "grVOrb"], ["grSpr", "grVSpr"]]
+            .forEach(function (pair) {
+                $(pair[0]).addEventListener("input", function () {
+                    $(pair[1]).textContent = $(pair[0]).value;
+
+                    if (pair[0] === "grSpr" || pair[0] === "grOrb") {
+                        layoutColumns();
+                    }
+
+                    G.alpha = 1;
+                });
+            });
+
+        $("grGReset").onclick = function () {
+            $("grGSelOnly").checked = false;
+            $("grGWrite").checked = false;
+            $("grGQ").value = "";
+            $("grMin").value = 1; $("grVMin").textContent = "1";
+            $("grRep").value = 260; $("grVRep").textContent = "260";
+            $("grOrb").value = 200; $("grVOrb").textContent = "200";
+            $("grSpr").value = 160; $("grVSpr").textContent = "160";
+            G.scale = 1; G.ox = 0; G.oy = 0;
+            clearPositions();              // вернуть узлы на свои места
+            G.nodes.forEach(function (n) {
+                n.moved = false;
+                n.spawned = false;
+            });
+            G.level = "schema";
+            G.drill = null;
+            setLevelChip();
+            buildGraph();
+        };
+    }
+
+    /* ---------------- матрица пользователи × схемы ---------------- */
+
+    var MX = { drill: null, schemaData: null, openGroup: {} };
+
+    function mxCellColor(tables, writeTables) {
+        var ratio = writeTables / Math.max(1, tables);
+        var strength = 0.3 + 0.45 * Math.min(1, Math.log(tables + 1) / 5);
+
+        if (ratio === 0) { return "rgba(99,102,241," + strength + ")"; }
+        if (ratio >= 0.99) { return "rgba(239,68,68,.75)"; }
+        return "rgba(245,158,11,.75)";
+    }
+
+    function mxLegend(detail) {
+        return '<div class="gr-mx-legend">' +
+            '<span><i style="background: rgba(99,102,241,.75);"></i>' +
+            "только чтение</span>" +
+            '<span><i style="background: rgba(245,158,11,.8);"></i>' +
+            "есть запись</span>" +
+            '<span><i style="background: rgba(239,68,68,.8);"></i>' +
+            (detail ? "truncate / delete" : "запись во всех таблицах") +
+            "</span><span>" +
+            (detail
+                ? "в ячейке — буквы прав (S I U D T R G); клик по строке — " +
+                  "открыть пользователя в списке"
+                : "в ячейке — число таблиц с грантами; клик — раскрыть схему " +
+                  "до таблиц") +
+            "</span></div>";
+    }
+
+    /* --- уровень 1: пользователи × схемы --- */
+
+    function renderMatrixSchemas() {
+        var box = $("grMatrix");
+        var d = state.data;
+        var links = (d.graph && d.graph.user_schema_links) || [];
+
+        if (!links.length) {
+            box.innerHTML = '<div class="gr-empty">Грантов не найдено.</div>';
+            return;
+        }
+
+        var cell = {};
+        var rowTotal = {};
+        var rowWrite = {};
+
+        links.forEach(function (l) {
+            var user = l.source.replace(/^user:/, "");
+            var schema = l.target.replace(/^schema:/, "");
+
+            cell[user + "|" + schema] = l;
+            rowTotal[user] = (rowTotal[user] || 0) + l.tables;
+            rowWrite[user] = (rowWrite[user] || 0) + l.write_tables;
+        });
+
+        var order = (d.matrix_order || {});
+        var seriate = $("grMxSeriate").checked;
+        var cols = seriate && order.cols && order.cols.length
+            ? order.cols.slice()
+            : Object.keys(cell).map(function (k) {
+                return k.split("|")[1]; }).filter(function (v, i, a) {
+                    return a.indexOf(v) === i; }).sort();
+
+        var risk = {};
+        (d.users || []).forEach(function (u) { risk[u.name] = u.risk.level; });
+
+        var q = state.q.toLowerCase();
+
+        function passUser(u) {
+            if (state.filter === "write" && !rowWrite[u]) { return false; }
+            if (state.filter === "read" && rowWrite[u]) { return false; }
+            return !q || u.toLowerCase().indexOf(q) >= 0;
+        }
+
+        // строки: либо пользователи, либо склеенные де-факто роли
+        var rows = [];
+
+        if ($("grMxRoles").checked) {
+            (d.role_groups || []).forEach(function (g, gi) {
+                var users = g.users.filter(passUser);
+
+                if (!users.length) { return; }
+
+                rows.push({
+                    key: "g" + gi, users: users, size: g.size,
+                    label: users[0] + (g.size > 1
+                        ? " + ещё " + (g.size - 1) : ""),
+                    group: g.size > 1, total: g.tables, write: g.write_tables,
+                    risk: risk[users[0]] || "low"
+                });
+            });
+        } else {
+            var names = (seriate && order.rows && order.rows.length
+                ? order.rows.slice()
+                : Object.keys(rowTotal).sort(function (a, b) {
+                    return rowTotal[b] - rowTotal[a]; }));
+
+            names.filter(passUser).forEach(function (u) {
+                rows.push({
+                    key: u, users: [u], size: 1, label: u, group: false,
+                    total: rowTotal[u] || 0, write: rowWrite[u] || 0,
+                    risk: risk[u] || "low"
+                });
+            });
+        }
+
+        if (!rows.length) {
+            box.innerHTML = '<div class="gr-empty">Под фильтр никто не ' +
+                "подходит.</div>";
+            return;
+        }
+
+        $("grMxNote").textContent = fmtN(rows.length) + " строк · " +
+            fmtN(cols.length) + " схем";
+
+        box.innerHTML = mxLegend(false) +
+            '<div class="gr-mx-wrap"><table class="gr-mx"><thead><tr>' +
+            '<th class="u">Пользователь · таблиц</th>' +
+            cols.map(function (s) {
+                return '<th data-col="' + esc(s) + '" ' +
+                    'style="cursor: pointer;" title="раскрыть схему">' +
+                    esc(s) + "</th>";
+            }).join("") + "</tr></thead><tbody>" +
+            rows.map(function (r) {
+                // ячейка группы = суммарный профиль (у всех он одинаковый)
+                var first = r.users[0];
+
+                return '<tr data-row="' + esc(r.key) + '"><th>' +
+                    '<span class="rk ' + esc(r.risk) + '"></span>' +
+                    esc(r.label) +
+                    ' <span style="color: var(--text-muted); font-weight: 400;">· ' +
+                    fmtN(r.total) + "</span>" +
+                    (r.group ? ' <span class="grp">' + r.size +
+                        "&nbsp;польз.</span>" : "") +
+                    (r.group && MX.openGroup[r.key]
+                        ? '<span class="mem">' + esc(r.users.join(", ")) +
+                          "</span>"
+                        : "") +
+                    "</th>" +
+                    cols.map(function (s) {
+                        var l = cell[first + "|" + s];
+
+                        if (!l) { return "<td>·</td>"; }
+
+                        return '<td class="c" style="background: ' +
+                            mxCellColor(l.tables, l.write_tables) +
+                            '" title="' + esc(first + " → " + s) + ": " +
+                            fmtN(l.tables) + " табл., с записью " +
+                            fmtN(l.write_tables) + '" data-cell="' +
+                            esc(s) + '">' + fmtN(l.tables) + "</td>";
+                    }).join("") + "</tr>";
+            }).join("") + "</tbody></table></div>";
+
+        // клик по столбцу или ячейке — drill в схему
+        box.querySelectorAll("[data-col], [data-cell]").forEach(function (el) {
+            el.style.cursor = "pointer";
+            el.onclick = function (ev) {
+                ev.stopPropagation();
+                openSchemaMatrix(el.getAttribute("data-col") ||
+                                 el.getAttribute("data-cell"));
+            };
+        });
+
+        // клик по строке-группе — показать состав
+        box.querySelectorAll("tbody th").forEach(function (th) {
+            th.style.cursor = "pointer";
+            th.onclick = function () {
+                var key = th.parentElement.getAttribute("data-row");
+                MX.openGroup[key] = !MX.openGroup[key];
+                renderMatrixSchemas();
+            };
+        });
+    }
+
+    /* --- уровень 2: пользователи × таблицы одной схемы --- */
+
+    function openSchemaMatrix(schema) {
+        MX.drill = schema;
+        MX.schemaData = null;
+        renderMatrix();
+
+        fetch("/api/grants/schema-matrix?connection_id=" +
+              encodeURIComponent(state.conn) +
+              "&schema=" + encodeURIComponent(schema))
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (!d.ok) {
+                    $("grMatrix").innerHTML = '<div class="gr-empty" ' +
+                        'style="color: var(--crit);">' + esc(d.message) +
+                        "</div>";
+                    return;
+                }
+
+                MX.schemaData = d;
+                renderMatrix();
+            })
+            .catch(function (e) {
+                $("grMatrix").innerHTML = '<div class="gr-empty" ' +
+                    'style="color: var(--crit);">' + esc(String(e)) + "</div>";
+            });
+    }
+
+    var PRIV_SHORT = {
+        SELECT: "S", INSERT: "I", UPDATE: "U", DELETE: "D",
+        TRUNCATE: "T", REFERENCES: "R", TRIGGER: "G"
+    };
+
+    // локальный граф: фокус на конкретном пользователе (окружение узла)
+    function focusUserInGraph(name) {
+        G.level = "schema";
+        G.drill = null;
+        setLevelChip();
+        $("grGSelOnly").checked = true;
+        document.querySelector('#grView [data-v="graph"]').click();
+
+        setTimeout(function () {
+            var n = G.byId["user:" + name];
+
+            if (!n) { return; }
+
+            G.sel = n;
+            renderSelected();
+            fitView();
+        }, 350);
+    }
+
+    function renderMatrixTables() {
+        var box = $("grMatrix");
+        var d = MX.schemaData;
+
+        if (!d) {
+            box.innerHTML = '<div class="gr-empty">Читаю права схемы ' +
+                esc(MX.drill) + "…</div>";
+            return;
+        }
+
+        var q = state.q.toLowerCase();
+        var rows = (d.rows || []).filter(function (u) {
+            if (state.filter === "write" || state.filter === "read") {
+                var hasWrite = (d.cols || []).some(function (t) {
+                    var c = d.cells[u + "|" + t];
+                    return c && c.write;
+                });
+
+                if (state.filter === "write" && !hasWrite) { return false; }
+                if (state.filter === "read" && hasWrite) { return false; }
+            }
+
+            return !q || u.toLowerCase().indexOf(q) >= 0;
+        });
+
+        var cols = (d.cols || []).filter(function (t) {
+            return !q || t.toLowerCase().indexOf(q) >= 0 ||
+                rows.some(function (u) {
+                    return u.toLowerCase().indexOf(q) >= 0; });
+        });
+
+        $("grMxNote").textContent = fmtN(rows.length) + " пользователей · " +
+            fmtN(cols.length) + " таблиц" +
+            (d.tables_total > cols.length
+                ? " (из " + fmtN(d.tables_total) + ")" : "");
+
+        if (!rows.length || !cols.length) {
+            box.innerHTML = mxLegend(true) +
+                '<div class="gr-empty">Под фильтр ничего не подходит.</div>';
+            return;
+        }
+
+        box.innerHTML = mxLegend(true) +
+            '<div class="gr-mx-wrap"><table class="gr-mx"><thead><tr>' +
+            '<th class="u">Пользователь</th>' +
+            cols.map(function (t) {
+                return "<th>" + esc(t) + "</th>";
+            }).join("") + "</tr></thead><tbody>" +
+            rows.map(function (u) {
+                return '<tr><th data-user-focus="' + esc(u) +
+                    '" title="показать окружение в графе">' + esc(u) + "</th>" +
+                    cols.map(function (t) {
+                        var c = d.cells[u + "|" + t];
+
+                        if (!c) { return "<td>·</td>"; }
+
+                        var bg = c.danger ? "rgba(239,68,68,.75)"
+                            : (c.write ? "rgba(245,158,11,.75)"
+                                       : "rgba(99,102,241,.6)");
+                        var letters = c.privileges.map(function (p) {
+                            return PRIV_SHORT[p] || p[0];
+                        }).join("");
+
+                        return '<td class="c p" style="background: ' + bg +
+                            '" title="' + esc(u + " → " + MX.drill + "." + t) +
+                            ": " + esc(c.privileges.join(", ")) +
+                            (c.via_role ? " (через роль " + esc(c.via_role) + ")"
+                                        : " (напрямую)") +
+                            '">' + esc(letters) + "</td>";
+                    }).join("") + "</tr>";
+            }).join("") + "</tbody></table></div>";
+
+        box.querySelectorAll("[data-user-focus]").forEach(function (th) {
+            th.style.cursor = "pointer";
+            th.onclick = function () {
+                focusUserInGraph(th.getAttribute("data-user-focus"));
+            };
+        });
+    }
+
+    function renderMatrix() {
+        var d = state.data;
+
+        if (!d || !d.graph) { return; }
+
+        var crumb = $("grMxCrumb");
+
+        if (MX.drill) {
+            crumb.className = "gr-mx-crumb back";
+            crumb.textContent = "← все схемы · " + MX.drill;
+            crumb.onclick = function () {
+                MX.drill = null;
+                MX.schemaData = null;
+                renderMatrix();
+            };
+            renderMatrixTables();
+        } else {
+            crumb.className = "gr-mx-crumb";
+            crumb.textContent = "все схемы";
+            crumb.onclick = null;
+            renderMatrixSchemas();
+        }
+    }
+
+    /* ---------------- поток (sankey) ---------------- */
+
+    // FL.focus — узел, на потоке которого сфокусировались (клик),
+    // FL.sel — узел, разобранный в боковой панели
+    var FL = { focus: null, sel: null, pos: {}, links: [] };
+
+    function switchView(v) {
+        var chip = document.querySelector('#grView [data-v="' + v + '"]');
+
+        if (chip) { chip.click(); }
+    }
+
+    function flowNode(id) {
+        var s = state.data && state.data.sankey;
+        var found = null;
+
+        ((s && s.nodes) || []).forEach(function (n) {
+            if (n.id === id) { found = n; }
+        });
+
+        return found;
+    }
+
+    // связи после фильтров: «только запись» и фокус на узле
+    function flowLinks() {
+        var s = state.data && state.data.sankey;
+        var writeOnly = $("grFlowWrite").checked;
+        var links = ((s && s.links) || []).map(function (l) {
+            return {
+                source: l.source,
+                target: l.target,
+                value: writeOnly ? (l.write || 0) : l.value,
+                total: l.value,
+                write: l.write || 0
+            };
+        }).filter(function (l) { return l.value > 0; });
+
+        if (!FL.focus) { return links; }
+
+        var id = FL.focus;
+        var kind = id.charAt(0);
+        var via = {};
+
+        if (kind === "u") {
+            links.forEach(function (l) {
+                if (l.source === id) { via[l.target] = true; }
+            });
+
+            return links.filter(function (l) {
+                return l.source === id ||
+                    (l.source.charAt(0) === "r" && via[l.source]);
+            });
+        }
+
+        if (kind === "r") {
+            return links.filter(function (l) {
+                return l.source === id || l.target === id;
+            });
+        }
+
+        links.forEach(function (l) {
+            if (l.target === id) { via[l.source] = true; }
+        });
+
+        return links.filter(function (l) {
+            return l.target === id ||
+                (l.target.charAt(0) === "r" && via[l.target]);
+        });
+    }
+
+    function flowMix(ratio) {
+        var a = [99, 102, 241];
+        var b = [245, 158, 11];
+
+        return "rgb(" + a.map(function (v, i) {
+            return Math.round(v + (b[i] - v) * Math.max(0, Math.min(1, ratio)));
+        }).join(",") + ")";
+    }
+
+    function flowCrumb(shownUsers, shownTables) {
+        var crumb = $("grFlowCrumb");
+
+        if (FL.focus) {
+            var n = flowNode(FL.focus);
+
+            crumb.className = "gr-mx-crumb back";
+            crumb.textContent = "← весь поток · фокус: " +
+                (n ? n.label : FL.focus.slice(2));
+            crumb.onclick = function () {
+                FL.focus = null;
+                renderFlow();
+            };
+        } else {
+            crumb.className = "gr-mx-crumb";
+            crumb.textContent = "пользователь → через что → схема";
+            crumb.onclick = null;
+        }
+
+        $("grFlowNote").textContent = fmtN(shownUsers) +
+            (FL.focus ? " пользователей в потоке · " : " пользователей · ") +
+            fmtN(shownTables) +
+            (FL.focus ? " прав в фокусе" : " прав на таблицы");
+    }
+
+    function renderFlow() {
+        var box = $("grFlow");
+        var s = state.data && state.data.sankey;
+
+        if (!s || !s.nodes || !s.nodes.length) {
+            box.innerHTML = '<div class="gr-empty">Потоков не найдено.</div>';
+            return;
+        }
+
+        var links = flowLinks();
+
+        if (!links.length) {
+            box.innerHTML = '<div class="gr-empty">Под фильтр ничего ' +
+                "не подходит.</div>";
+            flowCrumb(0, 0);
+            return;
+        }
+
+        // объёмы узлов считаем по отфильтрованным связям
+        var outV = {}, inV = {}, outW = {}, inW = {};
+
+        links.forEach(function (l) {
+            outV[l.source] = (outV[l.source] || 0) + l.value;
+            inV[l.target] = (inV[l.target] || 0) + l.value;
+            outW[l.source] = (outW[l.source] || 0) + l.write;
+            inW[l.target] = (inW[l.target] || 0) + l.write;
+        });
+
+        function pick(id, a, b) {
+            var kind = id.charAt(0);
+
+            if (kind === "u") { return a[id] || 0; }
+            if (kind === "s") { return b[id] || 0; }
+
+            return Math.max(a[id] || 0, b[id] || 0);
+        }
+
+        var byCol = [[], [], []];
+
+        s.nodes.forEach(function (n) {
+            var v = pick(n.id, outV, inV);
+
+            if (v <= 0) { return; }
+
+            byCol[n.column].push({
+                id: n.id, label: n.label, column: n.column, value: v,
+                write: pick(n.id, outW, inW), superuser: n.superuser,
+                direct: n.direct, users: n.users
+            });
+        });
+
+        byCol.forEach(function (list) {
+            list.sort(function (a, b) {
+                return b.value - a.value || a.label.localeCompare(b.label);
+            });
+        });
+
+        var NODE_W = 13, GAP = 5, MIN_H = 13, MAX_H = 320, TOP = 34;
+        var LBL = 200;
+        var W = Math.max(900, (box.clientWidth || 920) - 26);
+        var colX = [LBL, W / 2 - NODE_W / 2, W - LBL - NODE_W];
+
+        var maxSum = Math.max.apply(null, byCol.map(function (list) {
+            return list.reduce(function (a, n) { return a + n.value; }, 0);
+        }));
+        // масштаб «чернил»: узлы не тоньше MIN_H, чтобы у каждого
+        // пользователя осталась читаемая подпись
+        var k = Math.min(20, 1100 / Math.max(1, maxSum));
+        var pos = {};
+        var H = 0;
+
+        byCol.forEach(function (list, ci) {
+            var y = TOP;
+
+            list.forEach(function (n) {
+                // MIN_H — чтобы подпись читалась даже у мелкого узла,
+                // MAX_H — чтобы один крупный не занял весь экран
+                var h = Math.min(MAX_H, Math.max(MIN_H, n.value * k));
+
+                pos[n.id] = { x: colX[ci], y: y, h: h, node: n };
+                y += h + GAP;
+            });
+
+            H = Math.max(H, y);
+        });
+
+        H = Math.max(340, H + 14);
+
+        // ленты: толщина у каждого конца — доля связи в объёме узла
+        var outAt = {}, inAt = {};
+        var paths = links.filter(function (l) {
+            return pos[l.source] && pos[l.target];
+        }).sort(function (a, b) {
+            return (pos[a.source].y - pos[b.source].y) ||
+                (pos[a.target].y - pos[b.target].y);
+        }).map(function (l) {
+            var a = pos[l.source];
+            var b = pos[l.target];
+            var ha = a.h * l.value / Math.max(1, outV[l.source]);
+            var hb = b.h * l.value / Math.max(1, inV[l.target]);
+            var ay = a.y + (outAt[l.source] || 0);
+            var by = b.y + (inAt[l.target] || 0);
+
+            outAt[l.source] = (outAt[l.source] || 0) + ha;
+            inAt[l.target] = (inAt[l.target] || 0) + hb;
+
+            var x1 = a.x + NODE_W;
+            var x2 = b.x;
+            var mx = (x1 + x2) / 2;
+            var ratio = l.total ? l.write / l.total : 0;
+
+            return '<path class="lk" data-a="' + esc(l.source) +
+                '" data-b="' + esc(l.target) + '" fill="' + flowMix(ratio) +
+                '" fill-opacity="0.34" d="M' + x1 + "," + ay +
+                " C" + mx + "," + ay + " " + mx + "," + by + " " + x2 + "," +
+                by + " L" + x2 + "," + (by + hb) +
+                " C" + mx + "," + (by + hb) + " " + mx + "," + (ay + ha) +
+                " " + x1 + "," + (ay + ha) + ' Z">' +
+                "<title>" + esc(a.node.label) + " → " + esc(b.node.label) +
+                ": " + fmtN(l.total) + " таблиц" +
+                (l.write ? ", из них с записью " + fmtN(l.write) : "") +
+                "</title></path>";
+        });
+
+        function nodeSvg(id) {
+            var p = pos[id];
+            var n = p.node;
+            var fill = n.column === 0
+                ? (n.superuser ? "#f97066" : "#8b5cf6")
+                : (n.column === 1 ? (n.direct ? "#64748b" : "#6366f1")
+                                  : "#475569");
+            var anchor = n.column === 2 ? "start"
+                : (n.column === 0 ? "end" : "middle");
+            var tx = n.column === 2 ? p.x + NODE_W + 7
+                : (n.column === 0 ? p.x - 7 : p.x + NODE_W / 2);
+            var ty = p.y + p.h / 2;
+            var short = n.label.length > 26
+                ? n.label.slice(0, 25) + "…" : n.label;
+
+            return '<g class="nd' + (FL.sel === id ? " on" : "") +
+                '" data-id="' + esc(id) + '">' +
+                '<rect x="' + p.x + '" y="' + p.y + '" width="' + NODE_W +
+                '" height="' + p.h + '" fill="' + fill + '">' +
+                "<title>" + esc(n.label) + " · " + fmtN(n.value) +
+                " таблиц" + (n.write ? " · с записью " + fmtN(n.write) : "") +
+                "</title></rect>" +
+                '<text x="' + tx + '" y="' + ty + '" text-anchor="' + anchor +
+                '" dominant-baseline="middle">' +
+                (n.superuser ? '<tspan class="su">★ </tspan>' : "") +
+                esc(short) + ' <tspan class="val">· ' + fmtN(n.value) +
+                "</tspan></text></g>";
+        }
+
+        var shownUsers = byCol[0].length;
+        var shownTables = byCol[0].reduce(function (a, n) {
+            return a + n.value;
+        }, 0);
+
+        box.innerHTML = '<svg width="' + W + '" height="' + H +
+            '" viewBox="0 0 ' + W + " " + H + '">' +
+            '<text class="col-title" x="' + (colX[0] - 7) +
+            '" y="16" text-anchor="end">пользователь</text>' +
+            '<text class="col-title" x="' + (colX[1] + NODE_W / 2) +
+            '" y="16" text-anchor="middle">через что</text>' +
+            '<text class="col-title" x="' + (colX[2] + NODE_W + 7) +
+            '" y="16">схема</text>' +
+            paths.join("") +
+            Object.keys(pos).map(nodeSvg).join("") + "</svg>";
+
+        FL.pos = pos;
+        FL.links = links;
+        // в фокусе честнее показывать объём самого узла: левая колонка
+        // при фокусе на схеме отражает весь трафик пользователей через
+        // эти роли, а не только тот, что дошёл до схемы
+        flowCrumb(shownUsers, FL.focus && pos[FL.focus]
+            ? pos[FL.focus].node.value : shownTables);
+        bindFlowNodes(box);
+        renderFlowSel();
+    }
+
+    function bindFlowNodes(box) {
+        var svg = box.querySelector("svg");
+
+        if (!svg) { return; }
+
+        svg.querySelectorAll(".nd").forEach(function (g) {
+            var id = g.getAttribute("data-id");
+
+            g.addEventListener("click", function () {
+                // повторный клик по тому же узлу снимает фокус
+                if (FL.focus === id) {
+                    FL.focus = null;
+                    FL.sel = null;
+                } else {
+                    FL.focus = id;
+                    FL.sel = id;
+                }
+
+                renderFlow();
+            });
+
+            g.addEventListener("mouseenter", function () {
+                svg.querySelectorAll(".lk").forEach(function (p) {
+                    var on = p.getAttribute("data-a") === id ||
+                        p.getAttribute("data-b") === id;
+
+                    p.setAttribute("fill-opacity", on ? "0.75" : "0.06");
+                });
+
+                var near = {};
+
+                svg.querySelectorAll(".lk").forEach(function (p) {
+                    if (p.getAttribute("data-a") === id) {
+                        near[p.getAttribute("data-b")] = true;
+                    }
+                    if (p.getAttribute("data-b") === id) {
+                        near[p.getAttribute("data-a")] = true;
+                    }
+                });
+
+                svg.querySelectorAll(".nd").forEach(function (other) {
+                    var oid = other.getAttribute("data-id");
+
+                    other.classList.toggle("dim", oid !== id && !near[oid]);
+                });
+            });
+
+            g.addEventListener("mouseleave", function () {
+                svg.querySelectorAll(".lk").forEach(function (p) {
+                    p.setAttribute("fill-opacity", "0.34");
+                });
+                svg.querySelectorAll(".nd").forEach(function (other) {
+                    other.classList.remove("dim");
+                });
+            });
+        });
+    }
+
+    // боковая панель: из чего складывается поток выбранного узла
+    function renderFlowSel() {
+        var box = $("grFlowSel");
+        var id = FL.sel;
+
+        if (!id) {
+            box.innerHTML = "кликни по узлу — покажу, из чего складывается " +
+                "его поток, и открою его в матрице, графе или списке";
+            return;
+        }
+
+        var n = flowNode(id);
+
+        if (!n) { box.innerHTML = "узел не найден"; return; }
+
+        var kind = id.charAt(0);
+        var parts = [];
+
+        FL.links.forEach(function (l) {
+            if (l.source === id) {
+                parts.push({ id: l.target, value: l.value, write: l.write });
+            } else if (l.target === id) {
+                parts.push({ id: l.source, value: l.value, write: l.write });
+            }
+        });
+
+        parts.sort(function (a, b) { return b.value - a.value; });
+
+        var kindName = kind === "u" ? "пользователь"
+            : (kind === "r" ? (n.direct ? "прямая выдача" : "роль") : "схема");
+        var total = parts.reduce(function (a, p) { return a + p.value; }, 0);
+        var write = parts.reduce(function (a, p) { return a + p.write; }, 0);
+
+        var acts = "";
+
+        if (kind === "u") {
+            acts = '<span class="gr-flow-act" data-act="graph">в графе</span>' +
+                '<span class="gr-flow-act" data-act="list">в списке</span>';
+        } else if (kind === "s") {
+            acts = '<span class="gr-flow-act" data-act="matrix">' +
+                "открыть схему в матрице</span>";
+        } else {
+            acts = '<span class="gr-flow-act" data-act="list">' +
+                "найти в списке</span>";
+        }
+
+        box.innerHTML = "<b>" + esc(n.label) + "</b>" +
+            (n.superuser ? ' <span style="color: #f97066;">superuser</span>'
+                         : "") +
+            "<br>" + kindName + "<br>" +
+            "прав на таблицы: <b>" + fmtN(total) + "</b>" +
+            (write ? ", с записью: <b>" + fmtN(write) + "</b>" : "") +
+            (kind === "r" && n.users
+                ? "<br>пользователей: <b>" + fmtN(n.users) + "</b>" : "") +
+            acts +
+            '<div class="gr-flow-brk">' +
+            parts.slice(0, 24).map(function (p) {
+                var other = flowNode(p.id);
+
+                return '<div data-go="' + esc(p.id) + '"><span>' +
+                    esc(other ? other.label : p.id.slice(2)) +
+                    "</span><b>" + fmtN(p.value) + "</b></div>";
+            }).join("") +
+            (parts.length > 24
+                ? "<div>…и ещё " + (parts.length - 24) + "</div>" : "") +
+            "</div>";
+
+        box.querySelectorAll("[data-go]").forEach(function (row) {
+            row.onclick = function () {
+                FL.focus = row.getAttribute("data-go");
+                FL.sel = FL.focus;
+                renderFlow();
+            };
+        });
+
+        box.querySelectorAll("[data-act]").forEach(function (btn) {
+            btn.onclick = function () {
+                var act = btn.getAttribute("data-act");
+
+                if (act === "graph") {
+                    focusUserInGraph(n.label);
+                } else if (act === "list") {
+                    $("grQ").value = n.label;
+                    state.q = n.label;
+                    renderList();
+                    switchView("list");
+                } else if (act === "matrix") {
+                    switchView("matrix");
+                    openSchemaMatrix(n.label);
+                }
+            };
+        });
+    }
+
+    /* ---------------- загрузка ---------------- */
+
+    function renderCards() {
+        var s = (state.data && state.data.summary) || {};
+
+        $("grcUsers").textContent = fmtN(s.users || 0);
+        $("grcUsersD").textContent = fmtN(s.groups || 0) + " групп · " +
+            fmtN(s.superusers || 0) + " superuser";
+        $("grcTables").textContent = fmtN(s.tables || 0);
+        $("grcTablesD").textContent = "в " + fmtN(s.schemas || 0) + " схемах";
+        $("grcWrite").textContent = fmtN(s.write_privileges || 0);
+        $("grcReview").textContent = fmtN(s.review || 0);
+
+        var crumb = document.querySelector(".pgcrumb");
+
+        if (crumb && state.data) {
+            crumb.textContent = "права на объекты · " +
+                (state.data.connection_name || "") +
+                (state.data.generated_at
+                    ? " · срез " + state.data.generated_at
+                    : " · срез не собран");
+        }
+
+        renderSnapNote();
+    }
+
+    // возраст сохранённого среза: страница живёт на нём и в источник
+    // не ходит, пока не нажали «обновить срез»
+    function renderSnapNote() {
+        var box = $("grSnap");
+        var d = state.data;
+
+        if (!box) { return; }
+
+        if (!d || !d.generated_at) {
+            box.className = "gr-snap none";
+            box.innerHTML = "<b>среза нет</b> — нажми «обновить срез»";
+            return;
+        }
+
+        var age = Math.max(0,
+            (Date.now() - new Date(d.generated_at.replace(" ", "T"))) / 60000);
+        var txt;
+
+        if (age < 1) { txt = "только что"; }
+        else if (age < 60) { txt = Math.round(age) + " мин назад"; }
+        else if (age < 60 * 24) { txt = Math.round(age / 60) + " ч назад"; }
+        else { txt = Math.round(age / 60 / 24) + " дн назад"; }
+
+        box.className = "gr-snap" + (age > 60 * 24 ? " stale" : "");
+        box.innerHTML = "срез из БД · <b>" + esc(txt) + "</b> · " +
+            esc(d.generated_at);
+    }
+
+    // среза ещё нет: ничего не показываем и в источник не лезем
+    function showNoSnapshot() {
+        var msg = '<div class="gr-empty">Срез прав по этому подключению ещё ' +
+            "не собирали. Нажми <b>«обновить срез»</b> — Opsentri один раз " +
+            "прочитает системные каталоги и сохранит результат в свою базу. " +
+            "Дальше страница работает с сохранёнными данными и источник " +
+            "не трогает.</div>";
+
+        $("grList").innerHTML = msg;
+        $("grMatrix").innerHTML = msg;
+        $("grFlow").innerHTML = msg;
+        $("grFlowNote").textContent = "";
+
+        G.nodes = [];
+        G.links = [];
+        G.byId = {};
+        G.sel = null;
+    }
+
+    function load(force) {
+        if (!state.conn || state.loading) { return; }
+
+        state.loading = true;
+        $("grRefresh").disabled = true;
+        $("grRefresh").textContent = force ? "читаю источник…" : "обновить срез";
+        $("grList").innerHTML = '<div class="gr-empty">' +
+            (force ? "Читаю каталоги прав в источнике…"
+                   : "Читаю сохранённый срез…") + "</div>";
+
+        fetch("/api/grants/overview?connection_id=" +
+              encodeURIComponent(state.conn) + (force ? "&force=1" : ""))
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                state.loading = false;
+                $("grRefresh").disabled = false;
+                $("grRefresh").textContent = "обновить срез";
+
+                if (!d.ok) {
+                    $("grList").innerHTML = '<div class="gr-empty" ' +
+                        'style="color: var(--crit);">' + esc(d.message) + "</div>";
+                    return;
+                }
+
+                state.data = d;
+                state.openUsers = {};
+                state.openTables = {};
+                FL.focus = null;
+                FL.sel = null;
+                MX.drill = null;
+                MX.schemaData = null;
+                renderCards();
+
+                if (d.empty) { showNoSnapshot(); return; }
+
+                renderList();
+
+                if (state.view === "graph") { buildGraph(); }
+                if (state.view === "matrix") { renderMatrix(); }
+                if (state.view === "flow") { renderFlow(); }
+            })
+            .catch(function (e) {
+                state.loading = false;
+                $("grRefresh").disabled = false;
+                $("grRefresh").textContent = "обновить срез";
+                $("grList").innerHTML = '<div class="gr-empty" ' +
+                    'style="color: var(--crit);">' + esc(String(e)) + "</div>";
+            });
+    }
+
+    function initBar() {
+        $("grConns").querySelectorAll("[data-conn]").forEach(function (chip) {
+            chip.onclick = function () {
+                $("grConns").querySelectorAll(".gr-chip").forEach(function (c) {
+                    c.classList.remove("on");
+                });
+                chip.classList.add("on");
+                state.conn = chip.getAttribute("data-conn");
+                load(false);
+            };
+        });
+
+        $("grFilters").querySelectorAll("[data-f]").forEach(function (chip) {
+            chip.onclick = function () {
+                $("grFilters").querySelectorAll(".gr-chip").forEach(function (c) {
+                    c.classList.remove("on");
+                });
+                chip.classList.add("on");
+                state.filter = chip.getAttribute("data-f");
+                renderList();
+
+                if (state.view === "matrix") { renderMatrix(); }
+            };
+        });
+
+        $("grView").querySelectorAll("[data-v]").forEach(function (chip) {
+            chip.onclick = function () {
+                $("grView").querySelectorAll(".gr-chip").forEach(function (c) {
+                    c.classList.remove("on");
+                });
+                chip.classList.add("on");
+                state.view = chip.getAttribute("data-v");
+
+                var graph = state.view === "graph";
+                var matrix = state.view === "matrix";
+                var flow = state.view === "flow";
+
+                $("grGraphPanel").style.display = graph ? "" : "none";
+                $("grMatrixPanel").style.display = matrix ? "" : "none";
+                $("grFlowPanel").style.display = flow ? "" : "none";
+                $("grListPanel").style.display = (graph || matrix || flow)
+                    ? "none" : "";
+                $("grExpandAll").style.display = (graph || matrix || flow)
+                    ? "none" : "";
+
+                if (graph) {
+                    resizeCanvas();
+                    buildGraph();
+                }
+
+                if (matrix) { renderMatrix(); }
+                if (flow) { renderFlow(); }
+            };
+        });
+
+        var timer = null;
+
+        $("grQ").addEventListener("input", function () {
+            clearTimeout(timer);
+            timer = setTimeout(function () {
+                state.q = $("grQ").value.trim();
+                renderList();
+
+                if (state.view === "matrix") { renderMatrix(); }
+            }, 200);
+        });
+
+        $("grFlowWrite").addEventListener("change", function () {
+            renderFlow();
+        });
+
+        $("grFlowReset").onclick = function () {
+            FL.focus = null;
+            FL.sel = null;
+            $("grFlowWrite").checked = false;
+            renderFlow();
+        };
+
+        ["grMxRoles", "grMxSeriate"].forEach(function (id) {
+            $(id).addEventListener("change", function () {
+                MX.openGroup = {};
+                renderMatrix();
+            });
+        });
+
+        $("grExpandAll").onclick = function () {
+            state.expandAll = !state.expandAll;
+            $("grExpandAll").textContent = state.expandAll
+                ? "свернуть все" : "развернуть все";
+            renderList();
+        };
+
+        $("grRefresh").onclick = function () { load(true); };
+    }
+
+    initBar();
+    initGraph();
+    // матрица — основной вид: он читается на любых объёмах
+    state.view = "matrix";
+    $("grExpandAll").style.display = "none";
+
+    var first = document.querySelector("#grConns [data-conn]");
+
+    if (first) {
+        state.conn = first.getAttribute("data-conn");
+        load(false);
+    } else {
+        $("grList").innerHTML = '<div class="gr-empty">Нет подключений — ' +
+            "добавь их на вкладке «Подключения».</div>";
+    }
+})();
+</script>
+
+{% endblock %}

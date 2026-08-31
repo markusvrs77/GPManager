@@ -1,10 +1,14 @@
 {% extends "base.html" %}
 
+{% block title %}gpcopy · Opsentri{% endblock %}
+
 {% block content %}
 <div class="gpcopy-page">
-    <h1>gpcopy</h1>
-    <div class="text-muted mb-3">
-        Greenplum gpcopy transfer tables from one database to another
+    <div class="mb-4">
+        <h2 class="mb-1">gpcopy</h2>
+        <div class="text-muted">
+            Transfer Greenplum tables from one database to another
+        </div>
     </div>
 
     <div class="gpcopy-layout">
@@ -35,145 +39,168 @@
                     {% endfor %}
                 </select>
 
-                <button type="button"
-                        class="btn btn-outline-primary w-100 mb-3"
-                        onclick="loadGpcopyObjectTree()">
-                    Load source database objects
-                </button>
-
-                <input id="gpcopyObjectSearch"
-                       class="form-control mb-2"
-                       placeholder="Search schema/table...">
-
-                <div class="small text-muted mb-2">
-                    Selected: <span id="gpcopySelectedCount">0</span>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <div id="gpcopyCatalogInfo" class="small text-muted">Каталог не загружен</div>
+                    <button type="button" class="btn btn-sm btn-outline-secondary"
+                            onclick="catalogRefresh()" title="Обновить каталог">⟳</button>
                 </div>
 
-                <div id="gpcopyObjectTreeStatus" class="small text-muted mb-2">
-                    Выбери source connection и нажми Load source database objects.
+                <input id="gpcopyCatalogSearch"
+                       class="form-control form-control-sm mb-1"
+                       placeholder="Поиск по 10к+ таблицам (мин. 2 символа)…"
+                       oninput="bulkSearchInput()">
+                <div id="gpcopyCatalogResults" class="mb-2" style="max-height: 180px; overflow-y: auto;"></div>
+
+                <div class="input-group input-group-sm mb-2">
+                    <input id="gpcopyMaskInput" class="form-control"
+                           placeholder="Маска: dwh.fact_*">
+                    <button type="button" class="btn btn-outline-primary"
+                            onclick="bulkSelectByMask()">Выбрать</button>
                 </div>
 
-                <div id="gpcopyObjectTree"
-                     class="object-tree-box border rounded p-2">
+                <details class="mb-2">
+                    <summary class="small text-muted" style="cursor:pointer">Вставить список (schema.table построчно)</summary>
+                    <textarea id="gpcopyPasteList" class="form-control form-control-sm my-2" rows="4"
+                              placeholder="dwh.orders&#10;dwh.payments"></textarea>
+                    <button type="button" class="btn btn-sm btn-outline-primary w-100"
+                            onclick="bulkAddPastedList()">Добавить из списка</button>
+                </details>
+
+                <details class="mb-2">
+                    <summary class="small text-muted" style="cursor:pointer">Схемы (выбрать целиком)</summary>
+                    <div id="gpcopyCatalogSchemas" class="mt-1" style="max-height: 200px; overflow-y: auto;"></div>
+                </details>
+
+                <div class="border rounded p-2 mb-2">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="small">Выбрано: <b id="gpcopySelectedCount">0</b></span>
+                        <button type="button" class="btn btn-sm btn-outline-danger py-0"
+                                onclick="bulkClearSelection()">Очистить</button>
+                    </div>
+                    <div id="gpcopySelectedSummary" class="small"></div>
                 </div>
+
+                <div class="border rounded p-2 mb-2">
+                    <div class="fw-bold small mb-1">Наборы таблиц</div>
+                    <div class="input-group input-group-sm mb-1">
+                        <select id="gpcopyTableSets" class="form-select"></select>
+                        <button type="button" class="btn btn-outline-primary" onclick="bulkApplySet()">Загрузить</button>
+                        <button type="button" class="btn btn-outline-danger" onclick="bulkDeleteSet()">✕</button>
+                    </div>
+                    <div class="input-group input-group-sm">
+                        <input id="gpcopySetName" class="form-control" placeholder="Имя нового набора">
+                        <button type="button" class="btn btn-outline-success" onclick="bulkSaveSet()">Сохранить</button>
+                    </div>
+                </div>
+
+                <div id="gpcopyBulkStatus" class="small text-muted mb-2"></div>
+
+                <details>
+                    <summary class="small text-muted" style="cursor:pointer">Обзор дерева объектов (по требованию)</summary>
+                    <button type="button"
+                            class="btn btn-sm btn-outline-primary w-100 my-2"
+                            onclick="loadGpcopyObjectTree()">
+                        Load source database objects
+                    </button>
+
+                    <input id="gpcopyObjectSearch"
+                           class="form-control form-control-sm mb-2"
+                           placeholder="Search schema/table...">
+
+                    <div id="gpcopyObjectTreeStatus" class="small text-muted mb-2"></div>
+
+                    <div id="gpcopyObjectTree"
+                         class="object-tree-box border rounded p-2">
+                    </div>
+                </details>
 
             </div>
         </div>
 
-        <!-- RIGHT PANEL -->
+        <!-- RIGHT PANEL: режимы копирования как вкладки -->
         <div class="card gpcopy-right">
             <div class="card-header">
-                <b>Run</b>
+                <ul class="nav nav-tabs card-header-tabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" data-bs-toggle="tab"
+                                data-bs-target="#gpcopyTabFull" type="button"
+                                role="tab" aria-selected="true">
+                            Full
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" data-bs-toggle="tab"
+                                data-bs-target="#gpcopyTabDate" type="button"
+                                role="tab" aria-selected="false">
+                            By date
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" data-bs-toggle="tab"
+                                data-bs-target="#gpcopyTabV2" type="button"
+                                role="tab" aria-selected="false">
+                            Increment / Diff
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" data-bs-toggle="tab"
+                                data-bs-target="#gpcopyTabSync" type="button"
+                                role="tab" aria-selected="false">
+                            Sync by key
+                        </button>
+                    </li>
+                </ul>
             </div>
 
             <div class="card-body">
 
-                <!-- BASIC GPCOPY SETTINGS -->
-                <div class="gpcopy-section">
-                    <div class="gpcopy-section-title">1. Basic gpcopy settings</div>
+                <div class="tab-content">
 
-                    <div class="gpcopy-run-grid">
-                        <div>
-                            <label class="form-label">gpcopy path</label>
-                            <input id="gpcopyPath"
-                                   class="form-control"
-                                   value="/usr/local/gpdb/greenplum-db/bin/gpcopy">
-                        </div>
+                    <!-- TAB: FULL COPY -->
+                    <div class="tab-pane fade show active" id="gpcopyTabFull" role="tabpanel">
+                        <p class="text-muted small mb-3">
+                            Полное копирование выбранных слева таблиц. Поведение при
+                            существующих таблицах задаётся опциями в «Advanced settings».
+                        </p>
 
-                        <div>
-                            <label class="form-label">Jobs</label>
-                            <input id="gpcopyJobs"
-                                   class="form-control"
-                                   type="number"
-                                   value="4"
-                                   min="1">
-                        </div>
+                        <div class="gpcopy-target-grid">
+                            <div>
+                                <label class="form-label">Target schema</label>
+                                <input id="gpcopyTargetSchema"
+                                       class="form-control"
+                                       placeholder="Например: dwh_target">
+                                <div class="form-text">
+                                    Если заполнить, таблицы будут загружены в эту схему.
+                                </div>
+                            </div>
 
-                        <div>
-                            <label class="form-label">on-segment-threshold</label>
-                            <input id="gpcopyOnSegmentThreshold"
-                                   class="form-control"
-                                   type="number"
-                                   value="-1">
-                        </div>
-                    </div>
-
-                    <div class="gpcopy-target-grid mt-3">
-                        <div>
-                            <label class="form-label">Target schema</label>
-                            <input id="gpcopyTargetSchema"
-                                   class="form-control"
-                                   placeholder="Например: dwh_target">
-                            <div class="form-text">
-                                Если заполнить, таблицы будут загружены в эту схему.
+                            <div>
+                                <label class="form-label">Target table mode</label>
+                                <select id="gpcopyTargetMode" class="form-select">
+                                    <option value="same_name">Same table name</option>
+                                    <option value="same_schema">Same schema/table as source</option>
+                                </select>
                             </div>
                         </div>
 
-                        <div>
-                            <label class="form-label">Target table mode</label>
-                            <select id="gpcopyTargetMode" class="form-select">
-                                <option value="same_name">Same table name</option>
-                                <option value="same_schema">Same schema/table as source</option>
-                            </select>
+                        <button type="button"
+                                id="gpcopyRunButton"
+                                class="btn btn-primary w-100 mt-3"
+                                onclick="startGpcopyJob()">
+                            Run gpcopy
+                        </button>
+
+                        <div id="gpcopyStatusBox" class="alert alert-info mt-3">
+                            Выбери таблицы и нажми Run gpcopy.
                         </div>
                     </div>
 
-                    <div class="gpcopy-options-grid mt-3">
-                        <label>
-                            <input type="checkbox" id="gpcopyTruncate">
-                            --truncate
-                        </label>
-
-                        <label>
-                            <input type="checkbox" id="gpcopyDrop">
-                            --drop
-                        </label>
-
-                        <label>
-                            <input type="checkbox" id="gpcopyAppend">
-                            --append
-                        </label>
-
-                        <label>
-                            <input type="checkbox" id="gpcopySkipExisting">
-                            --skip-existing
-                        </label>
-
-                        <label>
-                            <input type="checkbox" id="gpcopyAnalyze">
-                            --analyze
-                        </label>
-
-                        <label>
-                            <input type="checkbox" id="gpcopyDryRun">
-                            --dry-run
-                        </label>
-
-                        <label>
-                            <input type="checkbox" id="gpcopyValidateCount">
-                            --validate count
-                        </label>
-                    </div>
-
-                    <label class="form-label mt-3">Extra args</label>
-                    <input id="gpcopyExtraArgs"
-                           class="form-control"
-                           placeholder="Например: --no-ownership">
-                </div>
-
-                <!-- DATE FILTER SETTINGS -->
-                <div class="card mt-3 border-primary">
-                    <div class="card-header bg-primary text-white">
-                        <b>GPCOPY by date filter</b>
-                    </div>
-
-                    <div class="card-body">
-                        <div class="alert alert-info">
-                            1) Выбери таблицы слева чекбоксами. <br>
-                            2) Нажми <b>Prepare selected tables</b>. <br>
-                            3) Для каждой таблицы выбери свою колонку даты. <br>
-                            4) Укажи период и запусти <b>Run GPCOPY by date</b>.
-                        </div>
+                    <!-- TAB: BY DATE -->
+                    <div class="tab-pane fade" id="gpcopyTabDate" role="tabpanel">
+                        <p class="text-muted small mb-3">
+                            Копирование среза по датам: выбери таблицы слева →
+                            <b>Prepare</b> → колонка даты для каждой таблицы → период → Run.
+                        </p>
 
                         <div class="row g-2 align-items-end mb-3">
                             <div class="col-md-3">
@@ -209,6 +236,19 @@
                             </div>
                         </div>
 
+                        <div class="border rounded p-2 mb-3">
+                            <div class="fw-bold small mb-1">Массовое правило колонок дат (для 10к+ таблиц)</div>
+                            <div class="input-group input-group-sm">
+                                <input id="gpcopyDateRule" class="form-control"
+                                       placeholder="Приоритет: date_change$, updated_at, created_at">
+                                <button type="button" class="btn btn-primary"
+                                        onclick="bulkRunByDateRule()">Резолв + Run</button>
+                            </div>
+                            <div id="gpcopyDateRuleResult" class="small text-muted mt-1">
+                                Колонка подберётся автоматически для каждой выбранной таблицы; таблицы без подходящей колонки будут показаны и пропущены.
+                            </div>
+                        </div>
+
                         <div class="table-responsive">
                             <table class="table table-sm table-bordered align-middle">
                                 <thead>
@@ -230,7 +270,7 @@
                         </div>
 
                         <button type="button"
-                                class="btn btn-success"
+                                class="btn btn-primary w-100"
                                 onclick="startGpcopyByDateMulti()">
                             Run GPCOPY by date
                         </button>
@@ -239,84 +279,200 @@
                             Выбери таблицы слева и нажми Prepare selected tables.
                         </div>
                     </div>
-                </div>
 
-                <!--GPTEST-->
+                    <!-- TAB: INCREMENT / PARTITION-DIFF -->
+                    <div class="tab-pane fade" id="gpcopyTabV2" role="tabpanel">
+                        <p class="text-muted small mb-3">
+                            Точечная догрузка: <b>Increment</b> — только новые строки по
+                            watermark-колонке; <b>Partition-diff</b> — только партиции,
+                            отличающиеся от источника по числу строк.
+                        </p>
 
-                <div class="card-header bg-danger text-white">
-                    <b>Prod → Test Sync by key</b>
-                </div>
+                        <div class="row g-2 mb-2">
+                            <div class="col-md-5">
+                                <label class="form-label small">Режим</label>
+                                <select id="gpcopyV2Mode" class="form-select form-select-sm" onchange="gpcopyV2ModeChange()">
+                                    <option value="increment">Increment (догрузка новых строк)</option>
+                                    <option value="partition_diff">Partition-diff (отличающиеся партиции)</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4" id="gpcopyV2WatermarkBox">
+                                <label class="form-label small">Watermark-колонка</label>
+                                <input type="text" id="gpcopyV2Watermark" class="form-control form-control-sm" placeholder="id / date_change$">
+                            </div>
+                        </div>
 
-                <div class="card-body">
-                    <div class="alert alert-warning">
-                        Этот режим сравнивает PROD и TEST по выбранному ключу.
-                        Будут выполнены INSERT / UPDATE / DELETE на TEST.
+                        <div class="d-flex gap-2 mb-2">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="gpcopyV2Preview()">Preview</button>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="gpcopyV2Start()">Start now</button>
+                        </div>
+
+                        <div id="gpcopyV2Result" class="small mb-2"></div>
+
+                        <hr>
+
+                        <div class="fw-bold small mb-2">Запланировать (в Schedules)</div>
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-4">
+                                <label class="form-label small">Имя расписания</label>
+                                <input type="text" id="gpcopyV2SchedName" class="form-control form-control-sm" placeholder="nightly-increment">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label small">Cron</label>
+                                <input type="text" id="gpcopyV2SchedCron" class="form-control form-control-sm" value="0 2 * * *">
+                            </div>
+                            <div class="col-md-4">
+                                <button type="button" class="btn btn-sm btn-outline-primary w-100" onclick="gpcopyV2Schedule()">Запланировать</button>
+                            </div>
+                        </div>
+                        <div id="gpcopyV2SchedResult" class="small mt-2 text-muted"></div>
                     </div>
 
-                    <button type="button"
-                            class="btn btn-outline-primary"
-                            onclick="prepareGpcopySyncTables()">
-                        Prepare selected tables
-                    </button>
+                    <!-- TAB: SYNC BY KEY -->
+                    <div class="tab-pane fade" id="gpcopyTabSync" role="tabpanel">
+                        <div class="alert alert-warning">
+                            Этот режим сравнивает PROD и TEST по выбранному ключу.
+                            Будут выполнены INSERT / UPDATE / DELETE на TEST.
+                        </div>
 
-                    <button type="button"
-                            class="btn btn-outline-secondary"
-                            onclick="previewGpcopySyncDiff()">
-                        Preview diff
-                    </button>
+                        <div class="d-flex gap-2 flex-wrap mb-3">
+                            <button type="button"
+                                    class="btn btn-outline-primary"
+                                    onclick="prepareGpcopySyncTables()">
+                                Prepare selected tables
+                            </button>
 
-                    <button type="button"
-                            class="btn btn-danger"
-                            onclick="startGpcopySyncApply()">
-                        Apply sync to TEST
-                    </button>
+                            <button type="button"
+                                    class="btn btn-outline-secondary"
+                                    onclick="previewGpcopySyncDiff()">
+                                Preview diff
+                            </button>
 
-                    <div class="table-responsive mt-3">
-                        <table class="table table-sm table-bordered align-middle">
-                            <thead>
-                            <tr>
-                                <th>Source table</th>
-                                <th>Target table</th>
-                                <th>Key columns</th>
-                                <th>Compare columns</th>
-                                <th>Delete missing?</th>
-                            </tr>
-                            </thead>
-                            <tbody id="gpcopySyncTablesBody">
-                            <tr>
-                                <td colspan="5" class="text-muted">
-                                    Пока нет выбранных таблиц.
-                                </td>
-                            </tr>
-                            </tbody>
-                        </table>
+                            <button type="button"
+                                    class="btn btn-outline-success"
+                                    onclick="bulkFillSyncKeys()">
+                                Ключи: PK + уник. индексы
+                            </button>
+
+                            <button type="button"
+                                    class="btn btn-outline-warning"
+                                    onclick="bulkComputeMissingKeys()">
+                                Вычислить ключ (по данным)
+                            </button>
+                        </div>
+
+                        <div class="table-responsive">
+                            <table class="table table-sm table-bordered align-middle">
+                                <thead>
+                                <tr>
+                                    <th>Source table</th>
+                                    <th>Target table</th>
+                                    <th>Key columns</th>
+                                    <th>Compare columns</th>
+                                    <th>Delete missing?</th>
+                                </tr>
+                                </thead>
+                                <tbody id="gpcopySyncTablesBody">
+                                <tr>
+                                    <td colspan="5" class="text-muted">
+                                        Пока нет выбранных таблиц.
+                                    </td>
+                                </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <button type="button"
+                                class="btn btn-danger"
+                                onclick="startGpcopySyncApply()">
+                            Apply sync to TEST
+                        </button>
+
+                        <div id="gpcopySyncStatusBox" class="alert alert-info mt-3">
+                            Выбери таблицы и нажми Prepare selected tables.
+                        </div>
                     </div>
 
-                    <div id="gpcopySyncStatusBox" class="alert alert-info mt-3">
-                        Выбери таблицы и нажми Prepare selected tables.
-                    </div>
                 </div>
 
+                <!-- SHARED: ADVANCED SETTINGS (collapsed) -->
+                <details class="mt-4">
+                    <summary class="fw-bold small text-muted" style="cursor: pointer;">
+                        Advanced settings — gpcopy path, jobs, флаги
+                    </summary>
 
-                <!-- END -->
+                    <div class="border rounded p-3 mt-2">
+                        <div class="gpcopy-run-grid">
+                            <div>
+                                <label class="form-label">gpcopy path</label>
+                                <input id="gpcopyPath"
+                                       class="form-control"
+                                       value="/usr/local/gpdb/greenplum-db/bin/gpcopy">
+                            </div>
 
-                <!-- NORMAL GPCOPY BUTTON -->
-                <div class="gpcopy-section mt-4">
-                    <div class="gpcopy-section-title">3. Normal gpcopy run</div>
+                            <div>
+                                <label class="form-label">Jobs</label>
+                                <input id="gpcopyJobs"
+                                       class="form-control"
+                                       type="number"
+                                       value="4"
+                                       min="1">
+                            </div>
 
-                    <button type="button"
-                            id="gpcopyRunButton"
-                            class="btn btn-warning w-100 mt-2"
-                            onclick="startGpcopyJob()">
-                        Run gpcopy
-                    </button>
+                            <div>
+                                <label class="form-label">on-segment-threshold</label>
+                                <input id="gpcopyOnSegmentThreshold"
+                                       class="form-control"
+                                       type="number"
+                                       value="-1">
+                            </div>
+                        </div>
 
-                    <div id="gpcopyStatusBox" class="alert alert-info mt-3">
-                        Выбери таблицы и нажми Run gpcopy.
+                        <div class="gpcopy-options-grid mt-3">
+                            <label>
+                                <input type="checkbox" id="gpcopyTruncate">
+                                --truncate
+                            </label>
+
+                            <label>
+                                <input type="checkbox" id="gpcopyDrop">
+                                --drop
+                            </label>
+
+                            <label>
+                                <input type="checkbox" id="gpcopyAppend">
+                                --append
+                            </label>
+
+                            <label>
+                                <input type="checkbox" id="gpcopySkipExisting">
+                                --skip-existing
+                            </label>
+
+                            <label>
+                                <input type="checkbox" id="gpcopyAnalyze">
+                                --analyze
+                            </label>
+
+                            <label>
+                                <input type="checkbox" id="gpcopyDryRun">
+                                --dry-run
+                            </label>
+
+                            <label>
+                                <input type="checkbox" id="gpcopyValidateCount">
+                                --validate count
+                            </label>
+                        </div>
+
+                        <label class="form-label mt-3">Extra args</label>
+                        <input id="gpcopyExtraArgs"
+                               class="form-control"
+                               placeholder="Например: --no-ownership">
                     </div>
-                </div>
+                </details>
 
-                <!-- PROGRESS -->
+                <!-- SHARED: PROGRESS -->
                 <div class="gpcopy-section mt-4">
                     <div class="d-flex justify-content-between">
                         <b>Progress</b>
@@ -391,4 +547,5 @@
 
 <script src="{{ url_for('static', filename='js/object_tree.js') }}"></script>
 <script src="{{ url_for('static', filename='js/gpcopy.js') }}"></script>
+<script src="{{ url_for('static', filename='js/gpcopy_bulk.js') }}"></script>
 {% endblock %}

@@ -1,0 +1,440 @@
+{% extends "base.html" %}
+
+{% block title %}Резервные копии PostgreSQL · Opsentri{% endblock %}
+
+{% block content %}
+
+<style>
+/* ============ Postgres Toolkit: pg_dump / pg_restore ============ */
+.pgb { max-width: 1240px; }
+.pgb-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+  gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .pgb-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.pgb-panel { background: var(--surface); border: 1px solid var(--glass-border);
+  border-radius: var(--radius); padding: 16px 18px; min-width: 0; }
+.pgb-panel h6 { font-size: 11.5px; font-weight: 800; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-muted); margin: 0 0 14px;
+  display: flex; align-items: center; gap: 9px; }
+.pgb-panel h6::before { content: ""; width: 8px; height: 8px; border-radius: 50%;
+  background: #336791; flex: none; }
+
+.pgb-row { display: flex; align-items: flex-start; gap: 12px; padding: 11px 4px;
+  border-bottom: 1px solid var(--hairline); font-size: 13px; min-width: 0;
+  flex-wrap: wrap; }
+.pgb-row:last-child { border-bottom: none; }
+.pgb-ts { font-family: var(--font-mono); font-weight: 700; }
+.pgb-meta { color: var(--text-muted); font-size: 12px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pgb-tag { font-size: 10.5px; font-weight: 800; border-radius: var(--radius-pill);
+  padding: 2px 9px; flex: none; color: #fff; background: #336791; }
+.pgb-st { font-size: 10.5px; font-weight: 800; border-radius: var(--radius-pill);
+  padding: 2px 9px; flex: none; margin-left: auto; }
+.pgb-st.done { color: var(--ok); border: 1px solid var(--ok); }
+.pgb-st.failed { color: var(--crit); border: 1px solid var(--crit); }
+
+.pgb-restore { background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); padding: 12px; margin-top: 8px; width: 100%; }
+.pgb-restore .frow { display: flex; gap: 10px; flex-wrap: wrap;
+  align-items: flex-end; margin-bottom: 10px; }
+.pgb-restore label { display: block; font-size: 11px; font-weight: 700;
+  letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted);
+  margin-bottom: 3px; }
+.pgb-hint { color: var(--text-muted); font-size: 12.5px; }
+.pgb-msg { font-size: 13px; margin-top: 10px; }
+.pgb-msg.err { color: var(--crit); }
+.pgb-msg.ok { color: var(--ok); }
+</style>
+
+<div class="pgb">
+    <div class="pgb-grid">
+
+        <!-- новый дамп -->
+        <div class="pgb-panel">
+            <h6>Новый дамп (pg_dump)</h6>
+
+            {% if not connections %}
+            <div class="pgb-hint">
+                Нет подключений с типом PostgreSQL — добавь его на вкладке
+                «Подключения» (тип СУБД: PostgreSQL).
+            </div>
+            {% else %}
+
+            <label class="form-label">Подключение</label>
+            <select id="pgbConn" class="form-select form-select-sm mb-3">
+                {% for c in connections %}
+                <option value="{{ c.id }}"
+                        data-db="{{ c.database_name or '' }}">
+                    {{ c.name }} / {{ c.host }} / {{ c.database_name or '' }}
+                </option>
+                {% endfor %}
+            </select>
+
+            <label class="form-label">База данных</label>
+            <select id="pgbDb" class="form-select form-select-sm mb-3">
+                <option value="">(база подключения)</option>
+            </select>
+
+            <label class="form-label">Что дампить</label>
+            <select id="pgbType" class="form-select form-select-sm mb-3">
+                <option value="full">Всё (схема + данные)</option>
+                <option value="schema_only">Только DDL (--schema-only)</option>
+                <option value="data_only">Только данные (--data-only)</option>
+            </select>
+
+            <label class="form-label">Каталог для дампа (на сервере Opsentri)</label>
+            <input id="pgbDir" class="form-control form-control-sm mb-1"
+                   placeholder="/data/pg_backups">
+            <div class="pgb-hint mb-3">
+                Файл: pgdump_&lt;база&gt;_&lt;метка&gt;.dump (custom-формат:
+                сжатие + выборочное восстановление).
+            </div>
+
+            <label class="form-label">Схемы (по одной в строке, пусто = вся БД)</label>
+            <textarea id="pgbSchemas" class="form-control form-control-sm mb-3"
+                      rows="2" placeholder="public&#10;billing"></textarea>
+
+            <label class="form-label">Таблицы (schema.table, по одной в строке)</label>
+            <textarea id="pgbTables" class="form-control form-control-sm mb-3"
+                      rows="2" placeholder="public.orders"></textarea>
+
+            <label class="form-label">Сжатие (0-9)</label>
+            <input id="pgbCompression" type="number" min="0" max="9"
+                   placeholder="по умолч." class="form-control form-control-sm mb-3">
+
+            <button class="btn btn-primary w-100" id="pgbStart" type="button">
+                Создать дамп
+            </button>
+
+            <div class="d-flex gap-2 mt-2 align-items-center flex-wrap">
+                <select id="pgbFreq" class="form-select form-select-sm"
+                        style="max-width: 130px;">
+                    <option value="daily">Ежедневно</option>
+                    <option value="weekly">Еженедельно</option>
+                    <option value="hourly">Ежечасно</option>
+                </select>
+                <select id="pgbDow" class="form-select form-select-sm"
+                        style="max-width: 90px; display: none;">
+                    <option value="1">Пн</option><option value="2">Вт</option>
+                    <option value="3">Ср</option><option value="4">Чт</option>
+                    <option value="5">Пт</option><option value="6">Сб</option>
+                    <option value="0">Вс</option>
+                </select>
+                <input type="time" id="pgbTime" value="02:00"
+                       class="form-control form-control-sm"
+                       style="max-width: 110px;">
+                <button class="btn btn-sm btn-outline-primary flex-grow-1"
+                        id="pgbSchedule" type="button"
+                        title="Создать расписание с настройками формы выше">
+                    ⏰ Запланировать
+                </button>
+            </div>
+            <div class="pgb-msg" id="pgbMsg"></div>
+            {% endif %}
+        </div>
+
+        <!-- список дампов -->
+        <div class="pgb-panel">
+            <h6>Дампы
+                <button class="btn btn-sm btn-outline-primary" style="margin-left: auto;"
+                        onclick="pgbLoad()" type="button">Обновить</button></h6>
+            <div id="pgbList"><div class="pgb-hint">Загрузка…</div></div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+(function () {
+    "use strict";
+
+    function esc(s) {
+        return String(s == null ? "" : s)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    function msg(text, cls) {
+        var el = document.getElementById("pgbMsg");
+        if (!el) { return; }
+        el.className = "pgb-msg" + (cls ? " " + cls : "");
+        el.textContent = text || "";
+    }
+
+    var TYPE_LABELS = { full: "полный", metadata_only: "DDL", data_only: "данные" };
+
+    function fmtTs(ts) {
+        if (!ts || ts.length !== 14) { return ts || "—"; }
+        return ts.slice(6, 8) + "." + ts.slice(4, 6) + "." + ts.slice(0, 4) +
+            " " + ts.slice(8, 10) + ":" + ts.slice(10, 12);
+    }
+
+    var openRestore = null;
+
+    window.pgbLoad = function () {
+        fetch("/api/backup/list?tool=pg_dump")
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                var box = document.getElementById("pgbList");
+
+                if (!d.ok || !d.backups.length) {
+                    box.innerHTML = '<div class="pgb-hint">Дампов пока нет — ' +
+                        "создай первый слева.</div>";
+                    return;
+                }
+
+                box.innerHTML = d.backups.map(function (b) {
+                    var restorable = b.status === "done" && b.backup_timestamp;
+                    return '<div class="pgb-row">' +
+                        '<span class="pgb-tag">PG · ' +
+                        esc(TYPE_LABELS[b.backup_type] || b.backup_type) + "</span>" +
+                        '<div style="min-width: 0; flex: 1;">' +
+                        '<div class="pgb-ts">' + esc(b.backup_timestamp || "—") +
+                        ' <span class="pgb-meta">· ' + esc(fmtTs(b.backup_timestamp)) +
+                        "</span></div>" +
+                        '<div class="pgb-meta">' +
+                        esc(b.connection_name || ("#" + b.connection_id)) +
+                        " · " + esc(b.dbname || "") +
+                        " · " + esc(b.backup_dir || "") + "</div></div>" +
+                        '<span class="pgb-st ' + esc(b.status) + '">' +
+                        esc(b.status) + "</span>" +
+                        (restorable
+                            ? ' <button class="btn btn-sm btn-outline-primary" ' +
+                              'onclick="pgbToggleRestore(' + b.id + ')">Восстановить</button>'
+                            : "") +
+                        (openRestore === b.id ? restoreFormHtml(b) : "") +
+                        "</div>";
+                }).join("");
+            })
+            .catch(function () {});
+    };
+
+    function restoreFormHtml(b) {
+        return '<div class="pgb-restore" onclick="event.stopPropagation()">' +
+            '<div class="frow">' +
+            '<div><label>Куда (подключение)</label>' +
+            '<select id="pgrConn" class="form-select form-select-sm">' +
+            document.getElementById("pgbConn").innerHTML + "</select></div>" +
+            '<div><label>Целевая БД (пусто = исходная)</label>' +
+            '<input id="pgrTargetDb" class="form-control form-control-sm" ' +
+            'placeholder="' + esc(b.dbname || "") + '_restored"></div>' +
+            '<div><label>Потоки</label>' +
+            '<input id="pgrJobs" type="number" min="1" max="16" value="2" ' +
+            'class="form-control form-control-sm" style="width: 80px;"></div>' +
+            '<div><label>&nbsp;</label><div class="form-check">' +
+            '<input class="form-check-input" type="checkbox" id="pgrCreateDb">' +
+            '<label class="form-check-label" for="pgrCreateDb" ' +
+            'style="text-transform: none; font-size: 12.5px;">создать БД (--create)</label></div></div>' +
+            '<div><label>&nbsp;</label><div class="form-check">' +
+            '<input class="form-check-input" type="checkbox" id="pgrClean">' +
+            '<label class="form-check-label" for="pgrClean" ' +
+            'style="text-transform: none; font-size: 12.5px;">--clean (снести объекты)</label></div></div>' +
+            '<div><label>&nbsp;</label><div class="form-check">' +
+            '<input class="form-check-input" type="checkbox" id="pgrDataOnly">' +
+            '<label class="form-check-label" for="pgrDataOnly" ' +
+            'style="text-transform: none; font-size: 12.5px;">только данные</label></div></div>' +
+            "</div>" +
+            '<button class="btn btn-sm btn-primary" ' +
+            'onclick="pgbRestore(\'' + esc(b.backup_timestamp) + '\', \'' +
+            esc(b.backup_dir || "") + '\', \'' + esc(b.dbname || "") +
+            '\')">Запустить восстановление</button>' +
+            "</div>";
+    }
+
+    window.pgbToggleRestore = function (id) {
+        openRestore = openRestore === id ? null : id;
+        pgbLoad();
+    };
+
+    window.pgbRestore = function (timestamp, backupDir, dbname) {
+        var body = {
+            connection_id: parseInt(document.getElementById("pgrConn").value, 10),
+            backup_timestamp: timestamp,
+            backup_dir: backupDir,
+            dbname: dbname,
+            target_db: document.getElementById("pgrTargetDb").value.trim(),
+            create_db: document.getElementById("pgrCreateDb").checked,
+            clean: document.getElementById("pgrClean").checked,
+            data_only: document.getElementById("pgrDataOnly").checked,
+            jobs: parseInt(document.getElementById("pgrJobs").value, 10) || 1,
+        };
+
+        var go = function () {
+            fetch("/api/pg/backup/restore", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                if (!d.ok) {
+                    if (window.gpToast) { gpToast(d.message, "error"); }
+                    else { alert(d.message); }
+                    return;
+                }
+                openRestore = null;
+                pgbLoad();
+                if (window.gpToast) {
+                    gpToast("Восстановление запущено: задача #" + d.job_id, "success");
+                }
+            });
+        };
+
+        var text = "Восстановить дамп " + timestamp +
+            (body.target_db ? " в БД «" + body.target_db + "»"
+                : " поверх исходной БД «" + dbname + "»") +
+            "? Существующие данные могут быть перезаписаны.";
+
+        if (window.gpConfirm) {
+            window.gpConfirm(text).then(function (yes) { if (yes) { go(); } });
+        } else if (confirm(text)) { go(); }
+    };
+
+    var startBtn = document.getElementById("pgbStart");
+
+    if (startBtn) {
+        startBtn.addEventListener("click", function () {
+            var t = document.getElementById("pgbType").value;
+            startBtn.disabled = true;
+            msg("Запускаю pg_dump…");
+
+            fetch("/api/pg/backup/start", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    connection_id:
+                        parseInt(document.getElementById("pgbConn").value, 10),
+                    dbname: document.getElementById("pgbDb").value,
+                    backup_dir: document.getElementById("pgbDir").value,
+                    include_schemas: document.getElementById("pgbSchemas").value,
+                    include_tables: document.getElementById("pgbTables").value,
+                    compression_level:
+                        parseInt(document.getElementById("pgbCompression").value, 10) || null,
+                    schema_only: t === "schema_only",
+                    data_only: t === "data_only",
+                }),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                startBtn.disabled = false;
+
+                if (!d.ok) { msg(d.message || "Ошибка", "err"); return; }
+
+                msg("Дамп запущен — задача #" + d.job_id +
+                    ". Прогресс в «Запусках» на дашборде.", "ok");
+                setTimeout(pgbLoad, 1500);
+            }).catch(function (e) {
+                startBtn.disabled = false;
+                msg(String(e), "err");
+            });
+        });
+    }
+
+    // список БД сервера для выбранного подключения
+    function pgbLoadDbs() {
+        var connSel = document.getElementById("pgbConn");
+        var dbSel = document.getElementById("pgbDb");
+
+        if (!connSel || !dbSel) { return; }
+
+        var def = (connSel.options[connSel.selectedIndex] || {})
+            .getAttribute("data-db") || "";
+
+        dbSel.innerHTML = '<option value="">(база подключения: ' +
+            esc(def) + ")</option>";
+
+        fetch("/api/pg/databases?connection_id=" +
+              encodeURIComponent(connSel.value))
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (!d.ok) { return; }
+                dbSel.innerHTML = (d.databases || []).map(function (db) {
+                    return '<option value="' + esc(db) + '"' +
+                        (db === d.default ? " selected" : "") + ">" +
+                        esc(db) + "</option>";
+                }).join("");
+            })
+            .catch(function () {});
+    }
+
+    var connSelEl = document.getElementById("pgbConn");
+
+    if (connSelEl) {
+        connSelEl.addEventListener("change", pgbLoadDbs);
+        pgbLoadDbs();
+    }
+
+    // календарное время -> cron
+    function pgbCronExpr() {
+        var freq = document.getElementById("pgbFreq").value;
+        var hm = (document.getElementById("pgbTime").value || "02:00").split(":");
+        var h = parseInt(hm[0], 10) || 0;
+        var m = parseInt(hm[1], 10) || 0;
+
+        if (freq === "hourly") { return m + " * * * *"; }
+        if (freq === "weekly") {
+            return m + " " + h + " * * " +
+                document.getElementById("pgbDow").value;
+        }
+        return m + " " + h + " * * *";
+    }
+
+    var freqSel = document.getElementById("pgbFreq");
+
+    if (freqSel) {
+        freqSel.addEventListener("change", function () {
+            document.getElementById("pgbDow").style.display =
+                freqSel.value === "weekly" ? "" : "none";
+        });
+    }
+
+    // расписание с текущими настройками формы (ночной дамп)
+    var schedBtn = document.getElementById("pgbSchedule");
+
+    if (schedBtn) {
+        schedBtn.addEventListener("click", function () {
+            var connSel = document.getElementById("pgbConn");
+            var connName = (connSel.options[connSel.selectedIndex] || {})
+                .text || "";
+            var t = document.getElementById("pgbType").value;
+
+            schedBtn.disabled = true;
+
+            fetch("/api/schedules", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: ("pg_dump " + connName.split("/")[0]).trim(),
+                    job_type: "pg_dump",
+                    cron_expr: pgbCronExpr(),
+                    overlap_policy: "skip",
+                    config: {
+                        connection_id: parseInt(connSel.value, 10),
+                        dbname: document.getElementById("pgbDb").value,
+                        backup_dir: document.getElementById("pgbDir").value,
+                        include_schemas:
+                            document.getElementById("pgbSchemas").value,
+                        include_tables:
+                            document.getElementById("pgbTables").value,
+                        compression_level: parseInt(
+                            document.getElementById("pgbCompression").value,
+                            10) || null,
+                        schema_only: t === "schema_only",
+                        data_only: t === "data_only",
+                    },
+                }),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                schedBtn.disabled = false;
+                msg(d.ok
+                    ? "Расписание создано — управление на вкладке «Расписания»."
+                    : (d.message || "Ошибка создания расписания"),
+                    d.ok ? "ok" : "err");
+            }).catch(function (e) {
+                schedBtn.disabled = false;
+                msg(String(e), "err");
+            });
+        });
+    }
+
+    pgbLoad();
+    setInterval(pgbLoad, 15000);
+})();
+</script>
+
+{% endblock %}

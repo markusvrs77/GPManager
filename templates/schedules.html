@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+
+{% block title %}Расписания · Opsentri{% endblock %}
+
+{% block content %}
+
+<div>
+
+    <div class="row g-3">
+
+        <div class="col-lg-4">
+            <div class="card shadow-sm">
+                <div class="card-header">Новое расписание</div>
+                <div class="card-body">
+
+                    <label class="form-label">Название</label>
+                    <input type="text" id="schName" class="form-control mb-3" placeholder="nightly-gpcopy">
+
+                    <label class="form-label">Тип задачи</label>
+                    <select id="schJobType" class="form-select mb-3"
+                            onchange="onJobTypeChange()" data-toolkit="{{ toolkit }}">
+                        {% if toolkit == 'pg' %}
+                        <option value="pg_dump">Дамп PostgreSQL (pg_dump)</option>
+                        {% else %}
+                        <option value="gpcopy">Копирование (gpcopy)</option>
+                        <option value="gpcopy_date">Диапазон дат</option>
+                        <option value="gpcopy_increment">Инкремент (watermark)</option>
+                        <option value="gpcopy_partition_diff">Партиции (diff)</option>
+                        <option value="gpbackup">Резервная копия (gpbackup)</option>
+                        <option value="vacuum">Vacuum / Analyze</option>
+                        <option value="reorganize">Реорганизация</option>
+                        <option value="skew">Анализ перекоса</option>
+                        {% endif %}
+                    </select>
+
+                    <div id="schBackupDirBox" class="mb-3" style="display:none">
+                        <label class="form-label">Каталог бэкапа</label>
+                        <input type="text" id="schBackupDir" class="form-control"
+                               placeholder="/data/backups (для pg_dump обязателен)">
+                    </div>
+
+                    <div id="schWatermarkBox" class="mb-3" style="display:none">
+                        <label class="form-label">Watermark-колонка (increment)</label>
+                        <input type="text" id="schWatermark" class="form-control" placeholder="id / date_change$">
+                    </div>
+
+                    <div id="schDestConnBox" class="mb-3" style="display:none">
+                        <label class="form-label">Dest connection</label>
+                        <select id="schDestConnection" class="form-select">
+                            {% for c in connections %}
+                            <option value="{{ c.id }}">{{ c.name }} / {{ c.host }} / {{ c.database_name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <label class="form-label">Connection</label>
+                    <select id="schConnection" class="form-select mb-3">
+                        {% for c in connections %}
+                        <option value="{{ c.id }}">{{ c.name }} / {{ c.host }} / {{ c.database_name }}</option>
+                        {% endfor %}
+                    </select>
+
+                    <label class="form-label">Tables (schema.table, по одной в строке)</label>
+                    <textarea id="schTables" class="form-control mb-3" rows="3" placeholder="dwh.orders&#10;dwh.payments"></textarea>
+
+                    <div id="schDateWindow" class="border rounded p-2 mb-3" style="display:none">
+                        <div class="fw-bold small mb-2">Date window (резолв при запуске)</div>
+
+                        <label class="form-label small">Date column</label>
+                        <input type="text" id="dwColumn" class="form-control form-control-sm mb-2" placeholder="date_change$">
+
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label class="form-label small">From</label>
+                                <select id="dwFrom" class="form-select form-select-sm" onchange="previewWindow()">
+                                    <option value="n_days_ago:7">7 дней назад</option>
+                                    <option value="yesterday">вчера</option>
+                                    <option value="this_month_to_date">начало месяца</option>
+                                    <option value="last_month">прошлый месяц</option>
+                                    <option value="expr:run_date-1d">run_date-1d</option>
+                                </select>
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label small">To</label>
+                                <select id="dwTo" class="form-select form-select-sm" onchange="previewWindow()">
+                                    <option value="yesterday">вчера (вкл.)</option>
+                                    <option value="today">сегодня (вкл.)</option>
+                                    <option value="last_month">прошлый месяц</option>
+                                    <option value="expr:run_date-1d">run_date-1d</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="small text-muted mt-2" id="dwPreview">—</div>
+                    </div>
+
+                    <label class="form-label">Когда запускать</label>
+                    <div id="schCronPicker" class="mb-1"></div>
+                    <input type="hidden" id="schCron" value="0 2 * * *">
+                    <div class="small text-muted mb-3" id="cronPreview">—</div>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col-6">
+                            <label class="form-label small">Overlap</label>
+                            <select id="schOverlap" class="form-select form-select-sm">
+                                <option value="skip">skip</option>
+                                <option value="queue">queue</option>
+                                <option value="parallel">parallel</option>
+                            </select>
+                        </div>
+                        <div class="col-3">
+                            <label class="form-label small">Retries</label>
+                            <input type="number" id="schRetries" class="form-control form-control-sm" value="0" min="0">
+                        </div>
+                        <div class="col-3">
+                            <label class="form-label small">Delay, с</label>
+                            <input type="number" id="schRetryDelay" class="form-control form-control-sm" value="60" min="0">
+                        </div>
+                    </div>
+
+                    <button type="button" class="btn btn-primary w-100" onclick="createSchedule()">Создать расписание</button>
+                    <div class="small text-danger mt-2" id="schError"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-8">
+            <style>
+            /* карточки расписаний */
+            .sch-item { display: flex; align-items: center; gap: 14px;
+              padding: 13px 16px; border: 1px solid var(--hairline);
+              border-radius: var(--radius-sm); margin-bottom: 10px;
+              background: var(--surface-2); min-width: 0;
+              transition: transform var(--dur-fast), box-shadow var(--dur-fast); }
+            .sch-item:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
+            .sch-item.off { opacity: .55; }
+            .sch-main { flex: 1 1 auto; min-width: 0; }
+            .sch-top { display: flex; align-items: center; gap: 9px;
+              margin-bottom: 4px; min-width: 0; }
+            .sch-tag { font-size: 10.5px; font-weight: 800;
+              border-radius: var(--radius-pill); padding: 2px 9px; flex: none;
+              background: color-mix(in srgb, var(--a1) 15%, transparent);
+              border: 1px solid color-mix(in srgb, var(--a1) 40%, transparent); }
+            .sch-nm { font-weight: 700; font-size: 14px; overflow: hidden;
+              text-overflow: ellipsis; white-space: nowrap; }
+            .sch-meta { display: flex; align-items: baseline; gap: 12px;
+              color: var(--text-muted); font-size: 12px; min-width: 0; }
+            .sch-meta code { font-family: var(--font-mono); font-size: 11.5px;
+              background: var(--surface); border: 1px solid var(--hairline);
+              border-radius: 6px; padding: 1px 7px; color: var(--a2); }
+            .sch-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+            </style>
+
+            <div class="card shadow-sm">
+                <div class="card-header">
+                    <span>Расписания</span>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="loadSchedules()">Обновить</button>
+                </div>
+                <div class="card-body" id="schedulesBody">
+                    <div class="text-muted">Загрузка…</div>
+                </div>
+            </div>
+
+            <div class="card shadow-sm mt-3" id="runsCard" style="display:none">
+                <div class="card-header">История запусков — <span id="runsTitle"></span></div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-sm mb-0">
+                            <thead>
+                                <tr><th>Запуск</th><th>Run date</th><th>Job</th><th>Статус</th><th>#</th><th>Ошибка</th></tr>
+                            </thead>
+                            <tbody id="runsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/schedules.js') }}?v=3"></script>
+{% endblock %}

@@ -1,101 +1,340 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Greenplum Reorganize Center</title>
+    <title>{% block title %}Opsentri{% endblock %}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
 
-    <link
-        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-        rel="stylesheet"
-    >
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Cpath d='M8.5 21a7.5 7.5 0 1 1 15 0' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3Cpath d='M16 19.5l4.6-5.6' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='19.5' r='2.1' fill='white'/%3E%3C/svg%3E">
 
-    <link
-        rel="stylesheet"
-        href="{{ url_for('static', filename='css/style.css') }}"
-    >
+    <!-- no-flash: тема и состояние сайдбара до первой отрисовки -->
+    <script>
+    (function () {
+        try {
+            var t = localStorage.getItem('gp-theme');
+            if (t) { document.documentElement.setAttribute('data-theme', t); }
+            if (localStorage.getItem('gp-sb-mini') === '1') {
+                document.documentElement.setAttribute('data-sb', 'mini');
+            }
+            ['dbops', 'gpt', 'pgt', 'flow'].forEach(function (k) {
+                if (localStorage.getItem('gp-sec-' + k) === '0') {
+                    document.documentElement.setAttribute(
+                        'data-sec-' + k, 'closed');
+                }
+            });
+        } catch (e) {}
+    })();
+    </script>
+
+    <!-- Self-hosted fonts + vendor CSS (offline / RHEL target — no CDN) -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='fonts/fonts.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap/bootstrap.min.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css') }}">
 </head>
 <body>
 
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-    <div class="container-fluid">
-        <a class="navbar-brand fw-bold" href="/">
-            Greenplum Reorganize Center
+{% set p = request.path %}
+{% if p in ['/', '/dashboard'] %}
+    {% set page_title, page_crumb = 'Dashboard', 'обзор кластеров и задач' %}
+{% elif p.startswith('/connections') %}
+    {% if request.args.get('toolkit') == 'pg' %}
+        {% set page_title, page_crumb = 'Подключения PostgreSQL', 'серверы Postgres Toolkit' %}
+    {% else %}
+        {% set page_title, page_crumb = 'Подключения', 'кластеры и базы данных' %}
+    {% endif %}
+{% elif p.startswith('/gpcopy') %}
+    {% if request.args.get('toolkit') == 'pg' %}
+        {% set page_title, page_crumb = 'Синхронизация данных', 'перенос между серверами PostgreSQL' %}
+    {% else %}
+        {% set page_title, page_crumb = 'Синхронизация данных', 'перенос между кластерами' %}
+    {% endif %}
+{% elif p.startswith('/grants') %}
+    {% set page_title, page_crumb = 'Пользователи и гранты', 'права на объекты' %}
+{% elif p.startswith('/schedules') %}
+    {% set page_title, page_crumb = 'Расписания', 'планировщик задач' %}
+{% elif p.startswith('/vacuum') %}
+    {% set page_title, page_crumb = 'Vacuum / Analyze', 'обслуживание таблиц' %}
+{% elif p.startswith('/maintenance') %}
+    {% set page_title, page_crumb = 'Maintenance', 'реорганизация и перекос' %}
+{% elif p.startswith('/backups') %}
+    {% set page_title, page_crumb = 'Резервные копии', 'gpbackup / gprestore' %}
+{% elif p.startswith('/pg/backups') %}
+    {% set page_title, page_crumb = 'Резервные копии PostgreSQL', 'pg_dump / pg_restore' %}
+{% elif p.startswith('/health') %}
+    {% set page_title, page_crumb = 'Здоровье БД', 'аналитика без нагрузки' %}
+{% elif p.startswith('/kafka/connections') %}
+    {% set page_title, page_crumb = 'Подключения Kafka', 'кластеры и брокеры' %}
+{% elif p.startswith('/kafka/groups') %}
+    {% set page_title, page_crumb = 'Консьюмер-группы', 'кто читает и насколько отстаёт' %}
+{% elif p.startswith('/kafka/messages') %}
+    {% set page_title, page_crumb = 'Сообщения', 'чтение топика и отправка' %}
+{% elif p.startswith('/kafka/acl') %}
+    {% set page_title, page_crumb = 'Доступы', 'правила ACL кластера' %}
+{% elif p.startswith('/kafka') %}
+    {% set page_title, page_crumb = 'Kafka', 'брокеры, топики и партиции' %}
+{% else %}
+    {% set page_title, page_crumb = 'Opsentri', '' %}
+{% endif %}
+
+<div class="gp-shell">
+    <aside class="gp-sb">
+        <a class="brand" href="/">
+            <span class="gp-logo" aria-hidden="true">
+                <!-- спидометр: дуга + стрелка -->
+                <svg viewBox="0 0 24 24" fill="none" stroke="#fff"
+                     stroke-width="2" stroke-linecap="round">
+                    <path d="M4.5 16.5a8.5 8.5 0 1 1 15 0"/>
+                    <path d="M12 15l4.4-5.4"/>
+                    <circle cx="12" cy="15" r="1.7" fill="#fff" stroke="none"/>
+                </svg>
+            </span><span class="bname">Opsentri</span>
         </a>
 
-        <button
-            class="navbar-toggler"
-            type="button"
-            data-bs-toggle="collapse"
-            data-bs-target="#mainNavbar"
-        >
-            <span class="navbar-toggler-icon"></span>
+        <!-- Направление: DB Operations — тулкиты СУБД -->
+        <button class="sb-sec-hd top" id="secHd-dbops" data-sec="dbops"
+                type="button" aria-expanded="true" aria-controls="secBody-dbops">
+            <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span>
+            <span class="sec-ttl">DB Operations</span>
+            <span class="sec-chev" aria-hidden="true">▾</span>
         </button>
+        <div class="sb-sec-body" id="secBody-dbops">
 
-        <div class="collapse navbar-collapse" id="mainNavbar">
-            <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+            <!-- Тулкит: Greenplum (текущий функционал GPManager) -->
+            <button class="sb-sec-hd sub" id="secHd-gpt" data-sec="gpt"
+                    type="button" aria-expanded="true" aria-controls="secBody-gpt">
+                <span class="tk-logo gp">GP</span>
+                <span class="sec-ttl">Greenplum Toolkit</span>
+                <span class="sec-chev" aria-hidden="true">▾</span>
+            </button>
+            <nav class="sb-sec-body sub" id="secBody-gpt">
+            <div class="nav-group">Обзор</div>
+            <a href="/" class="{% if p in ['/', '/dashboard'] %}active{% endif %}">
+                <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg></span>
+                <span class="lbl">Dashboard</span></a>
+            <a href="/health" class="{% if p.startswith('/health') %}active{% endif %}">
+                <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
+                <span class="lbl">Здоровье БД</span></a>
 
-                <li class="nav-item">
-                    <a class="nav-link" href="/">
-                        Dashboard
-                    </a>
-                </li>
+            <div class="nav-group">Данные</div>
+            <a href="/connections" class="{% if p.startswith('/connections') and request.args.get('toolkit') != 'pg' %}active{% endif %}">
+                <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span>
+                <span class="lbl">Подключения</span></a>
+            <a href="{{ url_for('gpcopy_page') }}" class="{% if p.startswith('/gpcopy') and request.args.get('toolkit') != 'pg' %}active{% endif %}">
+                <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
+                <span class="lbl">Синхронизация данных</span>
+                <span class="nav-badge" id="gpNavSyncBadge" style="display: none;"></span></a>
+            <a href="/grants" class="{% if p.startswith('/grants') and request.args.get('toolkit') != 'pg' %}active{% endif %}">
+                <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="4"/><path d="M2 21v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2"/><path d="M19 8v6M16 11h6"/></svg></span>
+                <span class="lbl">Пользователи и гранты</span></a>
 
-                <li class="nav-item">
-                    <a class="nav-link" href="/connections">
-                        Connections
-                    </a>
-                </li>
+            <div class="nav-group">Обслуживание</div>
+            <a href="/schedules" class="{% if p.startswith('/schedules') and request.args.get('toolkit') != 'pg' %}active{% endif %}">
+                <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg></span>
+                <span class="lbl">Расписания</span></a>
+            <a href="/vacuum" class="{% if p.startswith('/vacuum') %}active{% endif %}">
+                <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.6 4.6A2 2 0 1 1 11 8H2"/><path d="M12.6 19.4A2 2 0 1 0 14 16H2"/><path d="M17.6 9.6a2.5 2.5 0 1 1 1.9 4.4H2"/></svg></span>
+                <span class="lbl">Vacuum / Analyze</span></a>
+            <a href="/maintenance" class="{% if p.startswith('/maintenance') %}active{% endif %}">
+                <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>
+                <span class="lbl">Maintenance</span></a>
+            <a href="/backups" class="{% if p.startswith('/backups') %}active{% endif %}">
+                <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg></span>
+                <span class="lbl">Резервные копии</span></a>
+            </nav>
 
-                <li class="nav-item">
-                    <a class="nav-link" href="/objects">
-                        Objects
-                    </a>
-                </li>
+            <!-- Тулкит: PostgreSQL -->
+            <button class="sb-sec-hd sub" id="secHd-pgt" data-sec="pgt"
+                    type="button" aria-expanded="true" aria-controls="secBody-pgt">
+                <span class="tk-logo pg">PG</span>
+                <span class="sec-ttl">Postgres Toolkit</span>
+                <span class="sec-chev" aria-hidden="true">▾</span>
+            </button>
+            <nav class="sb-sec-body sub" id="secBody-pgt">
+                <a href="/connections?toolkit=pg" class="{% if p.startswith('/connections') and request.args.get('toolkit') == 'pg' %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span>
+                    <span class="lbl">Подключения</span></a>
+                <a href="/gpcopy?toolkit=pg" class="{% if p.startswith('/gpcopy') and request.args.get('toolkit') == 'pg' %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
+                    <span class="lbl">Синхронизация данных</span></a>
+                <a href="/pg/backups" class="{% if p.startswith('/pg/backups') %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg></span>
+                    <span class="lbl">Резервные копии</span></a>
+                <a href="/schedules?toolkit=pg" class="{% if p.startswith('/schedules') and request.args.get('toolkit') == 'pg' %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg></span>
+                    <span class="lbl">Расписания</span></a>
+            </nav>
 
-                <li class="nav-item">
-                    <a class="nav-link {% if request.path == '/maintenance' %}active{% endif %}" href="/maintenance">
-                        Tables Maintenance
-                    </a>
-                </li>
-
-                <li class="nav-item">
-                    <a class="nav-link {% if request.path == '/vacuum' %}active{% endif %}" href="/vacuum">
-                             Vacuum / Analyze
-                    </a>
-                </li>
-
-
-
-                <li class="nav-item">
-                    <a class="nav-link {% if request.path.startswith('/gpcopy') %}active{% endif %}"
-                       href="{{ url_for('gpcopy_page') }}">
-                        gpcopy
-                    </a>
-                </li>
-
-                <li class="nav-item">
-                    <a class="nav-link disabled" href="#">
-                        Queries
-                    </a>
-                </li>
-
-            </ul>
+            <!-- будущие тулкиты этого направления -->
+            <div class="sb-stub"><span class="tk-logo ora">OR</span>
+                Oracle Toolkit <span class="soon">скоро</span></div>
+            <div class="sb-stub"><span class="tk-logo my">MY</span>
+                MySQL Toolkit <span class="soon">скоро</span></div>
         </div>
+
+        <!-- Направление: Data Flow — потоки данных -->
+        <button class="sb-sec-hd top" id="secHd-flow" data-sec="flow"
+                type="button" aria-expanded="true" aria-controls="secBody-flow">
+            <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
+            <span class="sec-ttl">Data Flow</span>
+            <span class="sec-chev" aria-hidden="true">▾</span>
+        </button>
+        <div class="sb-sec-body" id="secBody-flow">
+            <!-- Тулкит: Kafka -->
+            <button class="sb-sec-hd sub" id="secHd-kfk" data-sec="kfk"
+                    type="button" aria-expanded="true" aria-controls="secBody-kfk">
+                <span class="tk-logo kf">KF</span>
+                <span class="sec-ttl">Kafka</span>
+                <span class="sec-chev" aria-hidden="true">▾</span>
+            </button>
+            <nav class="sb-sec-body sub" id="secBody-kfk">
+                <a href="/kafka/connections" class="{% if p.startswith('/kafka/connections') %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span>
+                    <span class="lbl">Подключения</span></a>
+                <a href="/kafka" class="{% if p == '/kafka' %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg></span>
+                    <span class="lbl">Обзор кластера</span></a>
+                <a href="/kafka/groups" class="{% if p.startswith('/kafka/groups') %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="4"/><path d="M2 21v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+                    <span class="lbl">Консьюмер-группы</span></a>
+                <a href="/kafka/messages" class="{% if p.startswith('/kafka/messages') %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v12H7l-3 3z"/></svg></span>
+                    <span class="lbl">Сообщения</span></a>
+                <a href="/kafka/acl" class="{% if p.startswith('/kafka/acl') %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+                    <span class="lbl">Доступы</span></a>
+            </nav>
+            <div class="sb-stub"><span class="tk-logo dz">DZ</span>
+                Debezium <span class="soon">скоро</span></div>
+            <div class="sb-stub"><span class="tk-logo lr">LR</span>
+                OpenLogReplicator <span class="soon">скоро</span></div>
+            <div class="sb-stub"><span class="tk-logo pl">PL</span>
+                Pipelines <span class="soon">скоро</span></div>
+        </div>
+
+        <div class="sb-foot">
+            <button class="sb-collapse" id="gpSbToggle" type="button"
+                    aria-label="Свернуть или развернуть меню">
+                <span class="ic">«</span><span class="lbl">Свернуть</span>
+            </button>
+        </div>
+    </aside>
+
+    <div class="gp-shell-main">
+        <header class="gp-top">
+            <div>
+                <h1 class="pgtitle">{{ page_title }}</h1>
+                {% if page_crumb %}<div class="pgcrumb">{{ page_crumb }}</div>{% endif %}
+            </div>
+            <div class="sp"></div>
+            <button class="gp-theme" id="gpThemeBtn" type="button"
+                    aria-label="Toggle light / dark theme">🌙</button>
+        </header>
+
+        <main class="gp-shell-content container-fluid py-4">
+            {% block content %}{% endblock %}
+        </main>
     </div>
-</nav>
+</div>
 
-<main class="container-fluid py-4">
-    {% block content %}{% endblock %}
-</main>
+<script src="{{ url_for('static', filename='vendor/bootstrap/bootstrap.bundle.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/motion.js') }}"></script>
+<script src="{{ url_for('static', filename='js/ui.js') }}"></script>
 
-<script
-    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js">
+<script>
+(function () {
+    var btn = document.getElementById('gpThemeBtn');
+    var root = document.documentElement;
+
+    function current() {
+        var t = root.getAttribute('data-theme');
+        if (t) { return t; }
+        return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    function update() {
+        if (btn) { btn.textContent = current() === 'dark' ? '☀️' : '🌙'; }
+    }
+    function apply(t) {
+        root.setAttribute('data-theme', t);
+        try { localStorage.setItem('gp-theme', t); } catch (e) {}
+        update();
+    }
+    if (btn) {
+        btn.addEventListener('click', function () {
+            apply(current() === 'dark' ? 'light' : 'dark');
+        });
+    }
+    update();
+
+    // сворачивание сайдбара
+    var sbBtn = document.getElementById('gpSbToggle');
+
+    function sbUpdate() {
+        var mini = root.getAttribute('data-sb') === 'mini';
+        if (sbBtn) {
+            sbBtn.querySelector('.ic').textContent = mini ? '»' : '«';
+            sbBtn.querySelector('.lbl').textContent = mini ? '' : 'Свернуть';
+        }
+    }
+    if (sbBtn) {
+        sbBtn.addEventListener('click', function () {
+            var mini = root.getAttribute('data-sb') === 'mini';
+            if (mini) { root.removeAttribute('data-sb'); }
+            else { root.setAttribute('data-sb', 'mini'); }
+            try {
+                localStorage.setItem('gp-sb-mini', mini ? '0' : '1');
+            } catch (e) {}
+            sbUpdate();
+        });
+    }
+    sbUpdate();
+
+    // шторки направлений (DB Operations, тулкиты, Data Flow)
+    document.querySelectorAll('.sb-sec-hd[data-sec]').forEach(function (hd) {
+        var key = hd.getAttribute('data-sec');
+        var attr = 'data-sec-' + key;
+
+        hd.setAttribute(
+            'aria-expanded',
+            root.getAttribute(attr) === 'closed' ? 'false' : 'true'
+        );
+
+        hd.addEventListener('click', function () {
+            var closed = root.getAttribute(attr) === 'closed';
+
+            if (closed) { root.removeAttribute(attr); }
+            else { root.setAttribute(attr, 'closed'); }
+
+            hd.setAttribute('aria-expanded', closed ? 'true' : 'false');
+            try {
+                localStorage.setItem('gp-sec-' + key, closed ? '1' : '0');
+            } catch (e) {}
+        });
+    });
+
+    // бейдж активных задач синхронизации
+    function pollSyncBadge() {
+        fetch('/api/jobs/active')
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                var badge = document.getElementById('gpNavSyncBadge');
+                if (!badge || !d.ok) { return; }
+                var n = (d.jobs || []).filter(function (j) {
+                    var t = String(j.job_type || '');
+                    return t.indexOf('gpcopy') === 0 || t === 'copy_pipe';
+                }).length;
+                badge.textContent = n;
+                badge.style.display = n ? '' : 'none';
+            })
+            .catch(function () {});
+    }
+    pollSyncBadge();
+    setInterval(pollSyncBadge, 30000);
+})();
 </script>
 
 {% block scripts %}{% endblock %}
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </body>
 </html>

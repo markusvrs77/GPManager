@@ -1,4 +1,4 @@
-let currentJobId = null;
+﻿let currentJobId = null;
 let currentPollTimer = null;
 let currentJobIsActive = false;
 let currentStopRequested = false;
@@ -181,8 +181,8 @@ function setSkewButtonRunMode() {
     }
 
     button.dataset.mode = "run";
-    button.textContent = "Run Skew Analysis";
-    button.className = "btn btn-warning w-100";
+    button.textContent = "Запустить анализ перекоса";
+    button.className = "btn btn-primary w-100";
     button.disabled = false;
 
     currentJobIsActive = false;
@@ -197,7 +197,7 @@ function setSkewButtonStopMode() {
     }
 
     button.dataset.mode = "stop";
-    button.textContent = "Stop current job";
+    button.textContent = "Остановить задачу";
     button.className = "btn w-100 is-running";
     button.disabled = false;
 
@@ -213,7 +213,7 @@ function setSkewButtonStoppingMode() {
     }
 
     button.dataset.mode = "stopping";
-    button.textContent = "Stopping...";
+    button.textContent = "Останавливаю…";
     button.className = "btn w-100 is-stopping";
     button.disabled = true;
 
@@ -601,6 +601,17 @@ function renderSkewJobItems(items, resultMap = {}) {
         return;
     }
 
+    // опрос идёт каждые пару секунд — прокрутку возвращаем на место
+    if (window.gpKeepScroll) {
+        window.gpKeepScroll(body, function () {
+            paintSkewJobItems(body, items, resultMap);
+        });
+    } else {
+        paintSkewJobItems(body, items, resultMap);
+    }
+}
+
+function paintSkewJobItems(body, items, resultMap) {
     body.innerHTML = "";
 
     if (!items || !items.length) {
@@ -640,6 +651,10 @@ function renderSkewJobItems(items, resultMap = {}) {
 
         body.appendChild(tr);
     });
+
+    if (window.gpMotion) {
+        window.gpMotion.stagger(body.querySelectorAll("tr"), { step: 14, y: 6, dur: 200 });
+    }
 }
 
 

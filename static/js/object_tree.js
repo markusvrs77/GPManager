@@ -1,6 +1,8 @@
 let currentTree = null;
+let treeLoading = false;   // защита от повторного клика во время загрузки
 
 async function loadObjectTree() {
+    if (treeLoading) { return; }
     function getObjectTreeConnectionId() {
         const possibleIds = [
             "connection_id",
@@ -44,6 +46,7 @@ async function loadObjectTree() {
         return;
     }
 
+    treeLoading = true;
     treeContainer.innerHTML = "";
     currentTree = null;
     updateSelectedCount();
@@ -82,11 +85,16 @@ async function loadObjectTree() {
         } else {
             console.error(e);
         }
+    } finally {
+        treeLoading = false;
     }
 }
 
 function renderObjectTree(tree) {
     const treeContainer = document.getElementById("objectTree");
+
+    // отрисовка идемпотентна: возможный старый список убираем
+    treeContainer.innerHTML = "";
 
     const dbNode = document.createElement("div");
     dbNode.className = "tree-node db-node";

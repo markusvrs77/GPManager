@@ -1,28 +1,23 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
+
+{% block title %}Vacuum / Analyze · Opsentri{% endblock %}
 
 {% block content %}
 
-<div class="container-fluid py-4">
-
-    <div class="mb-3">
-        <h2 class="mb-1">Vacuum / Analyze</h2>
-        <div class="text-muted">
-            Greenplum VACUUM, VACUUM FULL, ANALYZE, VACUUM FREEZE
-        </div>
-    </div>
+<div>
 
     <div class="row g-3">
 
         <div class="col-lg-4">
 
             <div class="card shadow-sm">
-                <div class="card-header fw-bold">
-                    Select objects
+                <div class="card-header">
+                    Выбор объектов
                 </div>
 
                 <div class="card-body">
 
-                    <label class="form-label">Connection</label>
+                    <label class="form-label">Подключение</label>
                     <select id="connection_id" class="form-select mb-3">
                         {% for c in connections %}
                         <option value="{{ c.id }}">
@@ -36,28 +31,28 @@
                         class="btn btn-outline-primary w-100 mb-3"
                         onclick="loadObjectTree()"
                     >
-                        Load database objects
+                        Загрузить объекты БД
                     </button>
 
                     <input
                         type="text"
                         id="objectSearch"
                         class="form-control form-control-sm mb-2"
-                        placeholder="Search schema/table..."
+                        placeholder="Поиск: схема / таблица…"
                         oninput="filterObjectTree()"
                     >
 
                     <div class="small text-muted mb-2">
-                        Selected: <span id="selectedCount">0</span>
+                        Выбрано: <span id="selectedCount">0</span>
                     </div>
 
                     <div id="objectTreeStatus" class="small text-muted mb-2">
-                        Выбери connection и нажми Load database objects.
+                        Выбери подключение и нажми «Загрузить объекты БД».
                     </div>
 
                     <div id="objectTree" class="object-tree-box border rounded p-2">
                         <div class="text-muted small">
-                            Выбери connection и нажми Load database objects.
+                            Выбери подключение и нажми «Загрузить объекты БД».
                         </div>
                     </div>
 
@@ -68,38 +63,143 @@
 
         <div class="col-lg-8">
 
+            <style>
+            .adv-row { display: flex; align-items: flex-start; gap: 10px;
+              padding: 10px 4px; border-bottom: 1px solid var(--hairline);
+              font-size: 13px; }
+            .adv-row:last-child { border-bottom: none; }
+            .adv-row .adv-cb { margin-top: 3px; flex: none; }
+            .adv-main { min-width: 0; flex: 1; }
+            .adv-top { display: flex; align-items: center; gap: 8px;
+              flex-wrap: wrap; margin-bottom: 2px; }
+            .adv-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+            .adv-row.sev-crit .adv-dot { background: var(--crit); }
+            .adv-row.sev-warn .adv-dot { background: var(--warn); }
+            .adv-tbl { font-family: var(--font-mono); font-weight: 700;
+              font-size: 12.5px; }
+            .adv-act { font-size: 10.5px; font-weight: 800;
+              border-radius: var(--radius-pill); padding: 1px 8px;
+              background: color-mix(in srgb, var(--a1) 15%, transparent);
+              border: 1px solid color-mix(in srgb, var(--a1) 40%, transparent); }
+            .adv-meta { color: var(--text-muted); font-size: 12px; }
+            .adv-why { color: var(--text-muted); font-size: 12px;
+              margin-bottom: 3px; }
+            .adv-row code { font-size: 11.5px; }
+            .adv-scroll { max-height: 420px; overflow-y: auto; }
+
+            /* лента запусков — как в синхронизации */
+            .vr-row { display: grid; align-items: center; gap: 10px;
+              grid-template-columns: 10px 1fr 150px 78px;
+              padding: 8px 4px; font-size: 12.5px; cursor: pointer;
+              border-bottom: 1px solid var(--hairline); }
+            .vr-row:last-child { border-bottom: none; }
+            .vr-row:hover { background: color-mix(in srgb, var(--a1) 7%, transparent); }
+            .vr-row.on { background: color-mix(in srgb, var(--a1) 12%, transparent); }
+            .vr-dot { width: 8px; height: 8px; border-radius: 50%; }
+            .vr-dot.b { background: var(--a2); animation: vrPulse 1.4s infinite; }
+            .vr-dot.g { background: #22c55e; }
+            .vr-dot.r { background: var(--crit); }
+            .vr-dot.i { background: var(--text-muted); }
+            @keyframes vrPulse { 50% { opacity: .3; } }
+            .vr-lab { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+              white-space: nowrap; }
+            .vr-lab .act { font-family: var(--font-mono); font-size: 11.5px;
+              color: var(--a2); }
+            .vr-lab .meta { color: var(--text-muted); }
+            .vr-bar { height: 6px; border-radius: 4px; overflow: hidden;
+              background: color-mix(in srgb, var(--text-muted) 22%, transparent); }
+            .vr-bar i { display: block; height: 100%; background: var(--a2); }
+            .vr-bar i.done { background: #22c55e; }
+            .vr-bar i.fail { background: var(--crit); }
+            .vr-st { text-align: right; font-variant-numeric: tabular-nums; }
+            .vr-stop { border: none; background: none; color: var(--crit);
+              font-size: 11.5px; padding: 0; }
+            .vr-scroll { max-height: 280px; overflow-y: auto; }
+            </style>
+
+            <div class="card shadow-sm mb-3">
+                <div class="card-header">
+                    <span>Ассистент — что запустить</span>
+                    <span style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
+                        <span id="advSummary" class="small text-muted"></span>
+                        <button type="button" id="advRun"
+                                class="btn btn-sm btn-primary" disabled
+                                onclick="advRunSelected()">Запустить выбранные (0)</button>
+                        <button type="button" id="advLoadBtn"
+                                class="btn btn-sm btn-outline-primary"
+                                onclick="advLoad()">Проанализировать</button>
+                    </span>
+                </div>
+                <div class="card-body adv-scroll" id="advBody">
+                    <div class="text-muted small">
+                        Выбери подключение слева и нажми «Проанализировать» —
+                        ассистент посмотрит статистику таблиц (мёртвые строки,
+                        давность ANALYZE/VACUUM, раздутость из gp_toolkit) и
+                        предложит конкретные команды: VACUUM, ANALYZE,
+                        VACUUM FULL и т.д.
+                    </div>
+                </div>
+            </div>
+
+            <div class="card shadow-sm mb-3">
+                <div class="card-header">
+                    <span>Запуски</span>
+                    <span style="margin-left: auto; display: flex; gap: 10px;
+                                 align-items: center;">
+                        <span id="vacRunsNote" class="small text-muted"></span>
+                        <button type="button" class="btn btn-sm btn-outline-primary"
+                                id="vacRunsRefresh">обновить</button>
+                    </span>
+                </div>
+                <div class="card-body vr-scroll" id="vacRuns">
+                    <div class="text-muted small">Читаю историю запусков…</div>
+                </div>
+            </div>
+
             <div class="card shadow-sm">
-                <div class="card-header fw-bold">
-                    Run
+                <div class="card-header">
+                    <span>Запуск</span>
+                    <span id="vacViewLabel" class="small text-muted"
+                          style="margin-left: auto;"></span>
                 </div>
 
                 <div class="card-body">
 
-                    <label class="form-label">Action</label>
-
-                    <select id="vacuumAction" class="form-select mb-3">
-                        <option value="VACUUM_ANALYZE">VACUUM ANALYZE</option>
-                        <option value="ANALYZE">ANALYZE</option>
-                        <option value="VACUUM">VACUUM</option>
-                        <option value="VACUUM_FULL">VACUUM FULL</option>
-                        <option value="VACUUM_FREEZE">VACUUM FREEZE</option>
-                    </select>
+                    <div class="row g-2 mb-3">
+                        <div class="col-8">
+                            <label class="form-label">Операция</label>
+                            <select id="vacuumAction" class="form-select">
+                                <option value="VACUUM_ANALYZE">VACUUM ANALYZE</option>
+                                <option value="ANALYZE">ANALYZE</option>
+                                <option value="VACUUM">VACUUM</option>
+                                <option value="VACUUM_FULL">VACUUM FULL</option>
+                                <option value="VACUUM_FREEZE">VACUUM FREEZE</option>
+                            </select>
+                        </div>
+                        <div class="col-4">
+                            <label class="form-label"
+                                   title="Сколько таблиц обрабатывать параллельно (у каждого воркера своё подключение)">
+                                Воркеры</label>
+                            <input type="number" id="vacuumWorkers"
+                                   class="form-control" value="1" min="1" max="8">
+                        </div>
+                    </div>
 
                     <button
                         type="button"
                         id="vacuumActionButton"
-                        class="btn btn-warning w-100 mb-3"
+                        class="btn btn-primary w-100 mb-3"
                         onclick="handleVacuumActionButton()"
                     >
-                        Run Vacuum / Analyze
+                        Запустить Vacuum / Analyze
                     </button>
 
                     <div id="vacuumStatusBox" class="alert alert-info">
-                        Выбери таблицы и нажми Run Vacuum / Analyze.
+                        Выбери таблицы и запусти Vacuum / Analyze.
                     </div>
 
                     <div class="d-flex justify-content-between">
-                        <strong>Progress</strong>
+                        <strong>Прогресс</strong>
                         <span id="vacuumProgressPercent">0%</span>
                     </div>
 
@@ -115,23 +215,23 @@
 
                     <div class="row text-center mb-3">
                         <div class="col">
-                            <div class="text-muted small">Total</div>
+                            <div class="text-muted small">Всего</div>
                             <strong id="vacuumTotal">0</strong>
                         </div>
                         <div class="col">
-                            <div class="text-muted small">Done</div>
+                            <div class="text-muted small">Готово</div>
                             <strong id="vacuumDone" class="text-success">0</strong>
                         </div>
                         <div class="col">
-                            <div class="text-muted small">Running</div>
+                            <div class="text-muted small">В работе</div>
                             <strong id="vacuumRunning" class="text-primary">0</strong>
                         </div>
                         <div class="col">
-                            <div class="text-muted small">Failed</div>
+                            <div class="text-muted small">Ошибки</div>
                             <strong id="vacuumFailed" class="text-danger">0</strong>
                         </div>
                         <div class="col">
-                            <div class="text-muted small">Skipped</div>
+                            <div class="text-muted small">Пропущено</div>
                             <strong id="vacuumSkipped" class="text-warning">0</strong>
                         </div>
                     </div>
@@ -140,12 +240,12 @@
                         <table class="table table-sm table-bordered align-middle">
                             <thead>
                                 <tr>
-                                    <th>Schema</th>
-                                    <th>Table</th>
-                                    <th>Action</th>
-                                    <th>Status</th>
-                                    <th>Duration</th>
-                                    <th>Error</th>
+                                    <th>Схема</th>
+                                    <th>Таблица</th>
+                                    <th>Операция</th>
+                                    <th>Статус</th>
+                                    <th>Время</th>
+                                    <th>Ошибка</th>
                                 </tr>
                             </thead>
                             <tbody id="vacuumItemsBody">
@@ -167,7 +267,8 @@
 
 </div>
 
-<script src="{{ url_for('static', filename='js/object_tree.js') }}?v=30"></script>
-<script src="{{ url_for('static', filename='js/vacuum.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/object_tree.js') }}?v=31"></script>
+<script src="{{ url_for('static', filename='js/vacuum.js') }}?v=4"></script>
+<script src="{{ url_for('static', filename='js/vacuum_advisor.js') }}?v=3"></script>
 
 {% endblock %}

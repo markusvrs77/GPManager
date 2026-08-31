@@ -9,6 +9,8 @@ from psycopg2.extras import RealDictCursor
 import sqlite3
 from datetime import datetime
 
+import config
+
 from job_manager import (
     get_job,
     get_job_items,
@@ -88,8 +90,70 @@ except ImportError:
 
 from db import get_connection_by_id
 
+# Алиасы: ниже в этом файле есть свои get_conn_*(connection_id) по id,
+# а gpcopy-версии принимают cfg-словарь — имена не должны пересекаться.
+try:
+    from modules.gpcopy import (
+        build_gpcopy_command,
+        get_conn_host as cfg_conn_host,
+        get_conn_port as cfg_conn_port,
+        get_conn_user as cfg_conn_user,
+        get_conn_dbname as cfg_conn_dbname,
+    )
+except ImportError:
+    from gpcopy import (
+        build_gpcopy_command,
+        get_conn_host as cfg_conn_host,
+        get_conn_port as cfg_conn_port,
+        get_conn_user as cfg_conn_user,
+        get_conn_dbname as cfg_conn_dbname,
+    )
+
 
 DEFAULT_GPCOPY_PATH = "/usr/local/gpdb/greenplum-db/bin/gpcopy"
+
+
+def copy_source_to_stage_via_gpcopy(source_connection_id, dest_connection_id,
+                                    source_schema, source_table,
+                                    stage_schema, stage_table,
+                                    gpcopy_path, jobs):
+    """
+    Перенос source -> staging бинарём gpcopy (segment-to-segment),
+    а не построчной перекачкой через psycopg2.
+    """
+    source_cfg = get_connection_by_id(int(source_connection_id))
+    dest_cfg = get_connection_by_id(int(dest_connection_id))
+
+    cmd = build_gpcopy_command(
+        gpcopy_path=gpcopy_path or DEFAULT_GPCOPY_PATH,
+        source_host=cfg_conn_host(source_cfg),
+        dest_host=cfg_conn_host(dest_cfg),
+        source_port=cfg_conn_port(source_cfg),
+        dest_port=cfg_conn_port(dest_cfg),
+        dest_user=cfg_conn_user(dest_cfg),
+        include_tables="{}.{}.{}".format(
+            cfg_conn_dbname(source_cfg), source_schema, source_table),
+        dest_tables="{}.{}.{}".format(
+            cfg_conn_dbname(dest_cfg), stage_schema, stage_table),
+        jobs=int(jobs or 4),
+        truncate=True,  # staging создан пустым, --truncate идемпотентен
+    )
+
+    print(f"[gpcopy_sync] gpcopy stage load: {' '.join(cmd)}")
+
+    process = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    stdout_data, stderr_data = process.communicate()
+
+    if process.returncode != 0:
+        raise Exception(
+            "gpcopy stage load failed rc={}: {}".format(
+                process.returncode,
+                (stderr_data or stdout_data or "")[-2000:],
+            )
+        )
 
 
 def run_gpcopy_sync_job(job_id):
@@ -152,6 +216,11 @@ def run_gpcopy_sync_job(job_id):
 
         try:
             for item in items:
+                # переподхват после рестарта: готовые строки не переделываем
+                if get_item_value(item, "status") in (
+                        "done", "failed", "skipped"):
+                    continue
+
                 item_id = get_item_value(item, "id")
                 schema_name = get_item_value(item, "schema_name", "")
                 table_name = get_item_value(item, "table_name", "")
@@ -183,8 +252,9 @@ def run_gpcopy_sync_job(job_id):
                     if not table_cfg:
                         raise Exception(f"Config not found for {schema_name}.{table_name}")
 
-                    source_schema, source_table = split_table_name(table_cfg["source"])
-                    target_schema, target_table = split_table_name(table_cfg["target"])
+                    source_full, target_full = resolve_sync_names(table_cfg)
+                    source_schema, source_table = split_table_name(source_full)
+                    target_schema, target_table = split_table_name(target_full)
 
                     key_columns = table_cfg.get("key_columns") or []
                     compare_columns = table_cfg.get("compare_columns") or ["*"]
@@ -240,20 +310,21 @@ def run_gpcopy_sync_job(job_id):
 
                     target_conn.commit()
 
-                    # 2. Copy PROD -> TEST staging через psycopg2 COPY
+                    # 2. Copy source -> staging бинарём gpcopy
                     print(
-                        f"[gpcopy_sync] copy source to staging via psycopg2: "
+                        f"[gpcopy_sync] copy source to staging via gpcopy: "
                         f"{source_schema}.{source_table} -> {stage_schema}.{stage_table}"
                     )
 
-                    copy_source_to_stage_via_psycopg2(
-                        source_conn=source_conn,
-                        target_conn=target_conn,
+                    copy_source_to_stage_via_gpcopy(
+                        source_connection_id=source_connection_id,
+                        dest_connection_id=dest_connection_id,
                         source_schema=source_schema,
                         source_table=source_table,
                         stage_schema=stage_schema,
                         stage_table=stage_table,
-                        columns=common_cols,
+                        gpcopy_path=gpcopy_path,
+                        jobs=jobs,
                     )
 
 
@@ -470,6 +541,28 @@ def qident(name):
     return '"' + str(name).replace('"', '""') + '"'
 
 
+def resolve_sync_names(cfg):
+    """
+    Имена source/target для sync-конфига таблицы.
+
+    Классический UI шлёт {"source": "s.t", "target": "s.t"}, конвейер и
+    расписания — {"schema": "s", "table": "t"}. Принимаем оба формата;
+    target по умолчанию совпадает с source.
+    """
+    source = cfg.get("source")
+
+    if not source:
+        schema = cfg.get("schema") or cfg.get("schema_name") or cfg.get("source_schema")
+        table = cfg.get("table") or cfg.get("table_name") or cfg.get("source_table")
+
+        if not (schema and table):
+            raise Exception("table config needs 'source' or schema+table: {!r}".format(cfg))
+
+        source = "{}.{}".format(schema, table)
+
+    return source, cfg.get("target") or source
+
+
 def split_table_name(full_name):
     parts = full_name.split(".")
 
@@ -620,8 +713,9 @@ def preview_gpcopy_sync(data):
 
     try:
         for cfg in table_configs:
-            source_schema, source_table = split_table_name(cfg["source"])
-            target_schema, target_table = split_table_name(cfg["target"])
+            source_full, target_full = resolve_sync_names(cfg)
+            source_schema, source_table = split_table_name(source_full)
+            target_schema, target_table = split_table_name(target_full)
 
             key_columns = cfg.get("key_columns") or []
             compare_columns = cfg.get("compare_columns") or ["*"]
@@ -641,8 +735,8 @@ def preview_gpcopy_sync(data):
             # preview без gpcopy: считаем по dblink невозможно без extension.
             # Поэтому preview здесь только валидирует структуру.
             item = {
-                "source": cfg["source"],
-                "target": cfg["target"],
+                "source": source_full,
+                "target": target_full,
                 "key_columns": key_columns,
                 "compare_columns": compare_cols,
                 "delete_missing": delete_missing,
@@ -662,16 +756,8 @@ def preview_gpcopy_sync(data):
 
 
 def gpmanager_sqlite_path():
-    db_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "instance",
-        "gp_reorganize_center.sqlite3"
-    )
-
-    if not os.path.exists(db_path):
-        db_path = os.path.join("instance", "gp_reorganize_center.sqlite3")
-
-    return db_path
+    # Единый источник пути к БД (config.SQLITE_DB_PATH), подменяемый в тестах.
+    return config.SQLITE_DB_PATH
 
 
 def gpmanager_sqlite_conn():
