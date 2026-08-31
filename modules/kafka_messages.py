@@ -95,8 +95,14 @@ def build_read_plan(data):
     if mode not in ("latest", "offset", "timestamp"):
         raise ValueError("Неизвестный режим чтения: {}".format(mode))
 
+    raw_limit = data.get("limit")
+
+    # без «or»: limit=0 — ложное значение, и оно молча стало бы 50
+    if raw_limit in (None, ""):
+        raw_limit = DEFAULT_LIMIT
+
     try:
-        limit = int(data.get("limit") or DEFAULT_LIMIT)
+        limit = int(raw_limit)
     except (TypeError, ValueError):
         raise ValueError("Лимит должен быть числом")
 
