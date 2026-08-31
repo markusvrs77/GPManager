@@ -1,1 +1,153 @@
-{% extends "base.html" %}{% block content %}<div id="kmRoot"></div>{% endblock %}
+{% extends "base.html" %}
+
+{% block title %}Сообщения · Opsentri{% endblock %}
+
+{% block content %}
+
+<style>
+/* ============ Kafka: сообщения ============ */
+.km { max-width: 1560px; display: flex; flex-direction: column; gap: 14px; }
+
+.km-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 10px 12px; }
+.km-bar select, .km-bar input { flex: 0 1 190px; }
+.km-bar .sp { flex: 1 1 auto; }
+
+.km-note { border-radius: var(--radius); padding: 10px 14px; font-size: 13px;
+  border: 1px solid var(--hairline); }
+.km-note.warn { color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.km-note.err { color: var(--crit);
+  background: color-mix(in srgb, var(--crit) 12%, transparent); }
+
+.km-panel { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); overflow: hidden; }
+.km-panel > h2 { font-size: 12px; font-weight: 800; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-muted); margin: 0;
+  padding: 11px 16px; border-bottom: 1px solid var(--hairline);
+  display: flex; align-items: center; gap: 10px; }
+.km-panel > h2 .sp { flex: 1; }
+
+.km-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--hairline); }
+.km-tools input[type="search"] { flex: 0 1 260px; }
+.km-hint { font-size: 11.5px; color: var(--text-muted); }
+
+.km-list { max-height: 520px; overflow: auto; padding: 6px; }
+.km-row { display: flex; justify-content: space-between; gap: 12px;
+  padding: 7px 10px; border-radius: var(--radius-sm); cursor: pointer;
+  font-variant-numeric: tabular-nums; }
+.km-row:hover, .km-row.open { background: var(--surface-2); }
+.km-row .meta { font-size: 12px; color: var(--text-muted);
+  white-space: nowrap; }
+.km-row .peek { font-size: 12px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+
+.km-body { padding: 4px 12px 12px 22px; }
+.km-body pre { background: var(--surface-2); border-radius: 8px;
+  padding: 10px 12px; font-size: 12px; max-height: 320px; overflow: auto;
+  margin: 6px 0; white-space: pre-wrap; word-break: break-word; }
+.km-kv { font-size: 12px; color: var(--text-muted); }
+
+.km-form { padding: 12px 16px; display: none;
+  border-bottom: 1px solid var(--hairline); }
+.km-form.on { display: block; }
+.km-form textarea { width: 100%; min-height: 110px; font-size: 12px;
+  font-family: var(--mono, monospace); }
+.km-form .line { display: flex; gap: 10px; align-items: flex-end;
+  flex-wrap: wrap; margin-bottom: 10px; }
+.km-form .line > div { flex: 0 1 220px; }
+.km-form .form-label { font-size: 11.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .04em;
+  color: var(--text-muted); margin-bottom: 4px; }
+
+.km-empty { padding: 18px 16px; font-size: 13px; color: var(--text-muted); }
+</style>
+
+<div class="km" id="kmRoot">
+
+  {% if not library_ready %}
+  <div class="km-note warn">
+    Библиотека <code>kafka-python</code> не установлена. На сервере выполните
+    <code>pip install -r requirements.txt</code> и перезапустите app.py.
+  </div>
+  {% endif %}
+
+  <div class="km-bar">
+    <select id="kmCluster" class="form-select form-select-sm"
+            {% if not clusters %}hidden{% endif %}>
+      {% for c in clusters %}
+      <option value="{{ c.id }}">{{ c.name }} — {{ c.bootstrap_servers }}</option>
+      {% endfor %}
+    </select>
+    {% if not clusters %}
+    <span class="km-hint">Кластеры ещё не заведены</span>
+    {% endif %}
+    <select id="kmTopic" class="form-select form-select-sm"></select>
+    <select id="kmMode" class="form-select form-select-sm">
+      <option value="latest">последние</option>
+      <option value="offset">с оффсета</option>
+      <option value="timestamp">с даты</option>
+    </select>
+    <input type="number" id="kmOffset" class="form-control form-control-sm"
+           placeholder="оффсет" min="0" hidden>
+    <input type="datetime-local" id="kmAt"
+           class="form-control form-control-sm" hidden>
+    <input type="number" id="kmLimit" class="form-control form-control-sm"
+           value="50" min="1" max="500">
+    <input type="number" id="kmPart" class="form-control form-control-sm"
+           placeholder="партиция: все" min="0">
+    <span class="sp"></span>
+    <button class="btn btn-sm btn-outline-primary" id="kmRead" type="button"
+            {% if not library_ready or not clusters %}disabled{% endif %}>
+      Прочитать</button>
+  </div>
+
+  <div class="km-note err" id="kmError" style="display: none;"></div>
+
+  <div class="km-panel">
+    <h2>Записи<span class="sp"></span>
+      <button class="btn btn-sm btn-secondary" id="kmSendToggle"
+              type="button">Отправить сообщение</button></h2>
+
+    <div class="km-form" id="kmForm">
+      <div class="line">
+        <div>
+          <label class="form-label" for="kmKey">Ключ</label>
+          <input type="text" id="kmKey" class="form-control form-control-sm"
+                 placeholder="необязательно">
+        </div>
+        <div>
+          <label class="form-label" for="kmSendPart">Партиция</label>
+          <input type="number" id="kmSendPart"
+                 class="form-control form-control-sm"
+                 placeholder="выберет Kafka" min="0">
+        </div>
+      </div>
+      <label class="form-label" for="kmValue">Значение</label>
+      <textarea id="kmValue" class="form-control"
+                placeholder='{"example": true}'></textarea>
+      <div class="line" style="margin-top: 10px;">
+        <button class="btn btn-sm btn-primary" id="kmSend" type="button">
+          Отправить</button>
+        <button class="btn btn-sm btn-outline-primary" id="kmSendCancel"
+                type="button">Отмена</button>
+      </div>
+    </div>
+
+    <div class="km-tools">
+      <input type="search" id="kmFilter" class="form-control form-control-sm"
+             placeholder="фильтр по загруженным записям">
+      <span class="km-hint">Kafka не умеет искать по содержимому — фильтр
+        работает только по тому, что уже прочитано.</span>
+      <span class="km-hint" id="kmCount" style="margin-left: auto;"></span>
+    </div>
+
+    <div id="kmList"></div>
+  </div>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/kafka_messages.js') }}"></script>
+{% endblock %}
