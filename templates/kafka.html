@@ -57,30 +57,6 @@
   font-variant-numeric: tabular-nums; }
 
 .kf-empty { padding: 18px 16px; font-size: 13px; color: var(--text-muted); }
-
-/* --- подключения --- */
-.kf-conn { display: flex; justify-content: space-between; align-items: center;
-  gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--hairline); }
-.kf-conn .addr { font-size: 12px; color: var(--text-muted);
-  font-family: var(--mono, monospace); }
-.kf-conn .acts { display: flex; gap: 8px; flex: none; }
-
-.kf-form { padding: 14px 16px; }
-.kf-form .fgrid { display: grid; gap: 12px;
-  grid-template-columns: repeat(3, minmax(0, 1fr)); }
-@media (max-width: 900px) {
-  .kf-form .fgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-.kf-form .form-label { font-size: 11.5px; font-weight: 700;
-  letter-spacing: .04em; text-transform: uppercase;
-  color: var(--text-muted); margin-bottom: 4px; }
-.kf-form .wide { grid-column: 1 / -1; }
-.kf-form details { margin: 12px 0 4px; }
-.kf-form summary { cursor: pointer; font-size: 12.5px;
-  color: var(--text-muted); user-select: none; }
-.kf-form details[open] summary { margin-bottom: 12px; }
-.kf-form .buttons { display: flex; gap: 8px; margin-top: 14px; }
-.kf-hint { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
 </style>
 
 <div class="kf" id="kfRoot">
@@ -100,12 +76,12 @@
       {% endfor %}
     </select>
     {% if not clusters %}
-    <span class="kf-none" id="kfNoneHint">Кластеры ещё не заведены</span>
+    <span class="kf-none">Кластеры ещё не заведены</span>
     {% endif %}
     <button class="btn btn-sm btn-secondary" id="kfPing" type="button"
             {% if not clusters %}disabled{% endif %}>Проверить связь</button>
-    <button class="btn btn-sm btn-secondary" id="kfConnToggle" type="button">
-      Подключения</button>
+    <a class="btn btn-sm btn-secondary" href="/kafka/connections">
+      Подключения</a>
     <span class="sp"></span>
     <span class="kf-snap" id="kfSnap">среза нет</span>
     <button class="btn btn-sm btn-outline-primary" id="kfRefresh" type="button"
@@ -114,93 +90,6 @@
   </div>
 
   <div class="kf-note err" id="kfError" style="display: none;"></div>
-
-  <div class="kf-panel" id="kfConns" {% if clusters %}hidden{% endif %}>
-    <h2>Подключения Kafka<span class="sp"></span>
-      <button class="btn btn-sm btn-outline-primary" id="kfAdd" type="button">
-        + Добавить кластер</button></h2>
-
-    <div id="kfConnList"></div>
-
-    <div class="kf-form" id="kfForm" hidden>
-      <div class="fgrid">
-        <div class="wide">
-          <label class="form-label" for="kffName">Название</label>
-          <input type="text" id="kffName" class="form-control"
-                 placeholder="Kafka PROD">
-        </div>
-        <div class="wide">
-          <label class="form-label" for="kffServers">Адреса брокеров</label>
-          <input type="text" id="kffServers" class="form-control"
-                 placeholder="broker1:9092, broker2:9092">
-          <div class="kf-hint">Через запятую. Порт можно не писать —
-            подставится 9092.</div>
-        </div>
-        <div>
-          <label class="form-label" for="kffTimeout">Таймаут, секунд</label>
-          <input type="number" id="kffTimeout" class="form-control"
-                 value="15" min="1" max="300">
-        </div>
-      </div>
-
-      <details id="kffMore">
-        <summary>Расширенные: протокол, SASL, SSL</summary>
-        <div class="fgrid">
-          <div>
-            <label class="form-label" for="kffProto">Протокол</label>
-            <select id="kffProto" class="form-select">
-              <option value="PLAINTEXT">PLAINTEXT</option>
-              <option value="SASL_PLAINTEXT">SASL_PLAINTEXT</option>
-              <option value="SASL_SSL">SASL_SSL</option>
-              <option value="SSL">SSL</option>
-            </select>
-          </div>
-          <div>
-            <label class="form-label" for="kffMech">SASL-механизм</label>
-            <select id="kffMech" class="form-select">
-              <option value="">—</option>
-              <option value="PLAIN">PLAIN</option>
-              <option value="SCRAM-SHA-256">SCRAM-SHA-256</option>
-              <option value="SCRAM-SHA-512">SCRAM-SHA-512</option>
-            </select>
-          </div>
-          <div>
-            <label class="form-label" for="kffUser">Пользователь</label>
-            <input type="text" id="kffUser" class="form-control">
-          </div>
-          <div>
-            <label class="form-label" for="kffPass">Пароль</label>
-            <input type="password" id="kffPass" class="form-control"
-                   placeholder="••••••••">
-          </div>
-          <div>
-            <label class="form-label" for="kffCa">CA-файл</label>
-            <input type="text" id="kffCa" class="form-control"
-                   placeholder="/etc/kafka/ca.pem">
-          </div>
-          <div>
-            <label class="form-label" for="kffCert">Сертификат</label>
-            <input type="text" id="kffCert" class="form-control"
-                   placeholder="/etc/kafka/client.pem">
-          </div>
-          <div>
-            <label class="form-label" for="kffKey">Ключ</label>
-            <input type="text" id="kffKey" class="form-control"
-                   placeholder="/etc/kafka/client.key">
-          </div>
-        </div>
-      </details>
-
-      <div class="buttons">
-        <button class="btn btn-sm btn-primary" id="kfSave" type="button">
-          Сохранить</button>
-        <button class="btn btn-sm btn-secondary" id="kfTest" type="button">
-          Сохранить и проверить связь</button>
-        <button class="btn btn-sm btn-outline-primary" id="kfCancel"
-                type="button">Отмена</button>
-      </div>
-    </div>
-  </div>
 
   <div class="kf-panel">
     <h2>Брокеры</h2>

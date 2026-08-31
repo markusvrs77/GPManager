@@ -65,6 +65,8 @@
     {% set page_title, page_crumb = 'Резервные копии PostgreSQL', 'pg_dump / pg_restore' %}
 {% elif p.startswith('/health') %}
     {% set page_title, page_crumb = 'Здоровье БД', 'аналитика без нагрузки' %}
+{% elif p.startswith('/kafka/connections') %}
+    {% set page_title, page_crumb = 'Подключения Kafka', 'кластеры и брокеры' %}
 {% elif p.startswith('/kafka') %}
     {% set page_title, page_crumb = 'Kafka', 'брокеры, топики и партиции' %}
 {% else %}
@@ -174,11 +176,20 @@
             <span class="sec-chev" aria-hidden="true">▾</span>
         </button>
         <div class="sb-sec-body" id="secBody-flow">
-            <!-- в <nav>, иначе не действуют правила .gp-sb nav a -->
-            <nav>
-                <a href="/kafka" class="{% if p.startswith('/kafka') %}active{% endif %}">
-                    <span class="tk-logo kf">KF</span>
-                    <span class="lbl">Kafka</span></a>
+            <!-- Тулкит: Kafka -->
+            <button class="sb-sec-hd sub" id="secHd-kfk" data-sec="kfk"
+                    type="button" aria-expanded="true" aria-controls="secBody-kfk">
+                <span class="tk-logo kf">KF</span>
+                <span class="sec-ttl">Kafka</span>
+                <span class="sec-chev" aria-hidden="true">▾</span>
+            </button>
+            <nav class="sb-sec-body sub" id="secBody-kfk">
+                <a href="/kafka/connections" class="{% if p.startswith('/kafka/connections') %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span>
+                    <span class="lbl">Подключения</span></a>
+                <a href="/kafka" class="{% if p == '/kafka' %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg></span>
+                    <span class="lbl">Обзор кластера</span></a>
             </nav>
             <div class="sb-stub"><span class="tk-logo dz">DZ</span>
                 Debezium <span class="soon">скоро</span></div>

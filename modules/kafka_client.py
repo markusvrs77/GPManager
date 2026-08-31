@@ -79,6 +79,15 @@ def _fail(cluster, error):
     )
 
 
+def _request_failed(cluster, error):
+    """Связь есть, но запрос не удался — про таймаут врать не надо."""
+    return KafkaUnavailable(
+        "Кластер {} ответил ошибкой: {}".format(
+            ", ".join(_servers(cluster)) or "адрес не задан", error
+        )
+    )
+
+
 def open_admin(cluster):
     try:
         kafka = _import_kafka()
@@ -125,7 +134,7 @@ def ping(cluster):
             "brokers": brokers,
         }
     except Exception as error:
-        return {"ok": False, "message": str(_fail(cluster, error)),
+        return {"ok": False, "message": str(_request_failed(cluster, error)),
                 "brokers": 0}
     finally:
         try:
@@ -134,19 +143,43 @@ def ping(cluster):
             pass
 
 
+def _close(client):
+    try:
+        if client is not None:
+            client.close()
+    except Exception:
+        pass
+
+
 def fetch_cluster_meta(cluster):
     """(описание кластера, список топиков) сырыми структурами библиотеки."""
     admin = open_admin(cluster)
+    consumer = None
 
     try:
-        return admin.describe_cluster(), admin.describe_topics()
+        cluster_meta = admin.describe_cluster()
+
+        # имена топиков спрашиваем у консьюмера: admin.list_topics() и
+        # describe_topics() без аргумента шлют MetadataRequest с topics=None,
+        # а часть брокеров такой запрос отвергает —
+        # «All topics must not be None»
+        consumer = open_consumer(cluster)
+        names = sorted(consumer.topics() or [])
+
+        topics_meta = admin.describe_topics(names) if names else []
+
+        # 3.x отдаёт весь ответ метаданных, 2.x — сразу список топиков
+        if isinstance(topics_meta, dict):
+            topics_meta = topics_meta.get("topics") or []
+
+        return cluster_meta, topics_meta
+    except KafkaUnavailable:
+        raise
     except Exception as error:
-        raise _fail(cluster, error)
+        raise _request_failed(cluster, error)
     finally:
-        try:
-            admin.close()
-        except Exception:
-            pass
+        _close(admin)
+        _close(consumer)
 
 
 def fetch_offsets(cluster, pairs):
@@ -176,10 +209,9 @@ def fetch_offsets(cluster, pairs):
              for tp, v in begin.items()},
             {(tp.topic, tp.partition): int(v or 0) for tp, v in end.items()},
         )
+    except KafkaUnavailable:
+        raise
     except Exception as error:
-        raise _fail(cluster, error)
+        raise _request_failed(cluster, error)
     finally:
-        try:
-            consumer.close()
-        except Exception:
-            pass
+        _close(consumer)

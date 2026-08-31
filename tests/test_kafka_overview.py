@@ -41,6 +41,30 @@ TOPICS_META = [
 BEGIN = {("orders", 0): 0, ("orders", 1): 100, ("__consumer_offsets", 0): 0}
 END = {("orders", 0): 500, ("orders", 1): 700, ("__consumer_offsets", 0): 3}
 
+# kafka-python 3.x переименовала поля ответа; имена ниже сверены со схемами
+# самой библиотеки (kafka/protocol/metadata и kafka/protocol/admin/cluster)
+CLUSTER_META_V3 = {
+    "cluster_id": "MkU3OEVBNTcwNTJENDM2Qk",
+    "controller_id": 1,
+    "brokers": [
+        {"broker_id": 1, "host": "kfk1", "port": 9092, "rack": None},
+        {"broker_id": 2, "host": "kfk2", "port": 9092, "rack": "b"},
+    ],
+}
+
+TOPICS_META_V3 = [
+    {
+        "name": "orders",
+        "is_internal": False,
+        "partitions": [
+            {"partition_index": 0, "leader_id": 1,
+             "replica_nodes": [1, 2], "isr_nodes": [1, 2]},
+            {"partition_index": 1, "leader_id": 2,
+             "replica_nodes": [1, 2], "isr_nodes": [2]},
+        ],
+    },
+]
+
 
 def test_build_overview_counts_messages():
     data = build_overview(CLUSTER_META, TOPICS_META, BEGIN, END)
@@ -54,6 +78,24 @@ def test_build_overview_counts_messages():
     assert orders["replication"] == 2
     # (500 - 0) + (700 - 100)
     assert orders["messages"] == 1100
+
+
+def test_build_overview_reads_kafka_python_3_field_names():
+    data = build_overview(CLUSTER_META_V3, TOPICS_META_V3, BEGIN, END)
+
+    assert [b["id"] for b in data["brokers"]] == [1, 2]
+    assert data["brokers"][1]["rack"] == "b"
+
+    orders = data["topics"][0]
+
+    assert orders["name"] == "orders"
+    assert orders["partitions"] == 2
+    assert orders["replication"] == 2
+    assert orders["messages"] == 1100
+    assert orders["under_replicated"] is True
+    assert orders["parts"][0]["leader"] == 1
+    assert orders["parts"][0]["replicas"] == [1, 2]
+    assert orders["parts"][1]["isr"] == [2]
 
 
 def test_build_overview_marks_under_replicated():

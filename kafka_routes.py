@@ -38,6 +38,15 @@ def kafka_page():
     )
 
 
+@kafka_bp.route("/kafka/connections")
+def kafka_connections_page():
+    return render_template(
+        "kafka_connections.html",
+        clusters=list_clusters(),
+        library_ready=library_available(),
+    )
+
+
 @kafka_bp.route("/api/kafka/clusters", methods=["GET"])
 def api_kafka_clusters():
     return jsonify({"ok": True, "clusters": list_clusters()})

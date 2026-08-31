@@ -94,6 +94,64 @@ def test_ping_turns_failure_into_message(monkeypatch):
     assert result["brokers"] == 0
 
 
+def test_fetch_cluster_meta_never_asks_for_all_topics(monkeypatch):
+    """Запрос без списка топиков брокер отвергает: All topics must not
+    be None. Имена берём у консьюмера и передаём явно."""
+    seen = {}
+
+    class FakeAdmin(object):
+        def describe_cluster(self):
+            return {"brokers": [{"broker_id": 1, "host": "kfk1",
+                                 "port": 9092, "rack": None}],
+                    "controller_id": 1, "cluster_id": "MkU3"}
+
+        def describe_topics(self, topics=None):
+            seen["topics"] = topics
+            # 3.x отдаёт весь ответ метаданных, а не список топиков
+            return {"topics": [{"name": "orders", "partitions": []}],
+                    "brokers": []}
+
+        def close(self):
+            seen["admin_closed"] = True
+
+    class FakeConsumer(object):
+        def topics(self):
+            return {"payments", "orders"}
+
+        def close(self):
+            seen["consumer_closed"] = True
+
+    monkeypatch.setattr(kafka_client, "open_admin", lambda c: FakeAdmin())
+    monkeypatch.setattr(kafka_client, "open_consumer",
+                        lambda c: FakeConsumer())
+
+    cluster_meta, topics_meta = kafka_client.fetch_cluster_meta(PLAIN)
+
+    assert seen["topics"] == ["orders", "payments"]
+    assert topics_meta == [{"name": "orders", "partitions": []}]
+    assert cluster_meta["controller_id"] == 1
+    assert seen["admin_closed"] and seen["consumer_closed"]
+
+
+def test_request_error_is_not_reported_as_timeout(monkeypatch):
+    class FakeAdmin(object):
+        def describe_cluster(self):
+            raise ValueError("All topics must not be None")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kafka_client, "open_admin", lambda c: FakeAdmin())
+
+    with pytest.raises(KafkaUnavailable) as err:
+        kafka_client.fetch_cluster_meta(PLAIN)
+
+    text = str(err.value)
+
+    assert "ответил ошибкой" in text
+    assert "не ответил за" not in text
+
+
 def test_missing_library_is_explained(monkeypatch):
     def no_library():
         raise ImportError("no kafka")

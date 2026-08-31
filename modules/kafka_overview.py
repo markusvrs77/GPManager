@@ -41,6 +41,25 @@ def _unpack(blob):
         return None
 
 
+def _pick(row, *names):
+    """
+    Первое непустое значение из нескольких имён поля.
+
+    kafka-python 3.x переименовала поля ответа (topic -> name,
+    partition -> partition_index, leader -> leader_id, replicas ->
+    replica_nodes, isr -> isr_nodes, node_id -> broker_id), а на старых
+    версиях остались прежние. Читаем оба набора, чтобы срез собирался
+    независимо от версии библиотеки.
+    """
+    for name in names:
+        value = (row or {}).get(name)
+
+        if value is not None:
+            return value
+
+    return None
+
+
 def build_overview(cluster_meta, topics_meta, begin_offsets, end_offsets):
     """
     Метаданные библиотеки → структура среза. Чистая функция: ни базы,
@@ -50,7 +69,7 @@ def build_overview(cluster_meta, topics_meta, begin_offsets, end_offsets):
 
     for broker in (cluster_meta or {}).get("brokers") or []:
         brokers.append({
-            "id": broker.get("node_id"),
+            "id": _pick(broker, "broker_id", "node_id"),
             "host": broker.get("host"),
             "port": broker.get("port"),
             "rack": broker.get("rack"),
@@ -61,16 +80,16 @@ def build_overview(cluster_meta, topics_meta, begin_offsets, end_offsets):
     topics = []
 
     for topic in topics_meta or []:
-        name = topic.get("topic")
+        name = _pick(topic, "name", "topic")
         parts = []
         messages = 0
         under = False
         replication = 0
 
         for part in topic.get("partitions") or []:
-            number = part.get("partition")
-            replicas = list(part.get("replicas") or [])
-            isr = list(part.get("isr") or [])
+            number = _pick(part, "partition_index", "partition")
+            replicas = list(_pick(part, "replica_nodes", "replicas") or [])
+            isr = list(_pick(part, "isr_nodes", "isr") or [])
             begin = int(begin_offsets.get((name, number), 0) or 0)
             end = int(end_offsets.get((name, number), 0) or 0)
 
@@ -82,7 +101,7 @@ def build_overview(cluster_meta, topics_meta, begin_offsets, end_offsets):
 
             parts.append({
                 "p": number,
-                "leader": part.get("leader"),
+                "leader": _pick(part, "leader_id", "leader"),
                 "replicas": replicas,
                 "isr": isr,
                 "begin": begin,

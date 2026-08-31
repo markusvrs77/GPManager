@@ -24,6 +24,13 @@ def test_page_opens(client):
     assert response.status_code == 200
 
 
+def test_connections_page_opens(client):
+    response = client.get("/kafka/connections")
+
+    assert response.status_code == 200
+    assert "Кластеры Kafka" in response.get_data(as_text=True)
+
+
 def test_clusters_crud(client):
     created = client.post("/api/kafka/clusters", json={
         "name": "Kafka TEST", "bootstrap_servers": "kfk1"})
