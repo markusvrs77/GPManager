@@ -407,6 +407,24 @@ def init_db():
             """
         )
 
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kafka_group_snapshots (
+                cluster_id INTEGER PRIMARY KEY,
+                taken_at TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                groups_total INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_kafka_audit_cluster
+            ON kafka_audit(cluster_id, id DESC)
+            """
+        )
+
     ensure_column_exists(
         "skew_results",
         "job_id",

@@ -170,10 +170,18 @@ def update_cluster(cluster_id, data):
 
 
 def delete_cluster(cluster_id):
-    """Вместе с кластером уходит и его срез — он больше ни к чему."""
+    """
+    Вместе с кластером уходят его срезы — они больше ни к чему.
+    Записи kafka_audit остаются: журнал должен переживать объект,
+    иначе следы опасных действий можно замести удалением подключения.
+    """
     with sqlite_cursor(commit=True) as cur:
         cur.execute(
             "DELETE FROM kafka_snapshots WHERE cluster_id = ?",
+            (int(cluster_id),),
+        )
+        cur.execute(
+            "DELETE FROM kafka_group_snapshots WHERE cluster_id = ?",
             (int(cluster_id),),
         )
         cur.execute(
