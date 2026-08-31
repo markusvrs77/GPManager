@@ -152,6 +152,89 @@ def test_request_error_is_not_reported_as_timeout(monkeypatch):
     assert "не ответил за" not in text
 
 
+def test_fetch_groups_flattens_describe(monkeypatch):
+    class FakeAdmin(object):
+        def list_groups(self):
+            return [{"group_id": "etl-loader", "protocol_type": "consumer",
+                     "group_state": "Stable"},
+                    {"group_id": "old", "protocol_type": "consumer",
+                     "group_state": "Empty"}]
+
+        def describe_groups(self, group_ids, **kwargs):
+            assert sorted(group_ids) == ["etl-loader", "old"]
+            return {
+                "etl-loader": {"group_id": "etl-loader",
+                               "group_state": "Stable",
+                               "protocol_data": "range",
+                               "members": [{"client_id": "c-1",
+                                            "client_host": "10.0.0.7"}]},
+                "old": {"group_id": "old", "group_state": "Empty",
+                        "protocol_data": "", "members": []},
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kafka_client, "open_admin", lambda c: FakeAdmin())
+
+    groups = kafka_client.fetch_groups(PLAIN)
+
+    assert [g["group_id"] for g in groups] == ["etl-loader", "old"]
+    assert groups[0]["members"][0]["client_id"] == "c-1"
+
+
+def test_fetch_group_offsets_uses_plain_keys(monkeypatch):
+    import kafka as real_kafka
+
+    tp = real_kafka.TopicPartition("orders", 0)
+    missing = real_kafka.TopicPartition("orders", 1)
+
+    class Meta(object):
+        def __init__(self, offset):
+            self.offset = offset
+
+    class FakeAdmin(object):
+        def list_group_offsets(self, specs):
+            assert specs == {"etl-loader": None}
+            return {"etl-loader": {tp: Meta(4100), missing: Meta(-1)}}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kafka_client, "open_admin", lambda c: FakeAdmin())
+
+    offsets = kafka_client.fetch_group_offsets(PLAIN, ["etl-loader"])
+
+    assert offsets[("etl-loader", "orders", 0)] == 4100
+    # -1 у Kafka значит «коммита не было», а не нулевой оффсет
+    assert offsets[("etl-loader", "orders", 1)] is None
+
+
+def test_reset_offsets_translates_modes(monkeypatch):
+    seen = {}
+
+    class FakeAdmin(object):
+        def reset_group_offsets(self, group_id, specs, **kwargs):
+            seen["group"] = group_id
+            seen["specs"] = specs
+            return {list(specs)[0]: {"error": None}}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kafka_client, "open_admin", lambda c: FakeAdmin())
+
+    result = kafka_client.reset_offsets(
+        PLAIN, "etl-loader", {("orders", 0): ("earliest", None)})
+
+    key = list(seen["specs"])[0]
+
+    assert seen["group"] == "etl-loader"
+    assert (key.topic, key.partition) == ("orders", 0)
+    assert int(seen["specs"][key]) == -2
+    assert result == {("orders", 0): None}
+
+
 def test_missing_library_is_explained(monkeypatch):
     def no_library():
         raise ImportError("no kafka")

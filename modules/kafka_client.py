@@ -215,3 +215,155 @@ def fetch_offsets(cluster, pairs):
         raise _request_failed(cluster, error)
     finally:
         _close(consumer)
+
+
+def fetch_groups(cluster):
+    """
+    Описания всех консьюмер-групп кластера.
+
+    list_groups даёт только имена и состояние; участники и протокол
+    приходят из describe_groups.
+    """
+    admin = open_admin(cluster)
+
+    try:
+        listed = admin.list_groups() or []
+        ids = [g.get("group_id") for g in listed if g.get("group_id")]
+
+        if not ids:
+            return []
+
+        described = admin.describe_groups(ids) or {}
+        groups = []
+
+        for group_id in ids:
+            row = described.get(group_id)
+
+            if row:
+                groups.append(dict(row))
+                continue
+
+            # брокер не описал группу — показываем хотя бы состояние
+            base = [g for g in listed if g.get("group_id") == group_id][0]
+            groups.append({
+                "group_id": group_id,
+                "group_state": base.get("group_state"),
+                "protocol_data": base.get("protocol_type"),
+                "members": [],
+            })
+
+        return groups
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        raise _request_failed(cluster, error)
+    finally:
+        _close(admin)
+
+
+def fetch_group_offsets(cluster, group_ids):
+    """
+    {(группа, топик, партиция): оффсет или None}.
+
+    Kafka отдаёт -1, когда коммита по партиции не было; наружу это
+    уходит как None, иначе «не читали» превратится в «нулевой оффсет»
+    и лаг посчитается неверно.
+    """
+    if not group_ids:
+        return {}
+
+    admin = open_admin(cluster)
+
+    try:
+        specs = {}
+
+        for group_id in group_ids:
+            specs[group_id] = None
+
+        answer = admin.list_group_offsets(specs) or {}
+        out = {}
+
+        for group_id, partitions in answer.items():
+            for tp, meta in (partitions or {}).items():
+                offset = getattr(meta, "offset", meta)
+                offset = int(offset) if offset is not None else None
+
+                if offset is not None and offset < 0:
+                    offset = None
+
+                out[(group_id, tp.topic, tp.partition)] = offset
+
+        return out
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        raise _request_failed(cluster, error)
+    finally:
+        _close(admin)
+
+
+def _offset_value(mode, value):
+    """(режим, значение) -> то, что понимает reset_group_offsets."""
+    from kafka.admin import OffsetSpec, OffsetTimestamp
+
+    if mode == "earliest":
+        return OffsetSpec.EARLIEST
+
+    if mode == "latest":
+        return OffsetSpec.LATEST
+
+    if mode == "timestamp":
+        return OffsetTimestamp(int(value))
+
+    raise KafkaUnavailable("Неизвестный режим сброса: {}".format(mode))
+
+
+def reset_offsets(cluster, group_id, specs):
+    """
+    specs — {(топик, партиция): (режим, значение)} из build_reset_specs.
+    Возвращает {(топик, партиция): текст ошибки или None}.
+    """
+    if not specs:
+        return {}
+
+    try:
+        kafka = _import_kafka()
+    except ImportError:
+        raise KafkaUnavailable(INSTALL_HINT)
+
+    admin = open_admin(cluster)
+
+    try:
+        request = {}
+
+        for (topic, part), (mode, value) in specs.items():
+            request[kafka.TopicPartition(topic, part)] = _offset_value(
+                mode, value)
+
+        answer = admin.reset_group_offsets(group_id, request) or {}
+        out = {}
+
+        for tp, row in answer.items():
+            error = (row or {}).get("error")
+            out[(tp.topic, tp.partition)] = str(error) if error else None
+
+        return out
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        raise _request_failed(cluster, error)
+    finally:
+        _close(admin)
+
+
+def delete_group(cluster, group_id):
+    admin = open_admin(cluster)
+
+    try:
+        admin.delete_groups([group_id])
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        raise _request_failed(cluster, error)
+    finally:
+        _close(admin)
