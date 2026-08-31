@@ -49,6 +49,9 @@ def client_kwargs(cluster):
         "bootstrap_servers": _servers(cluster),
         "security_protocol": protocol,
         "request_timeout_ms": timeout,
+        # без него клиент ждёт своих 30 секунд независимо от
+        # request_timeout_ms — вкладка висела бы вдвое дольше обещанного
+        "bootstrap_timeout_ms": timeout,
         "client_id": "opsentri",
     }
 

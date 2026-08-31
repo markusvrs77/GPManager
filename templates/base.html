@@ -65,6 +65,8 @@
     {% set page_title, page_crumb = 'Резервные копии PostgreSQL', 'pg_dump / pg_restore' %}
 {% elif p.startswith('/health') %}
     {% set page_title, page_crumb = 'Здоровье БД', 'аналитика без нагрузки' %}
+{% elif p.startswith('/kafka') %}
+    {% set page_title, page_crumb = 'Kafka', 'брокеры, топики и партиции' %}
 {% else %}
     {% set page_title, page_crumb = 'Opsentri', '' %}
 {% endif %}

@@ -43,6 +43,27 @@ def test_kwargs_default_timeout():
     assert kwargs["request_timeout_ms"] == 15000
 
 
+def test_kwargs_limit_bootstrap_wait():
+    # у клиента свой таймаут ожидания брокеров: без него он ждёт 30 с
+    # независимо от request_timeout_ms, и вкладка висит вдвое дольше
+    kwargs = client_kwargs(dict(PLAIN, request_timeout_ms=5000))
+
+    assert kwargs["bootstrap_timeout_ms"] == 5000
+
+
+def test_kwargs_are_accepted_by_the_library():
+    """Все ключи должны существовать в библиотеке, иначе она бросит
+    KafkaConfigurationError уже на создании клиента."""
+    kafka = pytest.importorskip("kafka")
+
+    admin = set(kafka.KafkaAdminClient.DEFAULT_CONFIG)
+    consumer = set(kafka.KafkaConsumer.DEFAULT_CONFIG)
+
+    for key in client_kwargs(SASL):
+        assert key in admin, key
+        assert key in consumer, key
+
+
 def test_ping_reports_broker_count(monkeypatch):
     class FakeAdmin(object):
         def describe_cluster(self):
