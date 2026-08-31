@@ -7,7 +7,12 @@ from modules.kafka_audit import recent as audit_recent
 from modules.kafka_audit import write as audit_write
 from modules.kafka_client import (
     KafkaUnavailable,
+    add_partitions,
+    alter_topic_configs,
+    create_topic,
     delete_group,
+    delete_topic,
+    fetch_topic_configs,
     library_available,
     ping,
     reset_offsets,
@@ -27,6 +32,13 @@ from modules.kafka_groups import (
     find_group,
 )
 from modules.kafka_overview import collect_overview
+from modules.kafka_topics import (
+    assert_can_grow,
+    build_config_changes,
+    build_topic_spec,
+    parse_configs,
+    validate_topic_name,
+)
 
 kafka_bp = Blueprint("kafka", __name__)
 
@@ -272,3 +284,152 @@ def api_kafka_group_delete(cluster_id, group_id):
                 methods=["GET"])
 def api_kafka_audit(cluster_id):
     return jsonify({"ok": True, "records": audit_recent(cluster_id)})
+
+
+# ---------------- управление топиками ----------------
+
+def _topic_in_overview(cluster_id, name):
+    """Топик из среза обзора: оттуда берём текущее число партиций."""
+    data = collect_overview(cluster_id)
+
+    for topic in data.get("topics") or []:
+        if topic.get("name") == name:
+            return topic
+
+    return None
+
+
+@kafka_bp.route("/api/kafka/clusters/<int:cluster_id>/topics",
+                methods=["POST"])
+def api_kafka_topic_create(cluster_id):
+    try:
+        cluster = _cluster_or_404(cluster_id)
+        spec = build_topic_spec(request.get_json(silent=True) or {})
+    except LookupError as error:
+        return _fail(error, 404)
+    except ValueError as error:
+        return _fail(error)
+
+    try:
+        create_topic(cluster, spec)
+    except KafkaUnavailable as error:
+        audit_write(cluster_id, "create_topic", spec["name"], spec, "error")
+        code = 409 if "уже есть" in str(error) else 502
+        return _fail(error, code)
+
+    audit_write(cluster_id, "create_topic", spec["name"], spec, "ok")
+    collect_overview(cluster_id, force=True)
+
+    return jsonify({"ok": True, "name": spec["name"]})
+
+
+@kafka_bp.route("/api/kafka/clusters/<int:cluster_id>/topics/<name>",
+                methods=["DELETE"])
+def api_kafka_topic_delete(cluster_id, name):
+    try:
+        cluster = _cluster_or_404(cluster_id)
+        topic = validate_topic_name(name)
+    except LookupError as error:
+        return _fail(error, 404)
+    except ValueError as error:
+        return _fail(error)
+
+    try:
+        delete_topic(cluster, topic)
+    except KafkaUnavailable as error:
+        audit_write(cluster_id, "delete_topic", topic, None, "error")
+        return _fail(error, 502)
+
+    audit_write(cluster_id, "delete_topic", topic, None, "ok")
+    collect_overview(cluster_id, force=True)
+
+    return jsonify({"ok": True})
+
+
+@kafka_bp.route(
+    "/api/kafka/clusters/<int:cluster_id>/topics/<name>/partitions",
+    methods=["POST"])
+def api_kafka_topic_partitions(cluster_id, name):
+    body = request.get_json(silent=True) or {}
+    known = None
+
+    try:
+        cluster = _cluster_or_404(cluster_id)
+        topic = validate_topic_name(name)
+        known = _topic_in_overview(cluster_id, topic)
+
+        if not known:
+            raise LookupError(
+                "Топик не найден: {} — обновите срез".format(topic))
+
+        total = assert_can_grow(known.get("partitions"), body.get("total"))
+    except LookupError as error:
+        return _fail(error, 404)
+    except ValueError as error:
+        # уменьшение партиций — конфликт состояния, не ошибка ввода
+        code = 409 if "уменьшить" in str(error) else 400
+        return _fail(error, code)
+
+    intent = {"from": known.get("partitions"), "to": total}
+
+    try:
+        add_partitions(cluster, topic, total)
+    except KafkaUnavailable as error:
+        audit_write(cluster_id, "add_partitions", topic, intent, "error")
+        return _fail(error, 502)
+
+    audit_write(cluster_id, "add_partitions", topic, intent, "ok")
+    collect_overview(cluster_id, force=True)
+
+    return jsonify({"ok": True, "total": total})
+
+
+@kafka_bp.route(
+    "/api/kafka/clusters/<int:cluster_id>/topics/<name>/configs",
+    methods=["GET"])
+def api_kafka_topic_configs(cluster_id, name):
+    try:
+        cluster = _cluster_or_404(cluster_id)
+        topic = validate_topic_name(name)
+        described = fetch_topic_configs(cluster, topic)
+    except LookupError as error:
+        return _fail(error, 404)
+    except KafkaUnavailable as error:
+        return _fail(error, 502)
+    except ValueError as error:
+        return _fail(error)
+
+    return jsonify({"ok": True, "configs": parse_configs(described, topic)})
+
+
+@kafka_bp.route(
+    "/api/kafka/clusters/<int:cluster_id>/topics/<name>/configs",
+    methods=["PUT"])
+def api_kafka_topic_configs_update(cluster_id, name):
+    body = request.get_json(silent=True) or {}
+
+    try:
+        cluster = _cluster_or_404(cluster_id)
+        topic = validate_topic_name(name)
+        current = parse_configs(fetch_topic_configs(cluster, topic), topic)
+        changes = build_config_changes(current, body.get("configs") or {})
+    except LookupError as error:
+        return _fail(error, 404)
+    except KafkaUnavailable as error:
+        return _fail(error, 502)
+    except ValueError as error:
+        return _fail(error)
+
+    if not changes:
+        return jsonify({"ok": True, "changed": 0,
+                        "message": "Изменений нет"})
+
+    try:
+        alter_topic_configs(cluster, topic, changes)
+    except KafkaUnavailable as error:
+        audit_write(cluster_id, "alter_configs", topic, changes, "error")
+        return _fail(error, 502)
+
+    audit_write(cluster_id, "alter_configs", topic, changes, "ok")
+
+    return jsonify({"ok": True, "changed": len(changes)})
