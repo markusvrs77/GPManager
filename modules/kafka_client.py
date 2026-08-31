@@ -367,3 +367,116 @@ def delete_group(cluster, group_id):
         raise _request_failed(cluster, error)
     finally:
         _close(admin)
+
+
+def _topic_error(cluster, name, error):
+    """Частые ошибки брокера — человеческим языком."""
+    text = str(error)
+
+    if "AlreadyExists" in text or "already exists" in text:
+        return KafkaUnavailable(
+            "Топик {} уже есть в кластере".format(name))
+
+    if "DeletionDisabled" in text or "delete.topic.enable" in text:
+        return KafkaUnavailable(
+            "Брокер запрещает удаление топиков: включите "
+            "delete.topic.enable"
+        )
+
+    if "InvalidReplicationFactor" in text:
+        return KafkaUnavailable(
+            "Фактор репликации больше числа брокеров в кластере")
+
+    return _request_failed(cluster, error)
+
+
+def create_topic(cluster, spec):
+    from kafka.admin import NewTopic
+
+    admin = open_admin(cluster)
+
+    try:
+        admin.create_topics([NewTopic(
+            name=spec["name"],
+            num_partitions=int(spec.get("partitions") or 1),
+            replication_factor=int(spec.get("replication") or 1),
+            topic_configs=spec.get("configs") or None,
+        )])
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        raise _topic_error(cluster, spec.get("name"), error)
+    finally:
+        _close(admin)
+
+
+def delete_topic(cluster, name):
+    admin = open_admin(cluster)
+
+    try:
+        admin.delete_topics([name])
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        raise _topic_error(cluster, name, error)
+    finally:
+        _close(admin)
+
+
+def add_partitions(cluster, name, total_count):
+    """total_count — ИТОГОВОЕ число партиций, а не приращение."""
+    from kafka.admin import NewPartitions
+
+    admin = open_admin(cluster)
+
+    try:
+        admin.create_partitions({name: NewPartitions(int(total_count))})
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        raise _topic_error(cluster, name, error)
+    finally:
+        _close(admin)
+
+
+def fetch_topic_configs(cluster, name):
+    """
+    Сырой ответ describe_configs по одному топику.
+
+    Фильтр dynamic, а не умолчательный modified: на экране нужны все
+    изменяемые ключи, включая те, что сидят на значениях по умолчанию.
+    """
+    from kafka.admin import ConfigResource, ConfigResourceType
+
+    admin = open_admin(cluster)
+
+    try:
+        return admin.describe_configs(
+            [ConfigResource(ConfigResourceType.TOPIC, name)],
+            config_filter="dynamic",
+        )
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        raise _topic_error(cluster, name, error)
+    finally:
+        _close(admin)
+
+
+def alter_topic_configs(cluster, name, changes):
+    from kafka.admin import ConfigResource, ConfigResourceType
+
+    if not changes:
+        return
+
+    admin = open_admin(cluster)
+
+    try:
+        admin.alter_configs([ConfigResource(
+            ConfigResourceType.TOPIC, name, configs=dict(changes))])
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        raise _topic_error(cluster, name, error)
+    finally:
+        _close(admin)

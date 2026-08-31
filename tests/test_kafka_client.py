@@ -235,6 +235,84 @@ def test_reset_offsets_translates_modes(monkeypatch):
     assert result == {("orders", 0): None}
 
 
+def test_add_partitions_sends_total_count(monkeypatch):
+    seen = {}
+
+    class FakeAdmin(object):
+        def create_partitions(self, topic_partitions, **kwargs):
+            seen["arg"] = topic_partitions
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kafka_client, "open_admin", lambda c: FakeAdmin())
+
+    kafka_client.add_partitions(PLAIN, "orders", 12)
+
+    spec = seen["arg"]["orders"]
+
+    # NewPartitions принимает ИТОГОВОЕ число, а не приращение
+    assert spec.total_count == 12
+
+
+def test_create_topic_passes_configs(monkeypatch):
+    seen = {}
+
+    class FakeAdmin(object):
+        def create_topics(self, new_topics, **kwargs):
+            seen["topics"] = new_topics
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kafka_client, "open_admin", lambda c: FakeAdmin())
+
+    kafka_client.create_topic(PLAIN, {
+        "name": "orders", "partitions": 6, "replication": 3,
+        "configs": {"retention.ms": "86400000"}})
+
+    topic = seen["topics"][0]
+
+    assert topic.name == "orders"
+    assert topic.num_partitions == 6
+    assert topic.replication_factor == 3
+    assert topic.topic_configs == {"retention.ms": "86400000"}
+
+
+def test_existing_topic_error_is_explained(monkeypatch):
+    class FakeAdmin(object):
+        def create_topics(self, new_topics, **kwargs):
+            raise RuntimeError("TopicAlreadyExistsError: orders")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kafka_client, "open_admin", lambda c: FakeAdmin())
+
+    with pytest.raises(KafkaUnavailable) as err:
+        kafka_client.create_topic(PLAIN, {
+            "name": "orders", "partitions": 1, "replication": 1,
+            "configs": {}})
+
+    assert "уже есть" in str(err.value)
+
+
+def test_delete_disabled_error_is_explained(monkeypatch):
+    class FakeAdmin(object):
+        def delete_topics(self, topics, **kwargs):
+            raise RuntimeError("TopicDeletionDisabledError")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kafka_client, "open_admin", lambda c: FakeAdmin())
+
+    with pytest.raises(KafkaUnavailable) as err:
+        kafka_client.delete_topic(PLAIN, "orders")
+
+    assert "delete.topic.enable" in str(err.value)
+
+
 def test_missing_library_is_explained(monkeypatch):
     def no_library():
         raise ImportError("no kafka")
