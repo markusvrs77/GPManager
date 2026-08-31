@@ -133,6 +133,26 @@ def test_fetch_cluster_meta_never_asks_for_all_topics(monkeypatch):
     assert seen["admin_closed"] and seen["consumer_closed"]
 
 
+def test_dns_failure_explains_advertised_listeners(monkeypatch):
+    """Голое «DNS Resolution failure» не говорит, что чинить."""
+    class FakeAdmin(object):
+        def describe_cluster(self):
+            raise RuntimeError("KafkaConnectionError: DNS Resolution failure")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kafka_client, "open_admin", lambda c: FakeAdmin())
+
+    result = kafka_client.ping(dict(PLAIN, bootstrap_servers="10.0.0.1:9092"))
+
+    assert result["ok"] is False
+    assert "advertised.listeners" in result["message"]
+    assert "10.0.0.1:9092" in result["message"]
+    # не выдаём это за отказ соединения или таймаут
+    assert "не ответил за" not in result["message"]
+
+
 def test_request_error_is_not_reported_as_timeout(monkeypatch):
     class FakeAdmin(object):
         def describe_cluster(self):

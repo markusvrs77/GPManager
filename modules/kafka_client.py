@@ -81,10 +81,25 @@ def _fail(cluster, error):
 
 def _request_failed(cluster, error):
     """Связь есть, но запрос не удался — про таймаут врать не надо."""
-    return KafkaUnavailable(
-        "Кластер {} ответил ошибкой: {}".format(
-            ", ".join(_servers(cluster)) or "адрес не задан", error
+    where = ", ".join(_servers(cluster)) or "адрес не задан"
+    text = str(error)
+
+    # Bootstrap прошёл (иначе была бы ошибка соединения), а дальше клиент
+    # идёт к брокерам по именам из их advertised.listeners. Если эти имена
+    # с нашего сервера не резолвятся — библиотека роняет голое
+    # «DNS Resolution failure», по которому неясно, что вообще делать.
+    if "DNS Resolution failure" in text:
+        return KafkaUnavailable(
+            "Брокеры {} ответили, но анонсируют имена хостов, которые не "
+            "резолвятся с этого сервера. Так бывает, когда в "
+            "advertised.listeners у брокеров записаны имена контейнеров "
+            "или внутренние DNS-имена. Пропишите их в /etc/hosts на "
+            "сервере Opsentri либо укажите в advertised.listeners "
+            "IP-адреса.".format(where)
         )
+
+    return KafkaUnavailable(
+        "Кластер {} ответил ошибкой: {}".format(where, error)
     )
 
 
