@@ -358,6 +358,55 @@ def init_db():
             """
         )
 
+        # --- Kafka (spec: docs/superpowers/specs/
+        #     2026-08-31-kafka-manager-stage1-design.md) ---
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kafka_clusters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                bootstrap_servers TEXT NOT NULL,
+                security_protocol TEXT NOT NULL DEFAULT 'PLAINTEXT',
+                sasl_mechanism TEXT,
+                sasl_username TEXT,
+                sasl_password TEXT,
+                ssl_cafile TEXT,
+                ssl_certfile TEXT,
+                ssl_keyfile TEXT,
+                request_timeout_ms INTEGER NOT NULL DEFAULT 15000,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kafka_snapshots (
+                cluster_id INTEGER PRIMARY KEY,
+                taken_at TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                brokers_total INTEGER NOT NULL DEFAULT 0,
+                topics_total INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kafka_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cluster_id INTEGER,
+                action TEXT NOT NULL,
+                target TEXT,
+                details_json TEXT,
+                result TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
     ensure_column_exists(
         "skew_results",
         "job_id",
