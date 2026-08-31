@@ -67,6 +67,8 @@
     {% set page_title, page_crumb = 'Здоровье БД', 'аналитика без нагрузки' %}
 {% elif p.startswith('/kafka/connections') %}
     {% set page_title, page_crumb = 'Подключения Kafka', 'кластеры и брокеры' %}
+{% elif p.startswith('/kafka/groups') %}
+    {% set page_title, page_crumb = 'Консьюмер-группы', 'кто читает и насколько отстаёт' %}
 {% elif p.startswith('/kafka') %}
     {% set page_title, page_crumb = 'Kafka', 'брокеры, топики и партиции' %}
 {% else %}
@@ -190,6 +192,9 @@
                 <a href="/kafka" class="{% if p == '/kafka' %}active{% endif %}">
                     <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg></span>
                     <span class="lbl">Обзор кластера</span></a>
+                <a href="/kafka/groups" class="{% if p.startswith('/kafka/groups') %}active{% endif %}">
+                    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="4"/><path d="M2 21v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+                    <span class="lbl">Консьюмер-группы</span></a>
             </nav>
             <div class="sb-stub"><span class="tk-logo dz">DZ</span>
                 Debezium <span class="soon">скоро</span></div>

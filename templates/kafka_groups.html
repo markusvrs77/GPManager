@@ -1,1 +1,146 @@
-{% extends "base.html" %}{% block content %}<div id="kgRoot"></div>{% endblock %}
+{% extends "base.html" %}
+
+{% block title %}Консьюмер-группы · Opsentri{% endblock %}
+
+{% block content %}
+
+<style>
+/* ============ Kafka: консьюмер-группы ============ */
+.kg { max-width: 1560px; display: flex; flex-direction: column; gap: 14px; }
+
+.kg-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 10px 12px; }
+.kg-bar select { flex: 0 1 420px; min-width: 220px; }
+.kg-bar .sp { flex: 1 1 auto; }
+.kg-snap { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+
+.kg-note { border-radius: var(--radius); padding: 10px 14px; font-size: 13px;
+  border: 1px solid var(--hairline); }
+.kg-note.warn { color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.kg-note.err { color: var(--crit);
+  background: color-mix(in srgb, var(--crit) 12%, transparent); }
+
+.kg-panel { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); overflow: hidden; }
+.kg-panel > h2 { font-size: 12px; font-weight: 800; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-muted); margin: 0;
+  padding: 11px 16px; border-bottom: 1px solid var(--hairline); }
+
+.kg-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--hairline); }
+.kg-tools input[type="search"] { flex: 0 1 280px; min-width: 180px; }
+.kg-check { display: flex; align-items: center; gap: 7px; font-size: 13px;
+  color: var(--text-muted); white-space: nowrap; cursor: pointer; }
+.kg-count { font-size: 12px; color: var(--text-muted); margin-left: auto; }
+
+.kg-list { max-height: 460px; overflow: auto; padding: 6px; }
+.kg-row { display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; padding: 8px 10px; border-radius: var(--radius-sm);
+  cursor: pointer; }
+.kg-row:hover, .kg-row.open { background: var(--surface-2); }
+.kg-row .r { font-size: 12px; color: var(--text-muted); white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+
+.kg-tag { font-size: 11px; padding: 1px 8px; border-radius: var(--radius-pill);
+  border: 1px solid var(--hairline); color: var(--text-muted);
+  margin-left: 6px; white-space: nowrap; }
+.kg-tag.busy { color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.kg-lag { font-variant-numeric: tabular-nums; font-weight: 700; }
+.kg-lag.hot { color: var(--crit); }
+
+.kg-body { padding: 4px 10px 12px 22px; }
+.kg-topic { font-size: 12px; color: var(--text-muted); margin: 6px 0 2px;
+  font-weight: 700; }
+.kg-part { font-size: 12px; color: var(--text-muted); padding: 2px 0;
+  font-variant-numeric: tabular-nums; }
+.kg-acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap;
+  align-items: center; }
+
+.kg-reset { padding: 12px 16px; border-top: 1px solid var(--hairline);
+  display: none; }
+.kg-reset.on { display: block; }
+.kg-reset .line { display: flex; gap: 10px; align-items: center;
+  flex-wrap: wrap; margin-bottom: 10px; }
+.kg-reset select, .kg-reset input { max-width: 230px; }
+
+.kg-empty { padding: 18px 16px; font-size: 13px; color: var(--text-muted); }
+.kg-audit { font-size: 12px; color: var(--text-muted); padding: 8px 16px;
+  border-bottom: 1px solid var(--hairline);
+  font-variant-numeric: tabular-nums; }
+.kg-audit:last-child { border-bottom: none; }
+.kg-audit.bad { color: var(--crit); }
+</style>
+
+<div class="kg" id="kgRoot">
+
+  {% if not library_ready %}
+  <div class="kg-note warn">
+    Библиотека <code>kafka-python</code> не установлена. На сервере выполните
+    <code>pip install -r requirements.txt</code> и перезапустите app.py.
+  </div>
+  {% endif %}
+
+  <div class="kg-bar">
+    <select id="kgCluster" class="form-select form-select-sm"
+            {% if not clusters %}hidden{% endif %}>
+      {% for c in clusters %}
+      <option value="{{ c.id }}">{{ c.name }} — {{ c.bootstrap_servers }}</option>
+      {% endfor %}
+    </select>
+    {% if not clusters %}
+    <span class="kg-snap">Кластеры ещё не заведены</span>
+    {% endif %}
+    <a class="btn btn-sm btn-secondary" href="/kafka/connections">
+      Подключения</a>
+    <span class="sp"></span>
+    <span class="kg-snap" id="kgSnap">среза нет</span>
+    <button class="btn btn-sm btn-outline-primary" id="kgRefresh" type="button"
+            {% if not library_ready or not clusters %}disabled{% endif %}>
+      Обновить срез</button>
+  </div>
+
+  <div class="kg-note err" id="kgError" style="display: none;"></div>
+
+  <div class="kg-panel">
+    <h2>Консьюмер-группы</h2>
+    <div class="kg-tools">
+      <input type="search" id="kgFilter" class="form-control form-control-sm"
+             placeholder="поиск по имени группы">
+      <label class="kg-check">
+        <input type="checkbox" id="kgOnlyLag"> только с лагом
+      </label>
+      <span class="kg-count" id="kgCount"></span>
+    </div>
+    <div id="kgList"></div>
+
+    <div class="kg-reset" id="kgReset">
+      <div class="line">
+        <b id="kgResetTitle"></b>
+        <select id="kgResetMode" class="form-select form-select-sm">
+          <option value="earliest">к началу</option>
+          <option value="latest">к концу</option>
+          <option value="timestamp">на дату и время</option>
+        </select>
+        <input type="datetime-local" id="kgResetAt"
+               class="form-control form-control-sm" hidden>
+        <button class="btn btn-sm btn-primary" id="kgResetGo" type="button">
+          Сбросить оффсеты</button>
+        <button class="btn btn-sm btn-outline-primary" id="kgResetCancel"
+                type="button">Отмена</button>
+      </div>
+      <div class="kg-count" id="kgResetHint"></div>
+    </div>
+  </div>
+
+  <div class="kg-panel">
+    <h2>Журнал действий</h2>
+    <div id="kgAudit"></div>
+  </div>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/kafka_groups.js') }}"></script>
+{% endblock %}
