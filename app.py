@@ -1377,13 +1377,6 @@ def gpcopy_page():
     )
 
 
-@app.route("/gpcopy/classic")
-def gpcopy_classic_page():
-    # Старый интерфейс — оставлен на переходный период.
-    return render_template(
-        "gpcopy.html",
-        connections=list_connections(),
-    )
 
 
 @app.route("/api/gpcopy/start", methods=["POST"])
