@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru" data-theme="light">
+<html lang="ru" data-theme="light" data-nav="open">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -29,6 +29,7 @@
   --r-lg:22px;
   --r-md:14px;
   --shadow:0 1px 2px rgba(26,26,23,.05), 0 8px 24px -12px rgba(26,26,23,.16);
+  --nav-w:252px;
 }
 [data-theme="dark"]{
   --bg:#111110;
@@ -48,6 +49,7 @@
   --dark-card:#0B0B0A;
   --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
 }
+[data-nav="collapsed"]{--nav-w:66px}
 *{box-sizing:border-box}
 html{background:var(--bg)}
 body{
@@ -67,28 +69,74 @@ button{font:inherit; cursor:pointer; border:0; background:none; color:inherit}
 h1,h2,h3{margin:0}
 svg{display:block}
 
-.app{display:grid; grid-template-columns:64px minmax(0,1fr); gap:14px; padding:14px; min-height:100vh}
+.app{display:grid; grid-template-columns:var(--nav-w) minmax(0,1fr); gap:14px; padding:14px; min-height:100vh; transition:grid-template-columns .2s cubic-bezier(.2,.9,.2,1)}
 
-.rail{
+/* ---------------- grouped, collapsible sidebar ---------------- */
+.nav{
   background:var(--card); border-radius:var(--r-lg); box-shadow:var(--shadow);
-  display:flex; flex-direction:column; align-items:center; gap:6px; padding:14px 0;
+  display:flex; flex-direction:column; padding:12px 10px; gap:4px;
+  position:sticky; top:14px; max-height:calc(100vh - 28px); overflow:hidden;
 }
-.rail .ic{width:38px; height:38px; border-radius:12px; display:grid; place-items:center; color:var(--ink-2)}
-.rail .ic:hover{background:var(--card-2); color:var(--ink)}
-.rail .ic[aria-current="true"],.rail .ic.on{background:var(--accent-soft); color:var(--accent-text)}
-.rail .sp{flex:1}
-.rail hr{width:22px; border:0; border-top:1px solid var(--line); margin:8px 0}
+.navtop{display:flex; align-items:center; gap:9px; padding:2px 4px 10px; border-bottom:1px solid var(--line); margin-bottom:8px}
+.burger{width:38px; height:38px; border-radius:12px; display:grid; place-items:center; color:var(--ink); flex:none}
+.burger:hover{background:var(--card-2)}
+.wordmark{display:flex; align-items:center; gap:9px; min-width:0}
+.wordmark .mk{width:30px; height:30px; border-radius:10px; background:var(--accent); display:grid; place-items:center; flex:none}
+.wordmark b{font-weight:800; font-size:15px; letter-spacing:-.01em; white-space:nowrap}
+
+.navbody{overflow-y:auto; overflow-x:hidden; flex:1; padding-right:2px}
+.grp{margin-bottom:6px}
+.grph{
+  width:100%; display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:10px;
+  font-size:11px; font-weight:800; letter-spacing:.09em; color:var(--ink-2); text-align:left;
+}
+.grph:hover{background:var(--card-2); color:var(--ink)}
+.grph .chev{margin-left:auto; transition:transform .18s ease-out; flex:none}
+.grp[data-open="false"] .chev{transform:rotate(-90deg)}
+.grp[data-open="false"] .grpi{display:none}
+.grpi{display:flex; flex-direction:column; gap:2px; margin-top:2px}
+.item{
+  display:flex; align-items:center; gap:10px; padding:9px 10px; border-radius:11px;
+  color:var(--ink-2); font-weight:600; font-size:13px; text-align:left; width:100%;
+}
+.item .ic{flex:none; width:20px; display:grid; place-items:center}
+.item .lb{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.item:hover{background:var(--card-2); color:var(--ink)}
+.item[aria-current="true"]{background:var(--accent-soft); color:var(--accent-text)}
+.item .soon{
+  margin-left:auto; flex:none; font-size:11px; font-weight:700;
+  background:var(--chip); color:var(--ink-2); border-radius:99px; padding:2px 7px;
+}
+.navfoot{display:flex; gap:4px; padding-top:8px; border-top:1px solid var(--line); margin-top:8px}
+.navfoot button{width:38px; height:38px; border-radius:11px; display:grid; place-items:center; color:var(--ink-2)}
+.navfoot button:hover{background:var(--card-2); color:var(--ink)}
+
+/* collapsed rail: labels drop, icons stay, groups become dividers */
+[data-nav="collapsed"] .wordmark b,
+[data-nav="collapsed"] .grph span,
+[data-nav="collapsed"] .item .lb,
+[data-nav="collapsed"] .item .soon{display:none}
+[data-nav="collapsed"] .navtop{flex-direction:column; gap:8px; padding-bottom:8px}
+[data-nav="collapsed"] .grph{justify-content:center; padding:4px 0; pointer-events:none}
+[data-nav="collapsed"] .grph .chev{display:none}
+[data-nav="collapsed"] .grph::after{content:""; width:20px; height:1px; background:var(--line)}
+[data-nav="collapsed"] .grp[data-open="false"] .grpi{display:flex}
+[data-nav="collapsed"] .item{justify-content:center; padding:9px 0}
+[data-nav="collapsed"] .navfoot{flex-direction:column; align-items:center}
+[data-nav="collapsed"] .nav{padding:12px 8px}
 
 .main{display:flex; flex-direction:column; gap:14px; min-width:0}
 
+/* ---------------- top bar: the selected toolkit's own functions ---------------- */
 .bar{
   background:var(--card); border-radius:var(--r-lg); box-shadow:var(--shadow);
   display:flex; align-items:center; gap:14px; padding:10px 14px; flex-wrap:wrap;
 }
-.brand{display:flex; align-items:center; gap:9px; padding-right:6px}
-.brand .mk{width:32px; height:32px; border-radius:11px; background:var(--accent); display:grid; place-items:center}
-.brand b{font-weight:800; font-size:15px; letter-spacing:-.01em}
+.secname{display:flex; flex-direction:column; padding-right:4px; min-width:0}
+.secname b{font-size:15px; font-weight:800; letter-spacing:-.01em; white-space:nowrap}
+.secname span{font-size:12px; color:var(--ink-2); white-space:nowrap}
 .tabs{display:flex; gap:2px; background:var(--card-2); border-radius:99px; padding:4px; flex-wrap:wrap}
+.tabs:empty{display:none}
 .tabs button{
   padding:8px 15px; border-radius:99px; color:var(--ink-2); font-weight:600; font-size:13px;
   transition:background .14s ease-out, color .14s ease-out;
@@ -211,11 +259,11 @@ svg{display:block}
 .plot{display:grid; grid-template-columns:38px minmax(0,1fr); gap:8px; margin-top:16px}
 .yax{display:flex; flex-direction:column; justify-content:space-between; font-size:12px; color:var(--ink-2); text-align:right; height:186px}
 .bars{display:flex; align-items:flex-end; gap:12px; height:186px; border-bottom:1px solid var(--line)}
-.grp{flex:1; display:flex; align-items:flex-end; justify-content:center; gap:3px; height:100%}
-.grp b{width:9px; border-radius:5px 5px 0 0; display:block; transition:height .4s cubic-bezier(.2,.9,.2,1)}
-.grp .ok{background:var(--accent)}
-.grp .no{background:var(--ink)}
-.grp:hover b{opacity:.8}
+.grpb{flex:1; display:flex; align-items:flex-end; justify-content:center; gap:3px; height:100%}
+.grpb b{width:9px; border-radius:5px 5px 0 0; display:block; transition:height .4s cubic-bezier(.2,.9,.2,1)}
+.grpb .ok{background:var(--accent)}
+.grpb .no{background:var(--ink)}
+.grpb:hover b{opacity:.8}
 .xax{display:flex; gap:12px; margin-top:8px}
 .xax span{flex:1; text-align:center; font-size:12px; color:var(--ink-2); font-weight:600}
 
@@ -271,13 +319,20 @@ tbody tr[data-sel="1"] td{background:var(--accent-soft)}
 .pagi button:hover:not([aria-current="true"]){background:var(--card-2); color:var(--ink)}
 .synthetic{color:var(--ink-2); font-size:13px; padding:0 4px 8px; margin:0}
 
+/* a toolkit whose surface is not built yet states that plainly */
+.stub{display:flex; flex-direction:column; gap:14px; align-items:flex-start; padding:32px}
+.stub h2{font-size:21px; font-weight:800; letter-spacing:-.02em}
+.stub p{margin:0; color:var(--ink-2); max-width:62ch}
+.stub .fnlist{display:flex; gap:8px; flex-wrap:wrap}
+.stub .fnlist span{background:var(--card-2); border:1px solid var(--line); border-radius:99px; padding:6px 13px; font-size:13px; font-weight:600; color:var(--ink-2)}
+
 @media(max-width:1240px){
   .board{grid-template-columns:280px minmax(0,1fr)}
 }
 @media(max-width:880px){
   .app{grid-template-columns:1fr}
-  .rail{flex-direction:row; justify-content:flex-start; overflow-x:auto; padding:8px 10px}
-  .rail .sp,.rail hr{display:none}
+  .nav{position:static; max-height:none}
+  [data-nav="collapsed"] .navbody{display:none}
   .board{grid-template-columns:1fr}
   .hello h1{font-size:26px}
   .search{margin-left:0; width:100%}
@@ -288,98 +343,53 @@ tbody tr[data-sel="1"] td{background:var(--accent-soft)}
 <body>
 <div class="app">
 
-  <aside class="rail">
-    <button class="ic on" id="themeBtn" title="Светлая тема" aria-label="Переключить тему">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" id="themeIcon">
-        <circle cx="10" cy="10" r="3.6"/><path d="M10 1.6v2.2M10 16.2v2.2M18.4 10h-2.2M3.8 10H1.6M15.9 4.1l-1.6 1.6M5.7 14.3l-1.6 1.6M15.9 15.9l-1.6-1.6M5.7 5.7L4.1 4.1"/>
-      </svg>
-    </button>
-    <hr>
-    <button class="ic" aria-current="true" title="Обзор" aria-label="Обзор">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
-        <rect x="2.5" y="2.5" width="6" height="6" rx="1.8"/><rect x="11.5" y="2.5" width="6" height="6" rx="1.8"/>
-        <rect x="2.5" y="11.5" width="6" height="6" rx="1.8"/><rect x="11.5" y="11.5" width="6" height="6" rx="1.8"/>
-      </svg>
-    </button>
-    <button class="ic" title="Подключения" aria-label="Подключения">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
-        <ellipse cx="10" cy="4.8" rx="6.4" ry="2.6"/><path d="M3.6 4.8v10.4c0 1.44 2.87 2.6 6.4 2.6s6.4-1.16 6.4-2.6V4.8"/><path d="M3.6 10c0 1.44 2.87 2.6 6.4 2.6s6.4-1.16 6.4-2.6"/>
-      </svg>
-    </button>
-    <button class="ic" title="Объекты" aria-label="Объекты">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
-        <path d="M3 4.2h5.2l1.3 2h7.5v9.6H3z"/><path d="M3 9h14"/>
-      </svg>
-    </button>
-    <button class="ic" title="Задачи" aria-label="Задачи">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
-        <rect x="3" y="3.4" width="14" height="13.2" rx="2.4"/><path d="M6.6 8.2h6.8M6.6 11.8h4.4"/>
-      </svg>
-    </button>
-    <button class="ic" title="Расписания" aria-label="Расписания">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
-        <rect x="3" y="4.4" width="14" height="12.2" rx="2.2"/><path d="M3 8.2h14M6.8 2.6v3.2M13.2 2.6v3.2"/>
-      </svg>
-    </button>
-    <button class="ic" title="Резервные копии" aria-label="Резервные копии">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
-        <rect x="2.6" y="3.4" width="14.8" height="4" rx="1.4"/><path d="M4.2 7.4v7.4a1.8 1.8 0 001.8 1.8h8a1.8 1.8 0 001.8-1.8V7.4"/><path d="M8.2 11h3.6"/>
-      </svg>
-    </button>
-    <button class="ic" title="Доступы" aria-label="Доступы">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
-        <rect x="4" y="8.6" width="12" height="8" rx="2"/><path d="M6.8 8.6V6.4a3.2 3.2 0 016.4 0v2.2"/>
-      </svg>
-    </button>
-    <button class="ic" title="Kafka" aria-label="Kafka">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
-        <circle cx="5" cy="10" r="2.2"/><circle cx="14.4" cy="5.4" r="2.2"/><circle cx="14.4" cy="14.6" r="2.2"/>
-        <path d="M7 9l5.4-2.6M7 11l5.4 2.6"/>
-      </svg>
-    </button>
-    <button class="ic" title="Здоровье кластера" aria-label="Здоровье кластера">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
-        <path d="M2.4 10h3.2l1.8-4.4 2.8 9.2 2-4.8h5.4"/>
-      </svg>
-    </button>
-    <button class="ic" title="Настройки" aria-label="Настройки">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
-        <circle cx="10" cy="10" r="2.8"/><path d="M10 2.4v1.8M10 15.8v1.8M17.6 10h-1.8M4.2 10H2.4M15.4 4.6l-1.3 1.3M5.9 14.1l-1.3 1.3M15.4 15.4l-1.3-1.3M5.9 5.9L4.6 4.6"/>
-      </svg>
-    </button>
-    <span class="sp"></span>
-    <button class="ic" title="Справка" aria-label="Справка">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
-        <circle cx="10" cy="10" r="7.4"/><path d="M8.1 7.8a1.95 1.95 0 113.1 1.9c-.7.5-1.2.9-1.2 1.9"/><path d="M10 14.3h.01"/>
-      </svg>
-    </button>
-    <button class="ic" title="Выйти" aria-label="Выйти">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
-        <path d="M12.4 14.2v1.6a1.8 1.8 0 01-1.8 1.8H4.8A1.8 1.8 0 013 15.8V4.2a1.8 1.8 0 011.8-1.8h5.8a1.8 1.8 0 011.8 1.8v1.6"/><path d="M8 10h9.4M14.6 7l2.8 3-2.8 3"/>
-      </svg>
-    </button>
+  <aside class="nav" id="nav">
+    <div class="navtop">
+      <button class="burger" id="burger" aria-expanded="true" aria-controls="navbody" aria-label="Свернуть навигацию" title="Свернуть навигацию">
+        <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M3 5.5h14M3 10h14M3 14.5h14"/>
+        </svg>
+      </button>
+      <span class="wordmark">
+        <span class="mk">
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="#fff" stroke-width="1.9">
+            <ellipse cx="10" cy="5.2" rx="6" ry="2.4"/><path d="M4 5.2v9.6c0 1.33 2.69 2.4 6 2.4s6-1.07 6-2.4V5.2"/><path d="M4 10c0 1.33 2.69 2.4 6 2.4s6-1.07 6-2.4"/>
+          </svg>
+        </span>
+        <b>GPManager</b>
+      </span>
+    </div>
+
+    <div class="navbody" id="navbody"></div>
+
+    <div class="navfoot">
+      <button id="themeBtn" title="Тёмная тема" aria-label="Переключить тему">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" id="themeIcon">
+          <circle cx="10" cy="10" r="3.6"/><path d="M10 1.6v2.2M10 16.2v2.2M18.4 10h-2.2M3.8 10H1.6M15.9 4.1l-1.6 1.6M5.7 14.3l-1.6 1.6M15.9 15.9l-1.6-1.6M5.7 5.7L4.1 4.1"/>
+        </svg>
+      </button>
+      <button title="Справка" aria-label="Справка">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+          <circle cx="10" cy="10" r="7.4"/><path d="M8.1 7.8a1.95 1.95 0 113.1 1.9c-.7.5-1.2.9-1.2 1.9"/><path d="M10 14.3h.01"/>
+        </svg>
+      </button>
+      <button title="Выйти" aria-label="Выйти">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M12.4 14.2v1.6a1.8 1.8 0 01-1.8 1.8H4.8A1.8 1.8 0 013 15.8V4.2a1.8 1.8 0 011.8-1.8h5.8a1.8 1.8 0 011.8 1.8v1.6"/><path d="M8 10h9.4M14.6 7l2.8 3-2.8 3"/>
+        </svg>
+      </button>
+    </div>
   </aside>
 
   <div class="main">
 
     <div class="bar">
-      <div class="brand">
-        <span class="mk">
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="#fff" stroke-width="1.9">
-            <ellipse cx="10" cy="5.2" rx="6" ry="2.4"/><path d="M4 5.2v9.6c0 1.33 2.69 2.4 6 2.4s6-1.07 6-2.4V5.2"/><path d="M4 10c0 1.33 2.69 2.4 6 2.4s6-1.07 6-2.4"/>
-          </svg>
-        </span>
-        <b>GPManager</b>
+      <div class="secname">
+        <b id="secTitle">Greenplum Toolkit</b>
+        <span id="secGroup">DB OPERATIONS</span>
       </div>
 
-      <div class="tabs" role="tablist" id="tabs">
-        <button role="tab" aria-selected="true" data-f="all">Обзор</button>
-        <button role="tab" aria-selected="false" data-f="skew">Перекос</button>
-        <button role="tab" aria-selected="false" data-f="reorg">Реорганизация</button>
-        <button role="tab" aria-selected="false" data-f="vacuum">Vacuum</button>
-        <button role="tab" aria-selected="false" data-f="copy">gpcopy</button>
-        <button role="tab" aria-selected="false" data-f="backup">Бэкапы</button>
-      </div>
+      <div class="tabs" role="tablist" id="tabs"></div>
 
       <div class="right">
         <button class="iconbtn" aria-label="Поиск" id="focusSearch">
@@ -403,210 +413,218 @@ tbody tr[data-sel="1"] td{background:var(--accent-soft)}
 
     <div class="hello">
       <h1>Доброй ночи, Меирбек</h1>
-      <p>Окно обслуживания идёт до 05:00. Следите за задачами и состоянием кластера.</p>
+      <p id="helloSub">Окно обслуживания идёт до 05:00. Следите за задачами и состоянием кластера.</p>
     </div>
 
-    <div class="board">
+    <div id="viewGP">
+      <div class="board">
 
-      <div class="col">
-        <section class="panel vol" aria-labelledby="vol-h">
-          <div class="top">
-            <h2 id="vol-h">Объём кластера</h2>
-            <button class="pill">
-              dwh-gp-01
-              <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M5.5 8l4.5 4.4L14.5 8"/></svg>
-            </button>
-          </div>
-          <p class="big num" id="volBig">128,4 ТБ</p>
-          <span class="delta up">
-            <svg width="11" height="11" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M10 15.5V5M5.5 9.5L10 5l4.5 4.5"/></svg>
-            5,2% за месяц
-          </span>
-          <div class="acts">
-            <button class="btn dark" id="copyBtn">
-              <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 10h14M12.5 5.5L17 10l-4.5 4.5"/></svg>
-              Перелить
-            </button>
-            <button class="btn ghost" id="checkBtn">
-              <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="9" r="5.6"/><path d="M13.2 13.2L17 17"/></svg>
-              Проверить
-            </button>
-          </div>
-
-          <div class="conns">
-            <div class="hd"><span>Подключения <b>| 3 всего</b></span><span id="connHint">выбрано: PROD</span></div>
-            <div class="cgrid" id="cgrid">
-              <button aria-pressed="true" data-env="PROD">
-                <span class="env"><i></i>PROD</span>
-                <span class="sz num">128,4 ТБ</span>
-                <span class="stt">активно</span>
-              </button>
-              <button aria-pressed="false" data-env="TEST">
-                <span class="env"><i></i>TEST</span>
-                <span class="sz num">42,1 ТБ</span>
-                <span class="stt">активно</span>
-              </button>
-              <button aria-pressed="false" data-env="DEV">
-                <span class="env"><i class="off"></i>DEV</span>
-                <span class="sz num">6,8 ТБ</span>
-                <span class="stt off">не в сети</span>
+        <div class="col">
+          <section class="panel vol" aria-labelledby="vol-h">
+            <div class="top">
+              <h2 id="vol-h">Объём кластера</h2>
+              <button class="pill">
+                dwh-gp-01
+                <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M5.5 8l4.5 4.4L14.5 8"/></svg>
               </button>
             </div>
-          </div>
-        </section>
+            <p class="big num" id="volBig">128,4 ТБ</p>
+            <span class="delta up">
+              <svg width="11" height="11" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M10 15.5V5M5.5 9.5L10 5l4.5 4.5"/></svg>
+              5,2% за месяц
+            </span>
+            <div class="acts">
+              <button class="btn dark" id="copyBtn">
+                <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 10h14M12.5 5.5L17 10l-4.5 4.5"/></svg>
+                Перелить
+              </button>
+              <button class="btn ghost" id="checkBtn">
+                <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="9" r="5.6"/><path d="M13.2 13.2L17 17"/></svg>
+                Проверить
+              </button>
+            </div>
 
-        <section class="panel meter" aria-labelledby="mw-h">
-          <h2 id="mw-h">Окно обслуживания</h2>
-          <div class="track"><i id="winFill"></i></div>
-          <div class="row"><b class="num" id="winUsed">1 ч 07 мин</b><span class="num">из 2 ч 20 мин</span></div>
-        </section>
+            <div class="conns">
+              <div class="hd"><span>Подключения <b>| 3 всего</b></span><span id="connHint">выбрано: PROD</span></div>
+              <div class="cgrid" id="cgrid">
+                <button aria-pressed="true" data-env="PROD">
+                  <span class="env"><i></i>PROD</span>
+                  <span class="sz num">128,4 ТБ</span>
+                  <span class="stt">активно</span>
+                </button>
+                <button aria-pressed="false" data-env="TEST">
+                  <span class="env"><i></i>TEST</span>
+                  <span class="sz num">42,1 ТБ</span>
+                  <span class="stt">активно</span>
+                </button>
+                <button aria-pressed="false" data-env="DEV">
+                  <span class="env"><i class="off"></i>DEV</span>
+                  <span class="sz num">6,8 ТБ</span>
+                  <span class="stt off">не в сети</span>
+                </button>
+              </div>
+            </div>
+          </section>
 
-        <section class="panel cards" aria-labelledby="cc-h">
-          <div class="hd">
-            <h2 id="cc-h">Мои подключения</h2>
-            <button class="addbtn">
-              <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 4.5v11M4.5 10h11"/></svg>
-              Добавить
+          <section class="panel meter" aria-labelledby="mw-h">
+            <h2 id="mw-h">Окно обслуживания</h2>
+            <div class="track"><i id="winFill"></i></div>
+            <div class="row"><b class="num" id="winUsed">1 ч 07 мин</b><span class="num">из 2 ч 20 мин</span></div>
+          </section>
+
+          <section class="panel cards" aria-labelledby="cc-h">
+            <div class="hd">
+              <h2 id="cc-h">Мои подключения</h2>
+              <button class="addbtn">
+                <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 4.5v11M4.5 10h11"/></svg>
+                Добавить
+              </button>
+            </div>
+            <div class="deck">
+              <button class="dcard a">
+                <span class="tag"><i></i>активно</span>
+                <span class="foot">
+                  <span><span class="lbl">Хост</span><span class="val">dwh-gp-01</span></span>
+                  <span><span class="lbl">Сег</span><span class="val num">96</span></span>
+                </span>
+              </button>
+              <button class="dcard b">
+                <span class="tag"><i></i>активно</span>
+                <span class="foot">
+                  <span><span class="lbl">Хост</span><span class="val">dwh-gp-test</span></span>
+                  <span><span class="lbl">Сег</span><span class="val num">24</span></span>
+                </span>
+              </button>
+            </div>
+          </section>
+        </div>
+
+        <div class="col">
+          <div class="tiles" id="tiles">
+            <button class="tile hero" aria-pressed="false" data-s="run">
+              <span class="th"><span>Проверено объектов</span><span class="bx">
+                <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 10.4l3.6 3.6L16 5.6"/></svg>
+              </span></span>
+              <span class="n num">1 204</span>
+              <span class="foot"><span class="delta up">47%</span> из 2 586</span>
+            </button>
+
+            <button class="tile" aria-pressed="false" data-s="wait">
+              <span class="th"><span>С перекосом</span><span class="bx">
+                <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M3.5 16.5V11M8.5 16.5V5M13.5 16.5v-3.5"/></svg>
+              </span></span>
+              <span class="n num">37</span>
+              <span class="foot"><span class="delta down">+12</span> за окно</span>
+            </button>
+
+            <button class="tile" aria-pressed="false" data-s="done">
+              <span class="th"><span>Выровнено</span><span class="bx">
+                <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3.2" y="4" width="13.6" height="4" rx="1.4"/><rect x="3.2" y="12" width="13.6" height="4" rx="1.4"/></svg>
+              </span></span>
+              <span class="n num">12</span>
+              <span class="foot"><span class="delta up">+4</span> за окно</span>
+            </button>
+
+            <button class="tile" aria-pressed="false" data-s="fail">
+              <span class="th"><span>Отказов</span><span class="bx">
+                <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="10" cy="10" r="7"/><path d="M10 5.5v5.2M10 14.2h.01"/></svg>
+              </span></span>
+              <span class="n num">3</span>
+              <span class="foot"><span class="delta down">+1</span> за окно</span>
             </button>
           </div>
-          <div class="deck">
-            <button class="dcard a">
-              <span class="tag"><i></i>активно</span>
-              <span class="foot">
-                <span><span class="lbl">Хост</span><span class="val">dwh-gp-01</span></span>
-                <span><span class="lbl">Сег</span><span class="val num">96</span></span>
-              </span>
-            </button>
-            <button class="dcard b">
-              <span class="tag"><i></i>активно</span>
-              <span class="foot">
-                <span><span class="lbl">Хост</span><span class="val">dwh-gp-test</span></span>
-                <span><span class="lbl">Сег</span><span class="val num">24</span></span>
-              </span>
-            </button>
-          </div>
-        </section>
-      </div>
+        </div>
 
-      <div class="col">
-        <div class="tiles" id="tiles">
-          <button class="tile hero" aria-pressed="false" data-s="run">
-            <span class="th"><span>Проверено объектов</span><span class="bx">
-              <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 10.4l3.6 3.6L16 5.6"/></svg>
-            </span></span>
-            <span class="n num">1 204</span>
-            <span class="foot"><span class="delta up">47%</span> из 2 586</span>
-          </button>
-
-          <button class="tile" aria-pressed="false" data-s="wait">
-            <span class="th"><span>С перекосом</span><span class="bx">
-              <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M3.5 16.5V11M8.5 16.5V5M13.5 16.5v-3.5"/></svg>
-            </span></span>
-            <span class="n num">37</span>
-            <span class="foot"><span class="delta down">+12</span> за окно</span>
-          </button>
-
-          <button class="tile" aria-pressed="false" data-s="done">
-            <span class="th"><span>Выровнено</span><span class="bx">
-              <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3.2" y="4" width="13.6" height="4" rx="1.4"/><rect x="3.2" y="12" width="13.6" height="4" rx="1.4"/></svg>
-            </span></span>
-            <span class="n num">12</span>
-            <span class="foot"><span class="delta up">+4</span> за окно</span>
-          </button>
-
-          <button class="tile" aria-pressed="false" data-s="fail">
-            <span class="th"><span>Отказов</span><span class="bx">
-              <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="10" cy="10" r="7"/><path d="M10 5.5v5.2M10 14.2h.01"/></svg>
-            </span></span>
-            <span class="n num">3</span>
-            <span class="foot"><span class="delta down">+1</span> за окно</span>
-          </button>
+        <div class="col">
+          <section class="panel chart" aria-labelledby="ch-h">
+            <div class="hd">
+              <div>
+                <h2 id="ch-h">Задачи по дням</h2>
+                <p class="sub">Успешные и отказавшие за выбранный период</p>
+              </div>
+              <div class="seg" role="tablist" id="seg">
+                <button role="tab" aria-selected="true" data-p="w">Неделя</button>
+                <button role="tab" aria-selected="false" data-p="m">Месяц</button>
+              </div>
+            </div>
+            <div class="legend">
+              <span class="ok"><i></i>Успешно</span>
+              <span class="no"><i></i>Отказ</span>
+            </div>
+            <div class="plot">
+              <div class="yax" id="yax"></div>
+              <div>
+                <div class="bars" id="bars"></div>
+                <div class="xax" id="xax"></div>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
 
-      <div class="col">
-        <section class="panel chart" aria-labelledby="ch-h">
-          <div class="hd">
-            <div>
-              <h2 id="ch-h">Задачи по дням</h2>
-              <p class="sub">Успешные и отказавшие за выбранный период</p>
-            </div>
-            <div class="seg" role="tablist" id="seg">
-              <button role="tab" aria-selected="true" data-p="w">Неделя</button>
-              <button role="tab" aria-selected="false" data-p="m">Месяц</button>
-            </div>
+      <section class="panel acts-panel" aria-labelledby="ac-h" style="margin-top:14px">
+        <div class="hd">
+          <h2 id="ac-h">Последние задачи</h2>
+          <div class="search">
+            <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" style="color:var(--ink-2)">
+              <circle cx="9" cy="9" r="5.6"/><path d="M13.2 13.2L17 17"/>
+            </svg>
+            <input id="q" type="search" placeholder="Поиск по объекту или номеру" aria-label="Поиск задач">
           </div>
-          <div class="legend">
-            <span class="ok"><i></i>Успешно</span>
-            <span class="no"><i></i>Отказ</span>
-          </div>
-          <div class="plot">
-            <div class="yax" id="yax"></div>
-            <div>
-              <div class="bars" id="bars"></div>
-              <div class="xax" id="xax"></div>
-            </div>
-          </div>
-        </section>
-      </div>
-    </div>
+          <button class="filter" id="filterBtn">
+            <span id="filterLbl">Все статусы</span>
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3.5 5.5h13M6 10h8M8.5 14.5h3"/></svg>
+          </button>
+        </div>
 
-    <section class="panel acts-panel" aria-labelledby="ac-h">
-      <div class="hd">
-        <h2 id="ac-h">Последние задачи</h2>
-        <div class="search">
-          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" style="color:var(--ink-2)">
-            <circle cx="9" cy="9" r="5.6"/><path d="M13.2 13.2L17 17"/>
+        <div class="bulk" id="bulk" hidden>
+          <span id="bulkN">Выбрано: 0</span>
+          <button id="bulkStop">Остановить</button>
+          <button id="bulkExport">Выгрузить в XLSX</button>
+          <button class="x" id="bulkClear" aria-label="Снять выделение">✕</button>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th style="width:38px"><button class="cb" id="all" role="checkbox" aria-checked="false" aria-label="Выбрать все">
+                <svg width="11" height="11" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 10.4l3.6 3.6L16 5.6"/></svg>
+              </button></th>
+              <th>Номер</th>
+              <th>Задача</th>
+              <th>Объём</th>
+              <th>Статус</th>
+              <th>Дата</th>
+              <th style="width:44px"></th>
+            </tr>
+          </thead>
+          <tbody id="tb"></tbody>
+        </table>
+
+        <div class="empty" id="tEmpty" hidden>
+          <svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.4" style="margin:0 auto; color:var(--ink-2)">
+            <rect x="3" y="4" width="20" height="18" rx="3"/><path d="M3 9.5h20M8 14h10M8 18h6"/>
           </svg>
-          <input id="q" type="search" placeholder="Поиск по объекту или номеру" aria-label="Поиск задач">
+          <p>Ничего не найдено. Смените фильтр или очистите поиск.</p>
         </div>
-        <button class="filter" id="filterBtn">
-          <span id="filterLbl">Все статусы</span>
-          <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3.5 5.5h13M6 10h8M8.5 14.5h3"/></svg>
-        </button>
-      </div>
 
-      <div class="bulk" id="bulk" hidden>
-        <span id="bulkN">Выбрано: 0</span>
-        <button id="bulkStop">Остановить</button>
-        <button id="bulkExport">Выгрузить в XLSX</button>
-        <button class="x" id="bulkClear" aria-label="Снять выделение">✕</button>
-      </div>
-
-      <table>
-        <thead>
-          <tr>
-            <th style="width:38px"><button class="cb" id="all" role="checkbox" aria-checked="false" aria-label="Выбрать все">
-              <svg width="11" height="11" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 10.4l3.6 3.6L16 5.6"/></svg>
-            </button></th>
-            <th>Номер</th>
-            <th>Задача</th>
-            <th>Объём</th>
-            <th>Статус</th>
-            <th>Дата</th>
-            <th style="width:44px"></th>
-          </tr>
-        </thead>
-        <tbody id="tb"></tbody>
-      </table>
-
-      <div class="empty" id="tEmpty" hidden>
-        <svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.4" style="margin:0 auto; color:var(--ink-2)">
-          <rect x="3" y="4" width="20" height="18" rx="3"/><path d="M3 9.5h20M8 14h10M8 18h6"/>
-        </svg>
-        <p>Ничего не найдено. Смените фильтр или очистите поиск.</p>
-      </div>
-
-      <div class="tfoot">
-        <span id="count">Показано 7 из 7</span>
-        <div class="pagi">
-          <button aria-label="Назад">‹</button>
-          <button aria-current="true">1</button>
-          <button>2</button>
-          <button>3</button>
-          <button aria-label="Вперёд">›</button>
+        <div class="tfoot">
+          <span id="count">Показано 7 из 7</span>
+          <div class="pagi">
+            <button aria-label="Назад">‹</button>
+            <button aria-current="true">1</button>
+            <button>2</button>
+            <button>3</button>
+            <button aria-label="Вперёд">›</button>
+          </div>
         </div>
-      </div>
+      </section>
+    </div>
+
+    <section class="panel stub" id="viewStub" hidden>
+      <h2 id="stubTitle">Раздел</h2>
+      <p id="stubText"></p>
+      <div class="fnlist" id="stubFns"></div>
     </section>
 
     <p class="synthetic">Данные синтетические. Реальные значения приходят из modules/skew_analyzer.py и job_manager.py.</p>
@@ -616,15 +634,169 @@ tbody tr[data-sel="1"] td{background:var(--accent-soft)}
 <script>
 (function(){
   var $ = function(s){ return document.querySelector(s); };
-
   var root = document.documentElement;
+
+  /* The left column groups the toolkits. The top bar carries the functions
+     of whichever toolkit is selected, so one surface never shows another's controls. */
+  var I = {
+    gp:'<ellipse cx="10" cy="4.8" rx="6.4" ry="2.6"/><path d="M3.6 4.8v10.4c0 1.44 2.87 2.6 6.4 2.6s6.4-1.16 6.4-2.6V4.8"/><path d="M3.6 10c0 1.44 2.87 2.6 6.4 2.6s6.4-1.16 6.4-2.6"/>',
+    pg:'<circle cx="10" cy="10" r="7"/><path d="M10 3v14M4.4 7h11.2M4.4 13h11.2"/>',
+    ora:'<ellipse cx="10" cy="10" rx="7.4" ry="4.6"/><path d="M7 5.6v8.8M13 5.6v8.8"/>',
+    my:'<path d="M2.6 15.4c3.2-1.4 4.6-4 4.2-7.8 2.4 1.2 3.6 3.2 3.6 6"/><path d="M11.4 4.6c2.4 0 4.6 1.4 5.8 3.4M13 13.6h3.4"/>',
+    kafka:'<circle cx="5" cy="10" r="2.2"/><circle cx="14.4" cy="5.4" r="2.2"/><circle cx="14.4" cy="14.6" r="2.2"/><path d="M7 9l5.4-2.6M7 11l5.4 2.6"/>',
+    dbz:'<path d="M6.2 6.4h7.6v6.2a3.8 3.8 0 01-7.6 0z"/><path d="M8 4.2l1.2 2.2M12 4.2l-1.2 2.2M3 9h3.2M13.8 9H17M3.4 13h2.8M13.8 13h2.8"/>',
+    sched:'<rect x="3" y="4.4" width="14" height="12.2" rx="2.2"/><path d="M3 8.2h14M6.8 2.6v3.2M13.2 2.6v3.2"/>',
+    backup:'<rect x="2.6" y="3.4" width="14.8" height="4" rx="1.4"/><path d="M4.2 7.4v7.4a1.8 1.8 0 001.8 1.8h8a1.8 1.8 0 001.8-1.8V7.4"/><path d="M8.2 11h3.6"/>',
+    conn:'<path d="M8.2 11.8L6 14a2.8 2.8 0 01-4-4l2.2-2.2M11.8 8.2L14 6a2.8 2.8 0 014 4l-2.2 2.2"/><path d="M7.4 12.6l5.2-5.2"/>',
+    grants:'<rect x="4" y="8.6" width="12" height="8" rx="2"/><path d="M6.8 8.6V6.4a3.2 3.2 0 016.4 0v2.2"/>',
+    health:'<path d="M2.4 10h3.2l1.8-4.4 2.8 9.2 2-4.8h5.4"/>'
+  };
+
+  var NAV = [
+    { g:'DB OPERATIONS', items:[
+      { id:'gp', ic:'gp', label:'Greenplum Toolkit', view:'gp',
+        tabs:[['all','Обзор'],['skew','Перекос'],['reorg','Реорганизация'],['vacuum','Vacuum / Analyze'],['copy','gpcopy'],['backup','Бэкапы']] },
+      { id:'pg', ic:'pg', label:'Postgres Toolkit', view:'stub',
+        tabs:[['ov','Обзор'],['bk','Резервные копии'],['vac','Vacuum'],['obj','Объекты']],
+        text:'Маршрут /pg/backups в ветке уже есть. Остальные функции набора живут здесь и переиспользуют те же таблицы, задачи и наряды, что и Greenplum.' },
+      { id:'ora', ic:'ora', label:'Oracle Toolkit', view:'stub', soon:true, tabs:[],
+        text:'В продукте не реализовано. Место в структуре зарезервировано, чтобы набор инструментов рос без перестройки навигации.' },
+      { id:'my', ic:'my', label:'MySQL Toolkit', view:'stub', soon:true, tabs:[],
+        text:'В продукте не реализовано. Место в структуре зарезервировано, чтобы набор инструментов рос без перестройки навигации.' }
+    ]},
+    { g:'DATA FLOW', items:[
+      { id:'kafka', ic:'kafka', label:'Kafka', view:'stub',
+        tabs:[['ov','Обзор'],['conn','Подключения'],['grp','Группы'],['msg','Сообщения'],['acl','ACL']],
+        text:'Пять экранов Kafka в этой ветке уже есть: обзор, подключения, группы, сообщения и управление доступами. Вкладки сверху повторяют их один в один.' },
+      { id:'dbz', ic:'dbz', label:'Debezium', view:'stub', soon:true, tabs:[],
+        text:'В продукте не реализовано. Место зарезервировано под захват изменений из источников.' }
+    ]},
+    { g:'АВТОМАТИЗАЦИЯ', items:[
+      { id:'sched', ic:'sched', label:'Расписания', view:'stub',
+        tabs:[['jobs','Задания'],['hist','История'],['notify','Уведомления']],
+        text:'Маршрут /schedules и модули scheduler.py с notifiers.py в ветке есть. Здесь задания по расписанию, их история и правила оповещений.' },
+      { id:'backup', ic:'backup', label:'Резервные копии', view:'stub',
+        tabs:[['gp','Greenplum'],['pg','PostgreSQL'],['pol','Политики']],
+        text:'Маршруты /backups и /pg/backups в ветке есть. Вкладки разделяют копии по источнику и выносят политики хранения отдельно.' }
+    ]},
+    { g:'АДМИНИСТРИРОВАНИЕ', items:[
+      { id:'conn', ic:'conn', label:'Подключения', view:'stub',
+        tabs:[['list','Список'],['test','Проверка связи']],
+        text:'Маршрут /connections. Список подключений с меткой окружения и проверка доступности.' },
+      { id:'grants', ic:'grants', label:'Доступы', view:'stub',
+        tabs:[['roles','Роли'],['gr','Гранты'],['audit','Аудит']],
+        text:'Маршрут /grants. Роли, выданные права и журнал изменений.' },
+      { id:'health', ic:'health', label:'Здоровье кластера', view:'stub',
+        tabs:[['cl','Кластер'],['seg','Сегменты'],['ses','Сессии']],
+        text:'Маршрут /health. Состояние мастера и сегментов, лимиты сессий.' }
+    ]}
+  ];
+
+  var byId = {};
+  NAV.forEach(function(sec){ sec.items.forEach(function(it){ it.group = sec.g; byId[it.id] = it; }); });
+
+  var navbody = $('#navbody');
+  NAV.forEach(function(sec){
+    var s = document.createElement('section');
+    s.className = 'grp';
+    s.dataset.open = 'true';
+    var h = document.createElement('button');
+    h.className = 'grph';
+    h.type = 'button';
+    h.setAttribute('aria-expanded','true');
+    h.innerHTML = '<span>' + sec.g + '</span><svg class="chev" width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5.5 8l4.5 4.4L14.5 8"/></svg>';
+    var box = document.createElement('div');
+    box.className = 'grpi';
+    sec.items.forEach(function(it){
+      var b = document.createElement('button');
+      b.className = 'item';
+      b.type = 'button';
+      b.dataset.sec = it.id;
+      b.title = it.label;
+      b.setAttribute('aria-current','false');
+      b.innerHTML =
+        '<span class="ic"><svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">' + I[it.ic] + '</svg></span>' +
+        '<span class="lb">' + it.label + '</span>' +
+        (it.soon ? '<span class="soon">скоро</span>' : '');
+      box.appendChild(b);
+    });
+    h.addEventListener('click', function(){
+      var open = s.dataset.open === 'true';
+      s.dataset.open = open ? 'false' : 'true';
+      h.setAttribute('aria-expanded', open ? 'false' : 'true');
+    });
+    s.appendChild(h); s.appendChild(box);
+    navbody.appendChild(s);
+  });
+
+  $('#burger').addEventListener('click', function(){
+    var open = root.getAttribute('data-nav') === 'open';
+    root.setAttribute('data-nav', open ? 'collapsed' : 'open');
+    this.setAttribute('aria-expanded', open ? 'false' : 'true');
+    this.title = open ? 'Развернуть навигацию' : 'Свернуть навигацию';
+    this.setAttribute('aria-label', this.title);
+  });
+
   $('#themeBtn').addEventListener('click', function(){
     var dark = root.getAttribute('data-theme') === 'dark';
     root.setAttribute('data-theme', dark ? 'light' : 'dark');
-    this.title = dark ? 'Светлая тема' : 'Тёмная тема';
+    this.title = dark ? 'Тёмная тема' : 'Светлая тема';
     $('#themeIcon').innerHTML = dark
       ? '<circle cx="10" cy="10" r="3.6"/><path d="M10 1.6v2.2M10 16.2v2.2M18.4 10h-2.2M3.8 10H1.6M15.9 4.1l-1.6 1.6M5.7 14.3l-1.6 1.6M15.9 15.9l-1.6-1.6M5.7 5.7L4.1 4.1"/>'
       : '<path d="M16.5 11.6A7 7 0 018.4 3.5a7 7 0 108.1 8.1z"/>';
+  });
+
+  var state = { sec:'gp', kind:'all', st:'all', q:'', sel:{} };
+
+  function selectSection(id){
+    var it = byId[id];
+    if(!it) return;
+    state.sec = id;
+    state.kind = 'all';
+
+    navbody.querySelectorAll('.item').forEach(function(b){
+      b.setAttribute('aria-current', b.dataset.sec === id ? 'true' : 'false');
+    });
+    $('#secTitle').textContent = it.label;
+    $('#secGroup').textContent = it.group;
+
+    var tabs = $('#tabs');
+    tabs.textContent = '';
+    it.tabs.forEach(function(t, i){
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('role','tab');
+      b.setAttribute('aria-selected', i === 0 ? 'true' : 'false');
+      b.dataset.f = t[0];
+      b.textContent = t[1];
+      tabs.appendChild(b);
+    });
+
+    var gp = it.view === 'gp';
+    $('#viewGP').hidden = !gp;
+    $('#viewStub').hidden = gp;
+    $('#helloSub').textContent = gp
+      ? 'Окно обслуживания идёт до 05:00. Следите за задачами и состоянием кластера.'
+      : (it.soon ? it.label + ': раздел ещё не построен' : it.label + ': поверхность в работе, структура закреплена');
+
+    if(gp){
+      render();
+    } else {
+      $('#stubTitle').textContent = it.label;
+      $('#stubText').textContent = it.text || '';
+      var fns = $('#stubFns');
+      fns.textContent = '';
+      it.tabs.forEach(function(t){
+        var s = document.createElement('span');
+        s.textContent = t[1];
+        fns.appendChild(s);
+      });
+    }
+  }
+
+  navbody.addEventListener('click', function(e){
+    var b = e.target.closest('.item'); if(!b) return;
+    selectSection(b.dataset.sec);
   });
 
   var ROWS = [
@@ -649,7 +821,6 @@ tbody tr[data-sel="1"] td{background:var(--accent-soft)}
   };
   var FILTERS = [['all','Все статусы'],['run','Выполняется'],['wait','Ожидает'],['done','Завершена'],['fail','Отказ']];
   var fi = 0;
-  var state = { kind:'all', st:'all', q:'', sel:{} };
 
   function visible(){
     return ROWS.filter(function(r){
@@ -695,7 +866,6 @@ tbody tr[data-sel="1"] td{background:var(--accent-soft)}
     state.sel[id] = !state.sel[id];
     render();
   });
-
   $('#all').addEventListener('click', function(){
     var rows = visible();
     var allOn = rows.every(function(r){ return state.sel[r.id]; });
@@ -770,12 +940,12 @@ tbody tr[data-sel="1"] td{background:var(--accent-soft)}
     state.st = (state.st === t.dataset.s) ? 'all' : t.dataset.s;
     syncFilterLabel(); syncTiles(); render();
   });
+
   $('#tabs').addEventListener('click', function(e){
     var b = e.target.closest('button'); if(!b) return;
     this.querySelectorAll('button').forEach(function(x){ x.setAttribute('aria-selected','false'); });
     b.setAttribute('aria-selected','true');
-    state.kind = b.dataset.f;
-    render();
+    if(state.sec === 'gp'){ state.kind = b.dataset.f; render(); }
   });
 
   $('#cgrid').addEventListener('click', function(e){
@@ -792,11 +962,8 @@ tbody tr[data-sel="1"] td{background:var(--accent-soft)}
     setTimeout(function(){ b.disabled = false; b.innerHTML = html; }, 1500);
   });
   $('#checkBtn').addEventListener('click', function(){
-    state.kind = 'skew';
-    $('#tabs').querySelectorAll('button').forEach(function(x){
-      x.setAttribute('aria-selected', x.dataset.f === 'skew' ? 'true' : 'false');
-    });
-    render();
+    var t = $('#tabs').querySelector('[data-f="skew"]');
+    if(t) t.click();
     document.querySelector('.acts-panel').scrollIntoView({behavior:'smooth', block:'start'});
   });
 
@@ -818,7 +985,7 @@ tbody tr[data-sel="1"] td{background:var(--accent-soft)}
     var xax = $('#xax'); xax.textContent = '';
     s.x.forEach(function(lbl, i){
       var g = document.createElement('div');
-      g.className = 'grp';
+      g.className = 'grpb';
       g.title = lbl + ': успешно ' + s.ok[i] + ', отказ ' + s.no[i];
       var a = document.createElement('b'); a.className = 'ok';
       var b = document.createElement('b'); b.className = 'no';
@@ -846,7 +1013,7 @@ tbody tr[data-sel="1"] td{background:var(--accent-soft)}
   tickWindow();
   setInterval(tickWindow, 6000);
 
-  render();
+  selectSection('gp');
   syncTiles();
 })();
 </script>
