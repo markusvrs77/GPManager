@@ -777,6 +777,31 @@ def make_include_table_file(items, dbname=None):
 # Include JSON for gpcopy by date
 # ------------------------------------------------------------
 
+# Границы окна попадают в SQL строкой: gpcopy принимает срез только
+# готовым текстом запроса, связать их параметрами там негде. Поэтому
+# формат проверяем до склейки.
+_WINDOW_BOUND_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$"
+)
+
+
+def validate_window_bound(value, label="date"):
+    """
+    Граница окна: YYYY-MM-DD или YYYY-MM-DD HH:MM[:SS]. Ровно эти два
+    формата отдаёт resolve_date_window, их же даёт <input type="date">.
+    Чистая функция.
+    """
+    text = "" if value is None else str(value).strip()
+
+    if not _WINDOW_BOUND_RE.match(text):
+        raise ValueError(
+            "Некорректная граница окна {}: {!r} — "
+            "ожидается YYYY-MM-DD или YYYY-MM-DD HH:MM:SS".format(label, value)
+        )
+
+    return text
+
+
 def build_date_slice_sql(schema_name, table_name, date_column, date_from, date_to):
     """SELECT-срез по дате для одной таблицы (идентификаторы экранируем)."""
     column = quote_ident(date_column)
@@ -787,9 +812,157 @@ def build_date_slice_sql(schema_name, table_name, date_column, date_from, date_t
     ).format(
         table="{}.{}".format(quote_ident(schema_name), quote_ident(table_name)),
         column=column,
-        date_from=date_from,
-        date_to=date_to,
+        date_from=validate_window_bound(date_from, "date_from"),
+        date_to=validate_window_bound(date_to, "date_to"),
     )
+
+
+# ------------------------------------------------------------
+# Окно с очисткой: DELETE диапазона в приёмнике перед вставкой
+# ------------------------------------------------------------
+
+def build_window_where(date_column):
+    """
+    Условие окна с плейсхолдерами. Полуинтервал [from, to) — тот же, что
+    у среза источника: иначе строка на границе либо потеряется, либо
+    задвоится. Чистая функция.
+    """
+    if not validate_identifier_with_dollar(date_column):
+        raise ValueError("Некорректная колонка даты: {}".format(date_column))
+
+    column = quote_ident(date_column)
+    return "{col} >= %s AND {col} < %s".format(col=column)
+
+
+def build_window_delete_sql(schema_name, table_name, date_column):
+    """
+    DELETE диапазона в приёмнике. В отличие от среза источника, здесь
+    границы уходят параметрами — этот запрос выполняем мы сами, склеивать
+    их в текст незачем. Чистая функция.
+    """
+    return "DELETE FROM {}.{} WHERE {}".format(
+        quote_ident(schema_name),
+        quote_ident(table_name),
+        build_window_where(date_column),
+    )
+
+
+def build_window_count_sql(schema_name, table_name, date_column):
+    """Сколько строк попадёт под очистку — для превью. Чистая функция."""
+    return "SELECT count(*) FROM {}.{} WHERE {}".format(
+        quote_ident(schema_name),
+        quote_ident(table_name),
+        build_window_where(date_column),
+    )
+
+
+def window_targets(table_configs):
+    """
+    (схема, таблица, колонка) приёмника для каждой таблицы задания.
+
+    Чистим именно приёмник, поэтому имя берём из dest, если оно задано:
+    перенос может идти в другую схему. Чистая функция.
+    """
+    out = []
+
+    for item in table_configs or []:
+        date_column = item.get("date_column")
+
+        if not date_column:
+            raise ValueError(
+                "Нет колонки даты для {}".format(
+                    item.get("source") or item.get("table") or "?")
+            )
+
+        dest = item.get("dest") or item.get("source") or ""
+        parts = [p for p in str(dest).split(".") if p]
+
+        if len(parts) >= 2:
+            schema_name, table_name = parts[-2], parts[-1]
+        else:
+            schema_name = item.get("schema")
+            table_name = item.get("table")
+
+        if not schema_name or not table_name:
+            raise ValueError("Не разобрано имя приёмника: {!r}".format(dest))
+
+        out.append((schema_name, table_name, date_column))
+
+    return out
+
+
+def clear_window_in_dest(dest_connection_id, table_configs,
+                         date_from, date_to, dry_run=False):
+    """
+    Удаляет диапазон дат в приёмнике перед загрузкой того же диапазона.
+
+    Это то, чем стратегия «окно с очисткой» гарантирует отсутствие дублей:
+    повторный запуск сначала снимает ранее загруженное окно, а потом
+    вставляет его заново, поэтому даёт тот же результат, что и первый.
+
+    Все таблицы чистятся ОДНОЙ транзакцией: иначе падение на пятой из
+    десяти оставило бы четыре таблицы с дырой в данных и шесть нетронутыми,
+    то есть приёмник в состоянии, которого не бывает ни до, ни после
+    задания. Возвращает [(схема, таблица, сколько строк)].
+
+    dry_run считает строки и откатывается — ничего не удаляя.
+    """
+    targets = window_targets(table_configs)
+
+    if not targets:
+        raise ValueError("Список таблиц для очистки окна пуст")
+
+    bounds = (
+        validate_window_bound(date_from, "date_from"),
+        validate_window_bound(date_to, "date_to"),
+    )
+
+    if bounds[0] >= bounds[1]:
+        raise ValueError(
+            "Пустое окно: from={} >= to={}".format(*bounds)
+        )
+
+    connection = get_connection_by_id(int(dest_connection_id))
+
+    if not connection:
+        raise Exception("Connection not found: {}".format(dest_connection_id))
+
+    conn = open_psycopg2_connection_by_cfg(connection)
+    conn.autocommit = False
+
+    report = []
+
+    try:
+        with conn.cursor() as cur:
+            for schema_name, table_name, date_column in targets:
+                if dry_run:
+                    cur.execute(
+                        build_window_count_sql(
+                            schema_name, table_name, date_column),
+                        bounds,
+                    )
+                    affected = int((cur.fetchone() or [0])[0])
+                else:
+                    cur.execute(
+                        build_window_delete_sql(
+                            schema_name, table_name, date_column),
+                        bounds,
+                    )
+                    affected = int(cur.rowcount or 0)
+
+                report.append((schema_name, table_name, affected))
+
+        if dry_run:
+            conn.rollback()
+        else:
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    return report
 
 
 def expand_date_entries_to_leaves(entries, leaves_by_key, date_from, date_to):
