@@ -195,7 +195,7 @@ table.gr-mx tbody th .rk.medium { background: var(--warn); }
 table.gr-mx tbody th .rk.low { background: var(--ok); }
 table.gr-mx td { text-align: center; font-variant-numeric: tabular-nums;
   color: var(--text-muted); }
-table.gr-mx td.c { border-radius: 4px; color: #fff; font-weight: 700; }
+table.gr-mx td.c { border-radius: 4px; color: var(--text); font-weight: 700; }
 .gr-mx-legend { display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
   padding: 10px 14px; font-size: 12px; color: var(--text-muted);
   border-bottom: 1px solid var(--hairline); }
@@ -1245,7 +1245,7 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 12px;
             c.moveTo(l.a.x, l.a.y);
             c.lineTo(l.b.x, l.b.y);
             c.strokeStyle = l.write
-                ? (faded ? "rgba(245,158,11,0.08)" : "rgba(245,158,11,0.40)")
+                ? (faded ? "color-mix(in srgb, var(--warn) 8%, transparent)" : "color-mix(in srgb, var(--warn) 40%, transparent)")
                 : (faded ? "rgba(148,163,184,0.06)" : "rgba(148,163,184,0.22)");
             c.lineWidth = (l.write ? w : w * 0.75) / G.scale;
             c.stroke();
@@ -1623,18 +1623,23 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 12px;
         var ratio = writeTables / Math.max(1, tables);
         var strength = 0.3 + 0.45 * Math.min(1, Math.log(tables + 1) / 5);
 
-        if (ratio === 0) { return "rgba(99,102,241," + strength + ")"; }
-        if (ratio >= 0.99) { return "rgba(239,68,68,.75)"; }
-        return "rgba(245,158,11,.75)";
+        if (ratio === 0) {
+            return "color-mix(in srgb, var(--a-bright) " +
+                Math.round(strength * 100) + "%, transparent)";
+        }
+        if (ratio >= 0.99) {
+            return "color-mix(in srgb, var(--crit) 72%, transparent)";
+        }
+        return "color-mix(in srgb, var(--warn) 72%, transparent)";
     }
 
     function mxLegend(detail) {
         return '<div class="gr-mx-legend">' +
             '<span><i style="background: color-mix(in srgb, var(--a-bright) 75%, transparent);"></i>' +
             "только чтение</span>" +
-            '<span><i style="background: rgba(245,158,11,.8);"></i>' +
+            '<span><i style="background: color-mix(in srgb, var(--warn) 78%, transparent);"></i>' +
             "есть запись</span>" +
-            '<span><i style="background: rgba(239,68,68,.8);"></i>' +
+            '<span><i style="background: color-mix(in srgb, var(--crit) 78%, transparent);"></i>' +
             (detail ? "truncate / delete" : "запись во всех таблицах") +
             "</span><span>" +
             (detail
@@ -1897,8 +1902,8 @@ table.gr-mx td.p { font-family: var(--font-mono); font-size: 12px;
 
                         if (!c) { return "<td>·</td>"; }
 
-                        var bg = c.danger ? "rgba(239,68,68,.75)"
-                            : (c.write ? "rgba(245,158,11,.75)"
+                        var bg = c.danger ? "color-mix(in srgb, var(--crit) 72%, transparent)"
+                            : (c.write ? "color-mix(in srgb, var(--warn) 72%, transparent)"
                                        : "color-mix(in srgb, var(--a-bright) 60%, transparent)");
                         var letters = c.privileges.map(function (p) {
                             return PRIV_SHORT[p] || p[0];

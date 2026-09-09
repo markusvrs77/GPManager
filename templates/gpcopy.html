@@ -25,7 +25,7 @@
                 <select id="sourceConnectionId" class="form-select mb-3">
                     {% for c in connections %}
                     <option value="{{ c.id }}">
-                        {{ c.name }} / {{ c.host }} / {{ c.database or c.dbname }}
+                        {{ c.name }} / {{ c.host }} / {{ c.database_name or c.database or c.dbname }}
                     </option>
                     {% endfor %}
                 </select>
@@ -34,7 +34,7 @@
                 <select id="destConnectionId" class="form-select mb-3">
                     {% for c in connections %}
                     <option value="{{ c.id }}">
-                        {{ c.name }} / {{ c.host }} / {{ c.database or c.dbname }}
+                        {{ c.name }} / {{ c.host }} / {{ c.database_name or c.database or c.dbname }}
                     </option>
                     {% endfor %}
                 </select>

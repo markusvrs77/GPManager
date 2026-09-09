@@ -6,7 +6,17 @@
 
 <style>
 /* ============ dashboard (обзор кластеров и задач) ============ */
-.gpd { max-width: 1240px; }
+.gpd { max-width: 1240px; min-width: 0; }
+/* a 13-column session table used to push the page 156px wider than the
+   viewport, and body{overflow-x:hidden} then clipped what it pushed out;
+   grid and flex children need min-width:0 before they will let it scroll */
+.gpd, .gpd > *, .gpd .card, .gpd .card-body, .gpd .row, .gpd [class*="col-"] { min-width: 0; }
+.gpd .table-responsive { overflow-x: auto; max-width: 100%; }
+/* the stat sublabels used to force the grid wider than the viewport,
+   and body{overflow-x:hidden} then clipped what could not be reached */
+.gpd-stat, .gpd-stat .k, .gpd-stat .v, .gpd-stat .sub { min-width: 0; overflow-wrap: anywhere; }
+.gpd-stat .sub, .gpd .lab { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 560px) { .gpd-stats { grid-template-columns: 1fr; } }
 
 .gpd-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px; margin-bottom: 18px; }

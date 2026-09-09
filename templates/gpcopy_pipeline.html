@@ -294,8 +294,8 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
                 {% for c in connections if (c.role or 'both') != 'dest' %}
                 <option value="{{ c.id }}"
                         data-name="{{ c.name }}"
-                        data-db="{{ c.database or c.dbname or '' }}"
-                        data-host="{{ c.host or '' }}">{{ c.name }}{% if c.database or c.dbname %} · {{ c.database or c.dbname }}{% endif %}</option>
+                        data-db="{{ c.database_name or c.database or c.dbname or '' }}"
+                        data-host="{{ c.host or '' }}">{{ c.name }}{% if c.database_name or c.database or c.dbname %} · {{ c.database_name or c.database or c.dbname }}{% endif %}</option>
                 {% endfor %}
             </select>
             <div class="meta" id="gppSrcMeta">каталог не загружен</div>
@@ -307,8 +307,8 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
                 {% for c in connections if (c.role or 'both') != 'source' %}
                 <option value="{{ c.id }}"
                         data-name="{{ c.name }}"
-                        data-db="{{ c.database or c.dbname or '' }}"
-                        data-host="{{ c.host or '' }}">{{ c.name }}{% if c.database or c.dbname %} · {{ c.database or c.dbname }}{% endif %}</option>
+                        data-db="{{ c.database_name or c.database or c.dbname or '' }}"
+                        data-host="{{ c.host or '' }}">{{ c.name }}{% if c.database_name or c.database or c.dbname %} · {{ c.database_name or c.database or c.dbname }}{% endif %}</option>
                 {% endfor %}
             </select>
             <div class="meta" id="gppDstMeta">&nbsp;</div>

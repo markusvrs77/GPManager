@@ -78,6 +78,10 @@
     {% set page_title, page_crumb = 'Резервные копии', 'gpbackup / gprestore' %}
 {% elif p.startswith('/health') %}
     {% set page_title, page_crumb = 'Здоровье БД', 'аналитика без нагрузки' %}
+{% elif p.startswith('/objects') %}
+    {% set page_title, page_crumb = 'Объекты', 'дерево схем и таблиц' %}
+{% elif p.startswith('/skew') or p.startswith('/reorganize') %}
+    {% set page_title, page_crumb = 'Maintenance', 'реорганизация и перекос' %}
 {% elif p.startswith('/kafka/connections') %}
     {% set page_title, page_crumb = 'Подключения Kafka', 'кластеры и брокеры' %}
 {% elif p.startswith('/kafka/groups') %}

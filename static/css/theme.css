@@ -211,7 +211,9 @@ h1, h2, h3, h4, h5, h6 { color: var(--text); }
 
 /* focus visibility */
 a:focus-visible, button:focus-visible, .btn:focus-visible,
-.form-control:focus-visible, .form-select:focus-visible {
+.form-control:focus-visible, .form-select:focus-visible,
+input:focus-visible, select:focus-visible, textarea:focus-visible,
+summary:focus-visible, [tabindex]:focus-visible, [role="button"]:focus-visible {
   outline: 2px solid var(--a2);
   outline-offset: 2px;
 }
@@ -227,16 +229,27 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 
 /* text utilities that break in dark */
 .text-dark { color: var(--text) !important; }
-.text-primary { color: var(--a1) !important; }
+/* bootstrap text utilities on tokens: --a2 flips for dark, --a1 does not */
+.text-primary { color: var(--a2) !important; }
+.text-secondary, .text-muted { color: var(--text-muted) !important; }
+.text-danger { color: var(--crit) !important; }
+.text-success { color: var(--ok) !important; }
+.text-warning { color: var(--warn) !important; }
 
 /* alerts -> consistent glass with a semantic accent stripe */
 .alert {
   --status: var(--idle);
-  background: color-mix(in srgb, var(--status) 10%, var(--surface-2));
+  background: color-mix(in srgb, var(--status) 14%, var(--surface-2));
   color: var(--text);
-  border: 1px solid color-mix(in srgb, var(--status) 32%, var(--hairline));
+  border: 1.5px solid color-mix(in srgb, var(--status) 62%, transparent);
   border-radius: var(--radius-sm);
+  font-weight: 600;
 }
+/* severity has to be readable from two metres: the status owns the
+   heading weight and colour, not just a wash of background */
+.alert-warning, .alert-danger { font-weight: 700; }
+.alert-danger { color: color-mix(in srgb, var(--status) 82%, var(--text)); }
+.alert-danger strong, .alert-danger b { color: inherit; }
 .alert-info { --status: var(--idle); }
 .alert-success { --status: var(--ok); }
 .alert-warning { --status: var(--warn); }
@@ -314,7 +327,7 @@ input[type="radio"] { accent-color: var(--a1); width: 16px; height: 16px; cursor
 /* ---- Connections: structured test result card (Phase 3) ---- */
 .gp-test-result {
   --status: var(--idle);
-  border: 1px solid color-mix(in srgb, var(--status) 32%, var(--hairline));
+  border: 1.5px solid color-mix(in srgb, var(--status) 58%, transparent);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--status) 10%, var(--surface-2));
   padding: var(--space-4);
@@ -400,7 +413,7 @@ input[type="radio"] { accent-color: var(--a1); width: 16px; height: 16px; cursor
   -webkit-backdrop-filter: blur(var(--glass-blur));
   backdrop-filter: blur(var(--glass-blur));
   --status: var(--idle);
-  border: 1px solid color-mix(in srgb, var(--status) 32%, var(--glass-border));
+  border: 1.5px solid color-mix(in srgb, var(--status) 58%, var(--glass-border));
   box-shadow: var(--shadow);
   color: var(--text);
   font-size: 14px;
