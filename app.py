@@ -3008,6 +3008,103 @@ def api_catalog_sync_keys():
         return jsonify({"ok": False, "message": str(e)}), 500
 
 
+@app.route("/api/gpcopy/strategies", methods=["POST"])
+def api_gpcopy_strategies():
+    """
+    Какие стратегии переноса применимы к выбранным таблицам и почему
+    остальные - нет.
+
+    Оператор решает не "truncate или append", а чем гарантируется
+    отсутствие дублей при повторном запуске. Ответ дают три факта об
+    исходной таблице: разрешается ли ключ, партиционирована ли она,
+    есть ли колонка даты для нарезки окна.
+
+    Ничего не выполняет и не пишет: только читает каталоги.
+    """
+    data = request.get_json(silent=True) or {}
+
+    try:
+        connection_id = int(data["connection_id"])
+        tables = [(t["schema"], t["table"]) for t in (data.get("tables") or [])]
+
+        if not tables:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        # ключ: PK -> уникальный индекс -> сохранённый оператором
+        pk_map, unique_map = table_catalog.fetch_unique_indexes(
+            connection_id, tables,
+        )
+        resolved, unresolved = table_catalog.resolve_keys_hierarchy(
+            tables, pk_map, unique_map,
+        )
+        saved = table_catalog.load_sync_keys(connection_id, tables)
+
+        # партиционирование: родитель в pg_inherits
+        child_parent = table_catalog.fetch_partition_pairs(connection_id)
+        roles = table_catalog.classify_partition_roles(tables, child_parent)
+
+        out = {}
+
+        for schema_name, table_name in tables:
+            key = (schema_name, table_name)
+
+            key_info = resolved.get(key) or saved.get(key) or {}
+            key_columns = list(key_info.get("columns") or [])
+            key_source = key_info.get("source") or (
+                "resolved" if key_columns else None)
+
+            role = (roles.get(key) or {}).get("kind") or "regular"
+            partitioned = role == "parent"
+
+            try:
+                date_columns = [
+                    row["column_name"]
+                    for row in get_date_columns_for_table(
+                        connection_id, schema_name, table_name)
+                ]
+            except Exception:
+                date_columns = []
+
+            has_key = bool(key_columns)
+            has_date = bool(date_columns)
+
+            out["{}.{}".format(schema_name, table_name)] = {
+                "schema": schema_name,
+                "table": table_name,
+                "key_columns": key_columns,
+                "key_source": key_source,
+                "partitioned": partitioned,
+                "partition_role": role,
+                "date_columns": date_columns,
+                "strategies": {
+                    "full": {"ok": True, "reason": None},
+                    "partitions": {
+                        "ok": partitioned,
+                        "reason": None if partitioned else "не партиционирована",
+                    },
+                    "window": {
+                        "ok": has_date,
+                        "reason": None if has_date else "нет колонки даты",
+                    },
+                    "key": {
+                        "ok": has_key,
+                        "reason": None if has_key else "ключ не разрешён",
+                    },
+                    "except_all": {
+                        "ok": has_date,
+                        "reason": None if has_date else "нет колонки даты",
+                    },
+                },
+            }
+
+        return jsonify({"ok": True, "tables": out})
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
 @app.route("/api/catalog/compute-unique", methods=["POST"])
 def api_catalog_compute_unique():
     """Вычисление уникальной колонки по данным (нет ни PK, ни индексов)."""
