@@ -231,16 +231,16 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 
 /* alerts -> consistent glass with a semantic accent stripe */
 .alert {
-  background: var(--surface-2);
+  --status: var(--idle);
+  background: color-mix(in srgb, var(--status) 10%, var(--surface-2));
   color: var(--text);
-  border: 1px solid var(--hairline);
-  border-left-width: 3px;
+  border: 1px solid color-mix(in srgb, var(--status) 32%, var(--hairline));
   border-radius: var(--radius-sm);
 }
-.alert-info { border-left-color: #3b82f6; }
-.alert-success { border-left-color: var(--ok); }
-.alert-warning { border-left-color: var(--warn); }
-.alert-danger { border-left-color: var(--crit); }
+.alert-info { --status: var(--idle); }
+.alert-success { --status: var(--ok); }
+.alert-warning { --status: var(--warn); }
+.alert-danger { --status: var(--crit); }
 
 /* checkboxes / radios use the accent */
 .form-check-input { background-color: var(--surface-2); border-color: var(--hairline); }
@@ -313,15 +313,15 @@ input[type="radio"] { accent-color: var(--a1); width: 16px; height: 16px; cursor
 
 /* ---- Connections: structured test result card (Phase 3) ---- */
 .gp-test-result {
-  border: 1px solid var(--hairline);
-  border-left: 3px solid var(--idle);
+  --status: var(--idle);
+  border: 1px solid color-mix(in srgb, var(--status) 32%, var(--hairline));
   border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  background: color-mix(in srgb, var(--status) 10%, var(--surface-2));
   padding: var(--space-4);
 }
-.gp-test-result.gp-tr-ok   { border-left-color: var(--ok); }
-.gp-test-result.gp-tr-err  { border-left-color: var(--crit); }
-.gp-test-result.gp-tr-wait { border-left-color: var(--a1); }
+.gp-test-result.gp-tr-ok   { --status: var(--ok); }
+.gp-test-result.gp-tr-err  { --status: var(--crit); }
+.gp-test-result.gp-tr-wait { --status: var(--a1); }
 
 .gp-tr-head { display: flex; align-items: center; gap: var(--space-3); }
 .gp-tr-badge {
@@ -370,12 +370,12 @@ input[type="radio"] { accent-color: var(--a1); width: 16px; height: 16px; cursor
 /* replace solid Bootstrap header fills with tinted glass + colored accent */
 .gpcopy-page .card-header.bg-primary,
 .gpcopy-page .card-header.bg-danger {
-  background: var(--surface-2) !important;
+  --status: var(--a1);
+  background: color-mix(in srgb, var(--status) 10%, var(--surface-2)) !important;
   color: var(--text) !important;
-  border-bottom: 1px solid var(--hairline);
-  border-left: 3px solid var(--a1);
+  border-bottom: 1px solid color-mix(in srgb, var(--status) 32%, var(--hairline));
 }
-.gpcopy-page .card-header.bg-danger { border-left-color: var(--crit); }
+.gpcopy-page .card-header.bg-danger { --status: var(--crit); }
 .gpcopy-page .card-header.bg-primary b { color: var(--a1); }
 .gpcopy-page .card-header.bg-danger b  { color: var(--crit); }
 
@@ -399,17 +399,17 @@ input[type="radio"] { accent-color: var(--a1); width: 16px; height: 16px; cursor
   background: var(--surface-2);
   -webkit-backdrop-filter: blur(var(--glass-blur));
   backdrop-filter: blur(var(--glass-blur));
-  border: 1px solid var(--glass-border);
-  border-left: 3px solid var(--idle);
+  --status: var(--idle);
+  border: 1px solid color-mix(in srgb, var(--status) 32%, var(--glass-border));
   box-shadow: var(--shadow);
   color: var(--text);
   font-size: 14px;
   cursor: pointer;
 }
-.gp-toast-success { border-left-color: var(--ok); }
-.gp-toast-warning { border-left-color: var(--warn); }
-.gp-toast-danger  { border-left-color: var(--crit); }
-.gp-toast-info    { border-left-color: var(--a1); }
+.gp-toast-success { --status: var(--ok); }
+.gp-toast-warning { --status: var(--warn); }
+.gp-toast-danger  { --status: var(--crit); }
+.gp-toast-info    { --status: var(--a1); }
 
 /* ---- Confirm dialog (Phase 4) ---- */
 .gp-dialog-overlay {

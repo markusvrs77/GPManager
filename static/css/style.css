@@ -27,7 +27,7 @@ body {
 }
 
 .object-tree {
-    font-family: Arial, sans-serif;
+    font-family: var(--font-ui);
     font-size: 14px;
     background: #ffffff;
     border: 1px solid #e5e7eb;
@@ -186,7 +186,7 @@ body {
 }
 
 .reorg-running-box {
-    border: 1px solid #b6effb;
+    border: 1px solid var(--hairline);
     background: #e8f8fc;
     border-radius: 10px;
     padding: 14px;
@@ -196,8 +196,8 @@ body {
 .reorg-spinner {
     width: 22px;
     height: 22px;
-    border: 3px solid #b6effb;
-    border-top: 3px solid #0d6efd;
+    border: 3px solid var(--hairline);
+    border-top: 3px solid var(--a1);
     border-radius: 50%;
     display: inline-block;
     animation: reorgSpin 0.8s linear infinite;
@@ -221,7 +221,7 @@ body {
     background: linear-gradient(
         90deg,
         #d9edf7 0%,
-        #0d6efd 50%,
+        var(--a1) 50%,
         #d9edf7 100%
     );
     background-size: 200% 100%;
@@ -358,13 +358,13 @@ body {
 }
 
 .gpcopy-date-section {
-    border-color: #0d6efd;
+    border-color: var(--a1);
     padding: 0;
     overflow: hidden;
 }
 
 .gpcopy-date-header {
-    background: #0d6efd;
+    background: var(--a1);
     color: #fff;
     padding: 10px 16px;
 }

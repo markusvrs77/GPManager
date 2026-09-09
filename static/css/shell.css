@@ -74,7 +74,7 @@ html[data-sb="mini"] .gp-sb .sb-body { padding: 10px 8px 4px; }
    not an accent, so it never follows the theme */
 .gp-sb .tk-logo { width: 24px; height: 24px; border-radius: 8px; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 9.5px; font-weight: 800; color: #fff; background: var(--a1); }
+  font-size: 11px; font-weight: 800; color: #fff; background: var(--a1); }
 .gp-sb .tk-logo.gp  { background: #2f7d3a; }
 .gp-sb .tk-logo.pg  { background: #2c5c80; }
 .gp-sb .tk-logo.ora { background: #a83a2b; }
