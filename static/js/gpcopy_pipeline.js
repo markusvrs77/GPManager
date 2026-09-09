@@ -42,6 +42,10 @@
     var state = {
         mode: "full",
         incStrategy: "watermark",  // watermark | key
+        strategy: "full",          // чем гарантируется отсутствие дублей
+        stratFacts: null,          // "schema.table" -> ответ /api/gpcopy/strategies
+        stratState: "idle",        // idle | loading | ready | error
+        stratError: "",
         when: "now",
         sel: new Set(),            // "schema.table"
         catalog: null,             // {total, schemas:[{schema,count}], cached_at}
@@ -74,6 +78,9 @@
     };
 
     function modeName() {
+        var s = stratById(state.strategy);
+        if (s) { return s.name.toLowerCase(); }
+
         if (state.mode === "inc") {
             return state.incStrategy === "key"
                 ? "инкремент по ключу (sync)"
@@ -164,6 +171,247 @@
         } catch (e) { /* ignore */ }
     }
 
+    /* ---------------- стратегии переноса ---------------- */
+
+    /* Оператор выбирает не флаг CLI, а чем гарантируется отсутствие дублей
+       при повторном запуске. Применимость решают три факта об исходной
+       таблице — разрешается ли ключ, партиционирована ли она, есть ли
+       колонка даты, — их отдаёт /api/gpcopy/strategies.
+
+       fact — ключ в ответе маршрута; soft — стратегия остаётся доступной,
+       когда факт против неё, потому что оператор дозадаёт колонку руками
+       на следующем шаге. */
+    var STRATEGIES = [
+        {
+            id: "full", icon: "📦", name: "Полная замена", fact: "full",
+            why: "приёмник очищается и наполняется заново — дубли исключены " +
+                 "тем, что прежнего содержимого не остаётся",
+            mode: "full",
+            danger: "Текущее содержимое приёмных таблиц будет потеряно.",
+        },
+        {
+            id: "partitions", icon: "🧩", name: "Партиции целиком",
+            fact: "partitions",
+            why: "переносятся партиции, которых в приёмнике нет; " +
+                 "партиция — неделимая единица, задвоить нечего",
+            mode: "part",
+        },
+        {
+            id: "window", icon: "📅", name: "Окно с очисткой", fact: "window",
+            why: "диапазон дат сначала удаляется в приёмнике, затем " +
+                 "вставляется заново — повторный запуск даёт тот же результат",
+            mode: "date", soon: true,
+        },
+        {
+            id: "key", icon: "🔁", name: "По ключу", fact: "key",
+            why: "сопоставление в промежуточной таблице: изменившиеся строки " +
+                 "обновляются, новые вставляются, дубли ключа останавливают задачу",
+            mode: "inc", inc: "key",
+        },
+        {
+            id: "except_all", icon: "➖", name: "Окно и EXCEPT ALL",
+            fact: "except_all",
+            why: "разность мультимножеств в границах окна: ключ не требуется, " +
+                 "кратность сохраняется, законные дубликаты фактов остаются на месте",
+            mode: "date", soon: true,
+        },
+        {
+            id: "watermark", icon: "⚡", name: "По watermark", fact: "window",
+            soft: "колонка-отметка не найдена среди дат — задайте вручную",
+            why: "берутся строки строго новее отметки в приёмнике; годится там, " +
+                 "где колонка только растёт и старое не правится",
+            mode: "inc", inc: "watermark",
+        },
+    ];
+
+    function stratById(id) {
+        for (var i = 0; i < STRATEGIES.length; i++) {
+            if (STRATEGIES[i].id === id) { return STRATEGIES[i]; }
+        }
+        return null;
+    }
+
+    // у Postgres Toolkit перенос идёт через COPY — из стратегий доступна
+    // только полная замена, остальные живут в gpcopy
+    function toolkit() {
+        var el = $("gppModes");
+        return (el && el.dataset && el.dataset.toolkit) || "gp";
+    }
+
+    function stratList() {
+        return toolkit() === "pg"
+            ? STRATEGIES.filter(function (s) { return s.id === "full"; })
+            : STRATEGIES;
+    }
+
+    // таблицы, для которых стратегия не работает, с причиной от маршрута
+    function stratBlockers(s) {
+        if (!state.stratFacts) { return []; }
+        var out = [];
+
+        state.sel.forEach(function (name) {
+            var f = state.stratFacts[name];
+            if (!f) { return; }
+            var verdict = (f.strategies || {})[s.fact];
+            if (verdict && !verdict.ok) {
+                out.push({ name: name, reason: verdict.reason || "неприменима" });
+            }
+        });
+
+        return out;
+    }
+
+    var stratSeq = 0;
+    var stratTimer = null;
+
+    function loadStrategies() {
+        var tables = selTables();
+
+        if (stratTimer) { clearTimeout(stratTimer); stratTimer = null; }
+        stratSeq += 1;
+
+        if (!tables.length) {
+            state.stratFacts = null;
+            state.stratState = "idle";
+            state.stratError = "";
+            renderStrategies();
+            return;
+        }
+
+        state.stratState = "loading";
+        renderStrategies();
+
+        // выбор часто меняется пачками (схема целиком) — считаем один раз
+        var seq = stratSeq;
+        stratTimer = setTimeout(function () {
+            api("/api/gpcopy/strategies", "POST", {
+                connection_id: srcId(), tables: tables,
+            }).then(function (d) {
+                if (seq !== stratSeq) { return; }   // выбор успел смениться
+
+                if (!d || !d.ok) {
+                    state.stratState = "error";
+                    state.stratError = (d && d.message) || "не удалось посчитать";
+                } else {
+                    state.stratFacts = d.tables || {};
+                    state.stratState = "ready";
+                    state.stratError = "";
+                }
+                renderStrategies();
+                renderSummary();
+            }).catch(function (e) {
+                if (seq !== stratSeq) { return; }
+                state.stratState = "error";
+                state.stratError = String(e);
+                renderStrategies();
+            });
+        }, 350);
+    }
+
+    function renderStrategies() {
+        var box = $("gppModes");
+        if (!box) { return; }
+
+        var total = state.sel.size;
+        var html = "";
+
+        stratList().forEach(function (s) {
+            var blockers = stratBlockers(s);
+            var hard = blockers.length && !s.soft;
+            var off = Boolean(s.soon) || hard;
+            var on = state.strategy === s.id;
+
+            var badge = "";
+            if (s.soon) {
+                badge = '<span class="badge">готовится</span>';
+            } else if (blockers.length) {
+                badge = '<span class="badge ' + (s.soft ? "warn" : "bad") + '">' +
+                    (s.soft ? "требует проверки" : "недоступна") + " для " +
+                    fmtN(blockers.length) + " из " + fmtN(total) + "</span>";
+            } else if (state.stratState === "ready" && total) {
+                badge = '<span class="badge">применима ко всем</span>';
+            }
+
+            html += '<div class="gpp-strat' + (on ? " sel" : "") +
+                (off ? " off" : "") + '" data-s="' + esc(s.id) + '">' +
+                '<div class="hd"><span class="ic">' + s.icon + "</span>" +
+                '<span class="t">' + esc(s.name) + "</span>" + badge + "</div>" +
+                '<div class="w">' + esc(s.why) + "</div>";
+
+            if (blockers.length) {
+                // причина по каждой таблице: почему именно она мешает
+                var shown = blockers.slice(0, 6).map(function (b) {
+                    return '<span class="mono">' + esc(b.name) + "</span> — " +
+                        esc(b.reason);
+                }).join(" · ");
+
+                html += '<div class="why">' + shown +
+                    (blockers.length > 6
+                        ? " · и ещё " + fmtN(blockers.length - 6)
+                        : "") + "</div>";
+            } else if (on && s.danger) {
+                html += '<div class="danger">' + esc(s.danger) + "</div>";
+            }
+
+            html += "</div>";
+        });
+
+        if (state.stratState === "loading") {
+            html += '<div class="gpp-hint">считаю применимость по ' +
+                fmtN(total) + " таблицам…</div>";
+        } else if (state.stratState === "error") {
+            html += '<div class="gpp-hint"><span class="bad">применимость не ' +
+                "посчитана: " + esc(state.stratError) +
+                "</span> — стратегии показаны без проверки</div>";
+        } else if (!total) {
+            html += '<div class="gpp-hint">выберите таблицы на шаге 1 — ' +
+                "применимость считается по ним</div>";
+        }
+
+        box.innerHTML = html;
+
+        box.querySelectorAll(".gpp-strat").forEach(function (card) {
+            card.onclick = function () {
+                if (card.classList.contains("off")) {
+                    var s = stratById(card.getAttribute("data-s"));
+                    toast(s && s.soon
+                        ? "«" + s.name + "» ещё не реализована"
+                        : "Стратегия недоступна для части выбранных таблиц",
+                        "warning");
+                    return;
+                }
+                pickStrategy(card.getAttribute("data-s"));
+            };
+        });
+    }
+
+    // стратегия задаёт режим запуска: панели параметров остаются прежними
+    function pickStrategy(id) {
+        var s = stratById(id);
+        if (!s) { return; }
+
+        state.strategy = id;
+        state.mode = s.mode;
+
+        if (s.inc) {
+            state.incStrategy = s.inc;
+            if ($("gppIncWm")) {
+                $("gppIncWm").style.display = s.inc === "watermark" ? "" : "none";
+            }
+            if ($("gppIncKey")) {
+                $("gppIncKey").style.display = s.inc === "key" ? "" : "none";
+            }
+        }
+
+        ["full", "inc", "date", "part"].forEach(function (m) {
+            var panel = $("gppP-" + m);
+            if (panel) { panel.classList.toggle("show", m === state.mode); }
+        });
+
+        renderStrategies();
+        renderSummary();
+    }
+
     /* ---------------- render: selection ---------------- */
 
     function renderSelection(opts) {
@@ -203,6 +451,8 @@
         invalidateResolutions();
         saveSel();
         renderSelection(opts);
+        // применимость считается по конкретной выборке — пересчитываем
+        loadStrategies();
     }
 
     /* ---------------- catalog ---------------- */
@@ -3150,36 +3400,12 @@
     /* ---------------- wiring ---------------- */
 
     function init() {
-        // mode cards
-        document.querySelectorAll("#gppModes .gpp-mode").forEach(function (card) {
-            card.onclick = function () {
-                document.querySelectorAll("#gppModes .gpp-mode").forEach(function (c) {
-                    c.classList.remove("sel");
-                });
-                card.classList.add("sel");
-                state.mode = card.getAttribute("data-m");
-                ["full", "inc", "date", "part"].forEach(function (m) {
-                    $("gppP-" + m).classList.toggle("show", m === state.mode);
-                });
-                renderSummary();
-            };
-        });
+        // карточки стратегий рисуются из JS: набор зависит от тулкита,
+        // доступность — от выбранных таблиц, поэтому не статика в шаблоне
+        pickStrategy(state.strategy);
 
-        // стратегия инкремента: watermark | key
-        document.querySelectorAll("#gppIncStrategy .opt").forEach(function (opt) {
-            opt.onclick = function () {
-                document.querySelectorAll("#gppIncStrategy .opt").forEach(function (o) {
-                    o.classList.remove("sel");
-                });
-                opt.classList.add("sel");
-                state.incStrategy = opt.getAttribute("data-s");
-                $("gppIncWm").style.display =
-                    state.incStrategy === "watermark" ? "" : "none";
-                $("gppIncKey").style.display =
-                    state.incStrategy === "key" ? "" : "none";
-                renderSummary();
-            };
-        });
+        // watermark и ключ стали отдельными стратегиями на шаге «КАК» —
+        // второго переключателя внутри панели больше нет
 
         // when
         document.querySelectorAll("#gppWhen .opt").forEach(function (opt) {
@@ -3318,6 +3544,8 @@
             invalidateResolutions();
             loadSel();
             renderSelection();
+            // ключи и партиционирование — свойства источника, а не выбора
+            loadStrategies();
             loadCatalog(false);
             loadSets();
         };
@@ -3372,6 +3600,7 @@
 
         loadSel();
         renderSelection();
+        loadStrategies();
         loadCatalog(false);
         loadRuns();
         renderSummary();

@@ -88,6 +88,33 @@
 .gpp-mode .t { font-weight: 650; font-size: 13.5px; margin: 6px 0 2px; }
 .gpp-mode .d { font-size: 12px; color: var(--text-muted); line-height: 1.35; }
 
+.gpp-strats { display: flex; flex-direction: column; gap: 8px; }
+.gpp-strat { background: var(--surface-2); border: 1.5px solid var(--hairline);
+  border-radius: 12px; padding: 11px 13px; cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease); }
+.gpp-strat:hover { border-color: var(--text-muted); }
+.gpp-strat.sel { border-color: var(--a1); background: color-mix(in srgb, var(--a-bright) 10%, transparent); }
+.gpp-strat.off { cursor: not-allowed; opacity: .62; }
+.gpp-strat.off:hover { border-color: var(--hairline); }
+.gpp-strat .hd { display: flex; align-items: center; gap: 9px; }
+.gpp-strat .ic { font-size: 17px; line-height: 1; }
+.gpp-strat .t { font-weight: 650; font-size: 13.5px; }
+.gpp-strat .w { font-size: 12px; color: var(--text-muted); line-height: 1.35; margin-top: 2px; }
+.gpp-strat .badge { margin-left: auto; font-size: 11.5px; padding: 2px 9px; border-radius: 999px;
+  white-space: nowrap; border: 1px solid var(--hairline); color: var(--text-muted); }
+.gpp-strat .badge.bad { color: var(--crit);
+  border-color: color-mix(in srgb, var(--crit) 45%, transparent);
+  background: color-mix(in srgb, var(--crit) 12%, transparent); }
+.gpp-strat .badge.warn { color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.gpp-strat .why { font-size: 12px; color: var(--text-muted); margin-top: 8px;
+  line-height: 1.45; border-top: 1px dashed var(--hairline); padding-top: 7px; }
+.gpp-strat .why .mono { font-family: var(--mono, ui-monospace, monospace); color: var(--text); }
+.gpp-strat .danger { font-size: 12px; margin-top: 8px; padding: 7px 9px; border-radius: 8px;
+  color: var(--crit); background: color-mix(in srgb, var(--crit) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--crit) 32%, transparent); }
+
 .gpp-params { margin-top: 14px; padding: 14px; background: var(--surface-2);
   border: 1px solid var(--hairline); border-radius: var(--radius-sm); display: none; }
 .gpp-params.show { display: block; }
@@ -330,23 +357,14 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
     <!-- STEP 2: HOW -->
     <div class="gpp-step">
         <div class="n">2 · КАК</div>
-        <h3>Режим копирования</h3>
-        <div class="gpp-modes" id="gppModes" data-toolkit="{{ toolkit or 'gp' }}">
-            <div class="gpp-mode sel" data-m="full"><div class="ic">📦</div>
-                <div class="t">Полное</div>
-                <div class="d">Вся таблица целиком. Первая загрузка.</div></div>
-            {% if (toolkit or 'gp') != 'pg' %}
-            <div class="gpp-mode" data-m="inc"><div class="ic">⚡</div>
-                <div class="t">Инкремент</div>
-                <div class="d">Догрузка разницы: по watermark или точно по ключу.</div></div>
-            <div class="gpp-mode" data-m="date"><div class="ic">📅</div>
-                <div class="t">По датам</div>
-                <div class="d">Срез за период. Колонки подберутся сами.</div></div>
-            <div class="gpp-mode" data-m="part"><div class="ic">🧩</div>
-                <div class="t">Партиции</div>
-                <div class="d">Только партиции, отличающиеся от источника.</div></div>
-            {% endif %}
+        <h3>Стратегия переноса</h3>
+        <div class="gpp-hint" style="margin: -4px 0 12px;">
+            Вопрос не в том, какой флаг передать gpcopy, а в том, чем
+            гарантируется отсутствие дублей при повторном запуске.
+            Применимость считается по ключам выбранных таблиц,
+            партиционированию и колонкам дат.
         </div>
+        <div class="gpp-strats" id="gppModes" data-toolkit="{{ toolkit or 'gp' }}"></div>
         {% if (toolkit or 'gp') == 'pg' %}
         <div class="gpp-hint">
             PostgreSQL: перенос идёт напрямую через COPY — доступно полное
@@ -355,24 +373,20 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
         </div>
         {% endif %}
 
-        <div class="gpp-params show" id="gppP-full">
+        <div class="gpp-params" id="gppP-full">
             <div class="gpp-row">
-                <div class="gpp-f"><label>Существующие таблицы</label>
+                <div class="gpp-f"><label>Что делать с уже существующими таблицами</label>
                     <select id="gppFullExisting">
-                        <option value="truncate">--truncate (перезаписать данные)</option>
-                        <option value="drop">--drop (пересоздать)</option>
-                        <option value="skip_existing">--skip-existing (пропустить)</option>
-                        <option value="append">--append (дописать)</option>
+                        <option value="truncate">Очистить и наполнить заново</option>
+                        <option value="drop">Пересоздать: DROP и CREATE по DDL источника</option>
+                        <option value="skip_existing">Не трогать, перенести только отсутствующие</option>
                     </select></div>
             </div>
+            <div class="gpp-hint">Замена идемпотентна по построению: приёмник приводится
+                к содержимому источника, чем бы он ни был заполнен до запуска.</div>
         </div>
 
         <div class="gpp-params" id="gppP-inc">
-            <div class="gpp-when" id="gppIncStrategy" style="margin-bottom: 12px;">
-                <div class="opt sel" data-s="watermark">⚡ По watermark (append, для логов)</div>
-                <div class="opt" data-s="key">🔁 По ключу (INSERT/UPDATE/DELETE)</div>
-            </div>
-
             <div id="gppIncWm">
                 <div class="gpp-row">
                     <div class="gpp-f" style="flex: 1;"><label>Watermark-колонки (приоритет, через запятую)</label>

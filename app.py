@@ -3043,6 +3043,11 @@ def api_gpcopy_strategies():
         child_parent = table_catalog.fetch_partition_pairs(connection_id)
         roles = table_catalog.classify_partition_roles(tables, child_parent)
 
+        # даты — одним запросом на всю выборку: поштучный
+        # get_date_columns_for_table открывает отдельное соединение на каждую
+        # таблицу, и на выборе целой схемы это сотни коннектов подряд
+        date_map = table_catalog.fetch_date_columns_bulk(connection_id, tables)
+
         out = {}
 
         for schema_name, table_name in tables:
@@ -3056,14 +3061,7 @@ def api_gpcopy_strategies():
             role = (roles.get(key) or {}).get("kind") or "regular"
             partitioned = role == "parent"
 
-            try:
-                date_columns = [
-                    row["column_name"]
-                    for row in get_date_columns_for_table(
-                        connection_id, schema_name, table_name)
-                ]
-            except Exception:
-                date_columns = []
+            date_columns = list(date_map.get(key) or [])
 
             has_key = bool(key_columns)
             has_date = bool(date_columns)
