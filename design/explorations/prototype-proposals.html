@@ -263,12 +263,44 @@ var S={
     {id:1,name:'dwh-gp-01',env:'prod',db:'adb',host:'10.4.12.7',role:'src',seg:96,tested:null,ver:null},
     {id:2,name:'GP_TEST',env:'test',db:'adb',host:'172.17.56.240',role:'both',seg:24,tested:null,ver:null}
   ],
-  copy:{src:2,dst:2,exist:'truncate',tables:12,previewed:false,ttl:0},
+  copy:{src:2,dst:2,strategy:null,when:'now',previewed:false,ttl:0,
+    sel:{1:true,2:true,3:true},keyEdit:null,from:'01.09',to:'07.09'},
   vac:{op:'VACUUM ANALYZE',destructive:false,selected:12},
   health:{loaded:false,secs:0,timer:null},
   grants:{scope:'запись',view:'матрица',gran:'схемы',stale:22},
   acl:{previewed:false}
 };
+
+/* Каталог таблиц с их реальными свойствами: объявленный логический ключ,
+   партиционирование, колонка даты. Именно эти три факта решают, какая
+   стратегия применима, а не флаг CLI. */
+var TABLES=[
+ {id:1,name:'public.fact_transactions',rows:'4.81 млрд',key:['txn_id'],part:true,date:'created_at',
+  cols:['txn_id','account_id','created_at','amount']},
+ {id:2,name:'public.fact_balances_daily',rows:'2.10 млрд',key:['account_id','report_dt'],part:true,date:'report_dt',
+  cols:['account_id','report_dt','balance']},
+ {id:3,name:'staging.load_events_raw',rows:'918 млн',key:null,part:false,date:'loaded_at',
+  cols:['event_id','payload','loaded_at','source']},
+ {id:4,name:'dwh_dds.d_account',rows:'41.9 млн',key:['account_id'],part:false,date:null,
+  cols:['account_id','client_id','opened_dt']},
+ {id:5,name:'mart.agg_channel_month',rows:'88.4 млн',key:null,part:false,date:null,
+  cols:['channel_id','month','revenue']},
+ {id:6,name:'audit.event_log_2019',rows:'12.9 млн',key:null,part:true,date:'ts',
+  cols:['ts','actor','action']}
+];
+var STRAT=[
+ {id:'full',name:'Полная замена',why:'приёмник очищается и наполняется заново',
+  need:function(){return null;},warn:'Текущее содержимое приёмных таблиц будет потеряно.'},
+ {id:'part',name:'Партиции целиком',why:'переносим партиции, которых в приёмнике нет',
+  need:function(x){return x.part?null:'не партиционирована';}},
+ {id:'window',name:'Окно с очисткой',why:'удалить диапазон в приёмнике и вставить его заново',
+  need:function(x){return x.date?null:'нет колонки даты';}},
+ {id:'key',name:'По ключу',why:'сопоставление в промежуточной таблице: обновить изменившиеся, вставить новые',
+  need:function(x){return (x.key&&x.key.length)?null:'ключ не объявлен';}},
+ {id:'except',name:'Окно и EXCEPT ALL',why:'разность мультимножеств в границах окна, ключ не требуется',
+  need:function(x){return x.date?null:'нет колонки даты';}}
+];
+function selTables(){ return TABLES.filter(function(x){return S.copy.sel[x.id];}); }
 
 var NAV=[
  {g:'DB OPERATIONS',items:[
@@ -409,7 +441,9 @@ copy:function(){
   var src=S.conns.filter(function(c){return c.id===S.copy.src;})[0];
   var dst=S.conns.filter(function(c){return c.id===S.copy.dst;})[0];
   var same=S.copy.src===S.copy.dst, prodDst=dst.env==='prod', blocked=same||prodDst;
-  var h='<section class="panel"><h2>Синхронизация данных</h2>'+
+  var sel=selTables();
+
+  var h='<section class="panel"><h2>1 &middot; Что переносим</h2>'+
     '<p class="sub">пара «источник → приёмник» — защищённый узел</p><div class="grid2">';
   [['src','Источник'],['dst','Приёмник']].forEach(function(p){
     h+='<div><span class="muted f13" style="font-weight:700">'+p[1]+'</span>'+
@@ -427,29 +461,104 @@ copy:function(){
       (same?'Приёмник совпадает с источником':'Production не может быть приёмником')+'</h3>'+
       '<p>Копирование заблокировано. '+(same?'Выберите другой приёмник.':'Инвариант продукта: production — источник, никогда приёмник.')+'</p></div>';
   }
-  h+='<div class="sep"></div><span class="muted f13" style="font-weight:700">С существующими таблицами</span>'+
-     '<div class="opsel" style="margin-top:7px">'+
-      [['truncate','очистить'],['append','дописать'],['skip','пропустить'],['drop','пересоздать']].map(function(o){
-        return '<button data-exist="'+o[0]+'" aria-pressed="'+(S.copy.exist===o[0])+'">'+o[1]+'</button>';
-      }).join('')+'</div>';
-  var ex={truncate:'будут очищены (--truncate)',append:'будут дополнены',skip:'будут пропущены',drop:'будут пересозданы (--drop)'};
-  h+='<div class="gate '+(blocked?'blocked':S.copy.previewed?'armed':'')+'">'+
-     '<p style="margin:0 0 11px">Скопировать <b>'+S.copy.tables+' таблиц</b> из <b>'+esc(src.name)+' ('+src.env+') / '+esc(src.db)+
-     '</b> в <b>'+esc(dst.name)+' ('+dst.env+') / '+esc(dst.db)+'</b> · режим полный · существующие таблицы <b>'+
-     ex[S.copy.exist]+'</b> · дополнительные аргументы: нет</p>';
+
+  h+='<div class="sep"></div><div class="row" style="justify-content:space-between">'+
+     '<span class="muted f13" style="font-weight:700">Таблицы &middot; выбрано '+sel.length+' из '+TABLES.length+'</span>'+
+     '<span class="muted f13">свойства проверены на источнике</span></div>'+
+     '<div class="scrollx"><table style="margin-top:9px"><thead><tr><th style="width:26px"></th><th>Таблица</th>'+
+     '<th style="width:92px">Строк</th><th>Ключ</th><th style="width:98px">Партиции</th>'+
+     '<th style="width:120px">Колонка даты</th></tr></thead><tbody>';
+  TABLES.forEach(function(x){
+    var on=!!S.copy.sel[x.id];
+    h+='<tr><td><input type="checkbox" data-tsel="'+x.id+'"'+(on?' checked':'')+
+       ' aria-label="'+esc(x.name)+'"></td>'+
+       '<td class="mono">'+esc(x.name)+'</td>'+
+       '<td class="mono muted f13">'+x.rows+'</td>'+
+       '<td>'+(x.key&&x.key.length
+          ? '<span class="chip ok">'+x.key.join(' + ')+'</span>'
+          : (S.copy.keyEdit===x.id
+             ? x.cols.map(function(c){return '<button class="chip acc" data-keycol="'+x.id+':'+c+'">'+c+'</button>';}).join(' ')
+             : '<button class="chip warn" data-setkey="'+x.id+'">не объявлен &middot; назначить</button>'))+'</td>'+
+       '<td>'+(x.part?'<span class="chip ok">да</span>':'<span class="chip">нет</span>')+'</td>'+
+       '<td>'+(x.date?'<span class="chip ok mono">'+x.date+'</span>':'<span class="chip">нет</span>')+'</td></tr>';
+  });
+  h+='</tbody></table></div>'+
+     '<p class="note">Ключ берётся не из pg_constraint, а объявляется оператором: в Greenplum уникальное ограничение возможно только если ключ дистрибуции входит в его состав, поэтому у большинства таблиц DWH его физически нет.</p></section>';
+
+  h+='<section class="panel" style="margin-top:13px"><h2>2 &middot; Как переносим</h2>'+
+     '<p class="sub">стратегия вместо флага CLI: вопрос оператора — чем гарантируется отсутствие дублей</p>';
+  if(!sel.length){
+    h+='<div class="alert"><p>Сначала выберите хотя бы одну таблицу.</p></div>';
+  } else {
+    STRAT.forEach(function(s){
+      var bad=sel.map(function(x){var q=s.need(x); return q?{n:x.name,r:q}:null;}).filter(Boolean);
+      var on=S.copy.strategy===s.id;
+      h+='<div class="conn" style="margin-top:9px'+(on?';border-color:var(--a);background:var(--a-soft)':'')+'">'+
+         '<div class="row" style="justify-content:space-between">'+
+         '<div style="min-width:0"><b>'+esc(s.name)+'</b>'+
+         '<div class="muted f13">'+esc(s.why)+'</div></div>'+
+         (bad.length
+           ? '<span class="chip crit">недоступна для '+bad.length+' из '+sel.length+'</span>'
+           : '<button class="btn '+(on?'solid':'ghost')+' sm" data-strat="'+s.id+'">'+(on?'выбрана':'выбрать')+'</button>')+
+         '</div>';
+      if(bad.length){
+        h+='<p class="note">'+bad.map(function(z){return '<span class="mono">'+esc(z.n)+'</span> — '+z.r;}).join(' &middot; ')+'</p>';
+      } else if(on&&s.warn){
+        h+='<div class="alert crit" style="margin-top:11px"><p>'+esc(s.warn)+'</p></div>';
+      }
+      h+='</div>';
+    });
+    if(S.copy.strategy==='window'||S.copy.strategy==='except'){
+      h+='<div class="row" style="margin-top:13px"><span class="muted f13" style="font-weight:700">Окно</span>'+
+         '<span class="chip mono">'+S.copy.from+' — '+S.copy.to+'</span>'+
+         '<span class="muted f13">границы окна определяют и стоимость, и идемпотентность</span></div>';
+    }
+  }
+  h+='</section>';
+
+  h+='<section class="panel" style="margin-top:13px"><h2>3 &middot; Когда</h2>'+
+     '<div class="opsel">'+[['now','Сейчас'],['cron','По расписанию']].map(function(o){
+       return '<button data-when="'+o[0]+'" aria-pressed="'+(S.copy.when===o[0])+'">'+o[1]+'</button>';
+     }).join('')+'</div>'+
+     (S.copy.when==='cron'
+       ? '<p class="note">Каждый день в 02:00 &middot; <span class="mono">0 2 * * *</span> &middot; при наложении пропустить &middot; ближайший запуск завтра 02:00</p>'
+       : '')+'</section>';
+
+  var st=STRAT.filter(function(s){return s.id===S.copy.strategy;})[0];
+  var ready=!blocked&&sel.length&&st&&!sel.some(function(x){return st.need(x);});
+  var sum;
+  if(!sel.length){ sum='Выберите таблицы на первом шаге.'; }
+  else if(!st){ sum='Выберите стратегию на втором шаге.'; }
+  else {
+    var route='из <b>'+esc(src.name)+' ('+src.env+') / '+esc(src.db)+'</b> в <b>'+
+      esc(dst.name)+' ('+dst.env+') / '+esc(dst.db)+'</b>';
+    sum={
+      full:'Полностью заменить <b>'+sel.length+' таблиц</b> '+route+' &middot; приёмные таблицы <b>будут очищены</b>',
+      part:'Перенести <b>партиции, отсутствующие в приёмнике</b>, для <b>'+sel.length+' таблиц</b> '+route+' &middot; дубли невозможны по построению',
+      window:'Заменить окно <b>'+S.copy.from+' — '+S.copy.to+'</b> в <b>'+sel.length+' таблицах</b> '+route+
+             ' &middot; в приёмнике диапазон <b>сначала удаляется</b>, затем вставляется заново &middot; повторный запуск не задвоит',
+      key:'Сопоставить <b>'+sel.length+' таблиц</b> '+route+' по объявленному ключу &middot; изменившиеся строки обновятся, новые вставятся &middot; дубли ключа в промежуточной таблице <b>остановят задачу</b>',
+      except:'Дописать недостающие строки в окне <b>'+S.copy.from+' — '+S.copy.to+'</b> для <b>'+sel.length+
+             ' таблиц</b> '+route+' методом <b>EXCEPT ALL</b> &middot; ключ не требуется, кратность сохраняется, повторный запуск не задвоит'
+    }[st.id]+' &middot; дополнительные аргументы: нет';
+  }
+
+  h+='<section class="panel" style="margin-top:13px"><div class="gate '+
+     (blocked?'blocked':S.copy.previewed?'armed':'')+'" style="margin-top:0">'+
+     '<p style="margin:0 0 11px">'+sum+'</p>';
   if(S.copy.previewed){
-    h+='<div class="row"><span class="chip ok">DDL проверен · расхождений нет</span>'+
+    h+='<div class="row"><span class="chip ok">DDL проверен &middot; расхождений нет</span>'+
        '<span class="chip warn">превью действительно ещё <b class="num" id="ttl">'+fmt(S.copy.ttl)+'</b></span></div>'+
-       '<div class="row" style="margin-top:11px"><button class="btn solid" id="runBtn">Запустить перенос</button>'+
+       '<div class="row" style="margin-top:11px"><button class="btn solid" id="runBtn">'+
+       (S.copy.when==='cron'?'Создать расписание':'Запустить перенос')+'</button>'+
        '<button class="btn ghost" id="resetPrev">Изменить задание</button></div>';
   } else {
-    h+='<div class="row"><button class="btn solid" id="prevBtn"'+(blocked?' disabled':'')+'>Проверить DDL</button>'+
-       '<button class="btn ghost" disabled>Запустить · сначала превью</button></div>';
+    h+='<div class="row"><button class="btn solid" id="prevBtn"'+(ready?'':' disabled')+'>Проверить DDL</button>'+
+       '<button class="btn ghost" disabled>'+(S.copy.when==='cron'?'Создать расписание':'Запустить')+' &middot; сначала превью</button></div>';
   }
-  h+='</div><p class="note">Было: «Запустить» — самая яркая кнопка, активна при совпадении источника и приёмника; резюме умалчивало о --truncate; превью стояло серым ghost рядом.</p></section>';
+  h+='</div><p class="note">Было: четыре флага CLI как равные варианты — очистить, дописать, пропустить, пересоздать. «Дописать» предлагалось и для таблиц без ключа, где оно молча задваивает данные при повторном запуске.</p></section>';
   return h;
 },
-
 vac:function(){
   var d=S.vac.destructive;
   var h='<section class="panel"><h2>Vacuum / Analyze</h2>'+
@@ -662,13 +771,19 @@ document.addEventListener('click',function(e){
     c2.tested=new Date().toTimeString().slice(0,5); c2.ver='GP 6.24'; render(); return;
   }
   if(d.pick){ var pk=d.pick.split(':'); S.copy[pk[0]]=+pk[1]; S.copy.previewed=false; render(); return; }
-  if(d.exist){ S.copy.exist=d.exist; S.copy.previewed=false; render(); return; }
   if(t.id==='prevBtn'){ S.copy.previewed=true; S.copy.ttl=900; render(); startTtl(); return; }
   if(t.id==='resetPrev'){ S.copy.previewed=false; render(); return; }
   if(t.id==='runBtn'){
-    S.runs.unshift({id:52,kind:'gpcopy: перенос',done:0,total:S.copy.tables,err:0,st:'running',when:'сейчас'});
+    S.runs.unshift({id:52,kind:'gpcopy: перенос',done:0,total:selTables().length,err:0,st:'running',when:'сейчас'});
     S.copy.previewed=false; go('gp','dash'); return;
   }
+  if(d.strat){ S.copy.strategy=d.strat; S.copy.previewed=false; render(); return; }
+  if(d.setkey){ S.copy.keyEdit=+d.setkey; render(); return; }
+  if(d.keycol){
+    var kc=d.keycol.split(':'), tb=TABLES.filter(function(x){return x.id===+kc[0];})[0];
+    tb.key=[kc[1]]; S.copy.keyEdit=null; S.copy.previewed=false; render(); return;
+  }
+  if(d.when){ S.copy.when=d.when; S.copy.previewed=false; render(); return; }
   if(d.op){ S.vac.op=d.op; render(); return; }
   if(t.id==='clearSel'){ S.vac.selected=0; render(); return; }
   if(t.id==='pickSel'){ S.vac.selected=12; render(); return; }
@@ -692,6 +807,10 @@ document.addEventListener('click',function(e){
   }
 });
 document.addEventListener('change',function(e){
+  if(e.target.dataset.tsel){
+    S.copy.sel[+e.target.dataset.tsel]=e.target.checked;
+    S.copy.previewed=false; render(); return;
+  }
   if(e.target.id==='destr'){
     S.vac.destructive=e.target.checked;
     if(!S.vac.destructive&&/FULL|FREEZE/.test(S.vac.op)) S.vac.op='VACUUM ANALYZE';
