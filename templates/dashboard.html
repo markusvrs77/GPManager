@@ -52,6 +52,8 @@
   display: flex; align-items: center; gap: 8px; }
 .gpd-panel h6 .cnt { color: var(--text-muted); font-weight: 600; font-size: 12px; }
 .gpd-panel h6 .lnk { margin-left: auto; font-size: 12.5px; font-weight: 500; }
+/* без отклика на курсор красный текст в шапке карточки не читается как ссылка */
+.gpd-panel h6 .lnk:hover { text-decoration: underline; text-underline-offset: 3px; }
 
 .gpd-empty { color: var(--text-muted); font-size: 13px; padding: 6px 0; }
 
