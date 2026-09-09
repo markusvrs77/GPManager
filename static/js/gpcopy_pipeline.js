@@ -200,7 +200,9 @@
             id: "window", icon: "📅", name: "Окно с очисткой", fact: "window",
             why: "диапазон дат сначала удаляется в приёмнике, затем " +
                  "вставляется заново — повторный запуск даёт тот же результат",
-            mode: "date", soon: true,
+            mode: "date",
+            danger: "Диапазон в приёмнике удаляется до загрузки. Если перенос " +
+                    "упадёт, окно останется пустым до повторного запуска.",
         },
         {
             id: "key", icon: "🔁", name: "По ключу", fact: "key",
@@ -2234,6 +2236,9 @@
                     source_connection_id: srcId(), dest_connection_id: dstId(),
                     date_from: range[0], date_to: range[1],
                     table_configs: cfgs,
+                    // окно с очисткой: снять диапазон в приёмнике перед
+                    // загрузкой — этим и держится идемпотентность
+                    window_cleanup: state.strategy === "window",
                     gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
                 });
             });

@@ -2183,6 +2183,33 @@ def run_gpcopy_job(job_id):
         else:
             include_tables_file = include_file
 
+        # Стратегия «окно с очисткой»: снимаем диапазон в приёмнике и тут же
+        # грузим его заново. Порядок именно такой — иначе новые строки было
+        # бы не отличить от старых и очистка снесла бы и их.
+        #
+        # Между DELETE и загрузкой окно в приёмнике пусто: если gpcopy
+        # упадёт, диапазон останется снятым до повторного запуска. Это цена
+        # идемпотентности, и поэтому очистка включается явным флагом.
+        if mode == "date_filter" and to_bool(
+                config.get("window_cleanup"), False):
+            window_from = (config.get("date_from") or "").strip()
+            window_to = (config.get("date_to") or "").strip()
+
+            print(
+                "[gpcopy] очистка окна {} .. {} в приёмнике: {} таблиц".format(
+                    window_from, window_to, len(table_configs))
+            )
+
+            cleared = clear_window_in_dest(
+                dest_connection_id, table_configs, window_from, window_to,
+            )
+
+            for schema_name, table_name, rows in cleared:
+                print(
+                    "[gpcopy] очищено {}.{}: {} строк".format(
+                        schema_name, table_name, rows)
+                )
+
         cmd = build_gpcopy_command(
             gpcopy_path=gpcopy_path,
             source_host=source_host,
