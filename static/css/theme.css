@@ -466,6 +466,49 @@ input[type="radio"] { accent-color: var(--a1); width: 16px; height: 16px; cursor
   gap: var(--space-3);
 }
 
+/* Шторка нативного <select> (см. js/gp_select.js).
+   Живёт в body с position: fixed, чтобы её не обрезал предок с
+   overflow: hidden; координаты выставляет скрипт. */
+.gpsel-menu {
+  position: fixed;
+  z-index: 1100;              /* поверх модалок: 1090 — верхний слой шелла */
+  display: none;
+  overflow-y: auto;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  font-family: var(--font-ui);
+  font-size: 13.5px;
+  color: var(--text);
+}
+.gpsel-menu.show { display: block; }
+
+.gpsel-opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  line-height: 1.3;
+}
+.gpsel-opt.on { background: var(--row-hover); }
+.gpsel-opt.cur { font-weight: 600; }
+.gpsel-opt.off { opacity: .45; cursor: not-allowed; }
+.gpsel-ck { color: var(--a1); font-weight: 700; }
+
+.gpsel-grp {
+  padding: 8px 10px 4px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
 /* reduced motion */
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
