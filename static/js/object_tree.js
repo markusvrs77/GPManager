@@ -36,13 +36,15 @@ async function loadObjectTree() {
         if (status) {
             status.textContent = "Connection не выбран.";
         } else {
-            alert("Connection не выбран или select connection_id не найден.");
+            window.gpToast(
+                "Connection не выбран или select connection_id не найден.",
+                "warning");
         }
         return;
     }
 
     if (!treeContainer) {
-        alert("Не найден блок id='objectTree' в HTML.");
+        window.gpToast("Не найден блок id='objectTree' в HTML.", "danger");
         return;
     }
 

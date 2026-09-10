@@ -278,7 +278,7 @@
                 if (window.gpToast) {
                     gpToast(d.ok ? "Копия удалена с диска" : d.message,
                         d.ok ? "success" : "error");
-                } else if (!d.ok) { alert(d.message); }
+                } else if (!d.ok) { gpToast(d.message, "danger"); }
                 gpbLoad();
             });
         };
@@ -336,7 +336,7 @@
             }).then(function (r) { return r.json(); }).then(function (d) {
                 if (!d.ok) {
                     if (window.gpToast) { gpToast(d.message, "error"); }
-                    else { alert(d.message); }
+                    else { gpToast(d.message, "danger"); }
                     return;
                 }
                 openRestore = null;
@@ -407,7 +407,7 @@
                 gpToast(d.ok
                     ? "На диске " + d.found + " копий, добавлено в реестр: " + d.added
                     : d.message, d.ok ? "success" : "error");
-            } else if (!d.ok) { alert(d.message); }
+            } else if (!d.ok) { gpToast(d.message, "danger"); }
 
             gpbLoad();
         }).catch(function (e) {

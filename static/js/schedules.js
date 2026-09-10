@@ -196,6 +196,10 @@ const SCH_LABELS = {
 // расписания разделены по тулкитам: у Postgres Toolkit свои
 const PG_FAMILY = ["pg_dump", "pg_restore"];
 
+// id -> имя расписания: в диалоге удаления номер ничего не говорит,
+// а имя оператор узнаёт
+const schNames = {};
+
 function currentToolkit() {
     const sel = document.getElementById("schJobType");
     return (sel && sel.dataset.toolkit) || "gp";
@@ -217,6 +221,7 @@ async function loadSchedules() {
 
     body.innerHTML = schedules.map((s) => {
         const id = parseInt(s.id, 10);
+        schNames[id] = s.name;
         return '<div class="sch-item' + (s.enabled ? "" : " off") + '">' +
             '<div class="sch-main">' +
                 '<div class="sch-top">' +
@@ -250,16 +255,35 @@ async function toggleSchedule(id) {
 async function runNow(id) {
     const data = await api("/api/schedules/" + id + "/run-now", "POST");
     if (data.ok && !data.started) {
-        alert("Не запущено: " + (data.reason || "overlap"));
+        const why = data.reason === "overlap"
+            ? "предыдущий запуск ещё не завершился"
+            : (data.reason || "причина не указана");
+        window.gpToast("Не запущено: " + why, "warning");
     }
     setTimeout(loadSchedules, 500);
 }
 
 async function deleteSchedule(id) {
-    if (!confirm("Удалить расписание #" + id + "?")) return;
+    const name = schNames[id];
+
+    const yes = await window.gpConfirm(
+        name
+            ? "Расписание «" + name + "» будет удалено. История его запусков "
+              + "останется, но запускаться оно больше не будет."
+            : "Расписание #" + id + " будет удалено.",
+        { title: "Удалить расписание?", confirmText: "Удалить", danger: true }
+    );
+
+    if (!yes) { return; }
+
     await api("/api/schedules/" + id, "DELETE");
     document.getElementById("runsCard").style.display = "none";
     loadSchedules();
+    window.gpToast(
+        name ? "Расписание «" + name + "» удалено"
+             : "Расписание #" + id + " удалено",
+        "success"
+    );
 }
 
 async function showRuns(id) {
