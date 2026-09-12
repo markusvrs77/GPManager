@@ -58,6 +58,7 @@ from modules.gpcopy import (
     run_gpcopy_job,
     build_gpcopy_date_include_json_preview,
     build_retry_config,
+    clear_window_in_dest,
     get_date_columns_for_table,
     get_gpcopy_date_columns,
 )
@@ -1776,6 +1777,20 @@ def api_gpcopy_start_date():
             for k in ("append", "truncate", "drop", "skip_existing")
         )
 
+        # «Окно с очисткой»: диапазон снимается в приёмнике перед загрузкой,
+        # поэтому вставка обязана быть append. С truncate задача стёрла бы
+        # таблицу целиком, а не окно, и очистка теряет всякий смысл.
+        window_cleanup = bool(data.get("window_cleanup"))
+
+        if window_cleanup and any(
+                bool(data.get(k))
+                for k in ("truncate", "drop", "skip_existing")):
+            return jsonify({
+                "ok": False,
+                "message": "window_cleanup несовместим с truncate, drop и "
+                           "skip_existing: очищается окно, а не таблица",
+            }), 400
+
         job_id = create_job(
             job_type="gpcopy",
             connection_id=int(source_connection_id),
@@ -1790,11 +1805,13 @@ def api_gpcopy_start_date():
 
                 "date_from": date_from,
                 "date_to": date_to,
+                "window_cleanup": window_cleanup,
 
                 "jobs": data.get("jobs") or 4,
                 "on_segment_threshold": data.get("on_segment_threshold", -1),
 
-                "append": bool(data.get("append")) or not flag_chosen,
+                "append": bool(data.get("append")) or window_cleanup
+                          or not flag_chosen,
                 "truncate": bool(data.get("truncate")),
                 "drop": bool(data.get("drop")),
                 "skip_existing": bool(data.get("skip_existing")),
@@ -3043,6 +3060,11 @@ def api_gpcopy_strategies():
         child_parent = table_catalog.fetch_partition_pairs(connection_id)
         roles = table_catalog.classify_partition_roles(tables, child_parent)
 
+        # даты — одним запросом на всю выборку: поштучный
+        # get_date_columns_for_table открывает отдельное соединение на каждую
+        # таблицу, и на выборе целой схемы это сотни коннектов подряд
+        date_map = table_catalog.fetch_date_columns_bulk(connection_id, tables)
+
         out = {}
 
         for schema_name, table_name in tables:
@@ -3056,14 +3078,7 @@ def api_gpcopy_strategies():
             role = (roles.get(key) or {}).get("kind") or "regular"
             partitioned = role == "parent"
 
-            try:
-                date_columns = [
-                    row["column_name"]
-                    for row in get_date_columns_for_table(
-                        connection_id, schema_name, table_name)
-                ]
-            except Exception:
-                date_columns = []
+            date_columns = list(date_map.get(key) or [])
 
             has_key = bool(key_columns)
             has_date = bool(date_columns)
@@ -3098,6 +3113,52 @@ def api_gpcopy_strategies():
             }
 
         return jsonify({"ok": True, "tables": out})
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/gpcopy/window-preview", methods=["POST"])
+def api_gpcopy_window_preview():
+    """
+    Сколько строк снесёт очистка окна в приёмнике — по таблицам.
+
+    Считает и откатывается: ни одной строки не удаляет. Нужен затем, что
+    «окно с очисткой» — первая стратегия, которая трогает данные, и цифру
+    оператор должен увидеть до запуска, а не в логе после.
+    """
+    data = request.get_json(silent=True) or {}
+
+    try:
+        dest_connection_id = int(
+            data.get("dest_connection_id")
+            or data["connection_id"]
+        )
+        table_configs = data.get("table_configs") or data.get("tables") or []
+
+        if not table_configs:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        report = clear_window_in_dest(
+            dest_connection_id,
+            table_configs,
+            data.get("date_from"),
+            data.get("date_to"),
+            dry_run=True,
+        )
+
+        rows = [
+            {"schema": schema_name, "table": table_name, "rows": affected}
+            for schema_name, table_name, affected in report
+        ]
+
+        return jsonify({
+            "ok": True,
+            "tables": rows,
+            "total_rows": sum(r["rows"] for r in rows),
+        })
 
     except (KeyError, ValueError) as e:
         return jsonify({"ok": False, "message": str(e)}), 400

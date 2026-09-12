@@ -640,7 +640,7 @@ function loadDistributionRecommendation() {
 }
 
 
-function applyRecommendedDistribution() {
+async function applyRecommendedDistribution() {
     if (!lastDistributionRecommendation) {
         showReorganizeMessage("Сначала получи recommendation.", "warning");
         return;
@@ -654,14 +654,18 @@ function applyRecommendedDistribution() {
         return;
     }
 
-    const msg = `
-Будет выполнено:
-${lastDistributionRecommendation.recommended_sql_preview}
+    const rec = lastDistributionRecommendation;
+    const table = `${rec.schema_name}.${rec.table_name}`;
 
-Продолжить?
-`;
+    const yes = await window.gpConfirm(
+        `Таблица ${table} будет перераспределена. На больших таблицах это `
+        + `надолго блокирует запись.\n\nБудет выполнено:\n`
+        + `${rec.recommended_sql_preview}`,
+        { title: "Сменить распределение?", confirmText: "Выполнить",
+          danger: true }
+    );
 
-    if (!confirm(msg)) {
+    if (!yes) {
         return;
     }
 

@@ -954,7 +954,9 @@ async function loadSegmentDetail(resultId) {
         const data = await response.json();
 
         if (!data.ok) {
-            alert(data.message || "Failed to load segment detail");
+            window.gpToast(
+                data.message || "Не удалось загрузить детализацию по сегментам",
+                "danger");
             return;
         }
 
@@ -984,7 +986,7 @@ async function loadSegmentDetail(resultId) {
 
     } catch (e) {
         console.error(e);
-        alert("Error: " + e);
+        window.gpToast("Ошибка: " + e, "danger");
     }
 }
 
@@ -1100,7 +1102,9 @@ function makeSkewStatusBadge(status) {
 ============================================================ */
 function exportSkewExcel() {
     if (!currentJobId) {
-        alert("Нет Skew job для выгрузки. Сначала запусти Skew Analysis или дождись восстановления последнего job.");
+        window.gpToast(
+            "Нет Skew job для выгрузки. Сначала запусти Skew Analysis "
+            + "или дождись восстановления последнего job.", "warning");
         return;
     }
 

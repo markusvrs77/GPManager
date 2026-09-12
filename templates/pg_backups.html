@@ -267,7 +267,7 @@
             }).then(function (r) { return r.json(); }).then(function (d) {
                 if (!d.ok) {
                     if (window.gpToast) { gpToast(d.message, "error"); }
-                    else { alert(d.message); }
+                    else { gpToast(d.message, "danger"); }
                     return;
                 }
                 openRestore = null;
