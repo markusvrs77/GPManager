@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <title>Нет доступа — Opsentri</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
     <script>
     (function () {
         try {
@@ -14,16 +15,31 @@
     </script>
     <link rel="stylesheet" href="/static/fonts/fonts.css">
     <link rel="stylesheet" href="/static/css/tokens.css">
-    <link rel="stylesheet" href="/static/css/auth.css?v=2">
+    <link rel="stylesheet" href="/static/css/auth.css?v=3">
 </head>
 <body class="auth-body">
 <main class="auth-card">
     <h1 class="auth-title">Нет доступа</h1>
     <p class="auth-lead">{{ message }}</p>
+
+    {% if sections %}
+    <p class="auth-lead">Открытые вам разделы:</p>
+    <nav class="auth-links">
+        {% for href, label in sections %}
+        <a href="{{ href }}">{{ label }}</a>
+        {% endfor %}
+    </nav>
+    {% else %}
     <p class="auth-lead">
-        Если раздел нужен для работы — попросите администратора выдать право.
+        Ни один раздел вам пока не выдан. Попросите администратора
+        открыть нужные — до этого делать здесь нечего.
     </p>
-    <a class="auth-submit auth-submit-link" href="/">На главную</a>
+    {% endif %}
+
+    <form class="auth-alt" method="post" action="/logout">
+        <button type="submit">Выйти{% if current_user %} из учётной записи
+            «{{ current_user.username }}»{% endif %}</button>
+    </form>
 </main>
 </body>
 </html>

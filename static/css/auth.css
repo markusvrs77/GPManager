@@ -154,6 +154,33 @@
     text-decoration: none;
 }
 
+/* Ссылки на открытые разделы: из отказа должен быть выход не только
+   наружу, но и туда, куда человеку всё-таки можно. */
+.auth-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .45rem;
+    margin: 0 0 var(--space-2);
+}
+
+.auth-links a {
+    padding: .38rem .7rem;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-pill);
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: .8125rem;
+    font-weight: 550;
+    text-decoration: none;
+    transition: border-color var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease);
+}
+
+.auth-links a:hover {
+    border-color: color-mix(in srgb, var(--a1) 55%, transparent);
+    color: var(--a2);
+}
+
 .auth-alt {
     margin-top: var(--space-4);
     text-align: center;

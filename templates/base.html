@@ -161,17 +161,21 @@
                 <span class="sec-chev" aria-hidden="true">▾</span>
             </button>
             <nav class="sb-sec-body" id="secBody-dbops">
+                {% if can_toolkit('gp') %}
                 <a href="/" class="tk-item{% if tk == 'gp' %} active{% endif %}"
                    title="Greenplum Toolkit">
                     <span class="tk-logo gp">GP</span>
                     <span class="lbl">Greenplum Toolkit</span>
                     <span class="nav-badge" id="gpNavSyncBadge" style="display: none;"></span>
                 </a>
+                {% endif %}
+                {% if can_toolkit('pg') %}
                 <a href="/connections?toolkit=pg" class="tk-item{% if tk == 'pg' %} active{% endif %}"
                    title="Postgres Toolkit">
                     <span class="tk-logo pg">PG</span>
                     <span class="lbl">Postgres Toolkit</span>
                 </a>
+                {% endif %}
                 <div class="tk-item stub" title="Oracle Toolkit">
                     <span class="tk-logo ora">OR</span>
                     <span class="lbl">Oracle Toolkit</span>
@@ -191,7 +195,7 @@
                 <span class="sec-chev" aria-hidden="true">▾</span>
             </button>
             <nav class="sb-sec-body" id="secBody-flow">
-                {% if can('kafka.view') %}
+                {% if can_toolkit('kafka') %}
                 <a href="/kafka" class="tk-item{% if tk == 'kafka' %} active{% endif %}"
                    title="Kafka">
                     <span class="tk-logo kf">KF</span>

@@ -206,3 +206,66 @@ def test_user_without_clusters_reaches_none_of_them(as_user):
 
 def test_admin_is_not_limited_by_cluster_lists(client):
     assert client.get("/api/objects/tree?connection_id=1").status_code != 403
+
+
+# ------------------------------------------------- некуда идти
+
+def test_kafka_only_user_is_taken_to_kafka_not_to_a_refusal(as_user):
+    """
+    «/» открывают все и всегда.
+
+    Пользователь с одной только Kafka упирался в отказ по Dashboard, а
+    единственная кнопка на той странице вела обратно в тот же отказ.
+    """
+    c = as_user("viewer", overrides={
+        code: False for code in _all_view_caps() if code != "kafka.view"
+    })
+
+    response = c.get("/")
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "/kafka"
+
+
+def test_kafka_only_user_actually_reaches_kafka(as_user):
+    c = as_user("viewer", overrides={
+        code: False for code in _all_view_caps() if code != "kafka.view"
+    })
+
+    assert c.get("/", follow_redirects=True).status_code == 200
+
+
+def test_refusal_page_offers_a_way_out(as_user):
+    """Из отказа должен быть выход: в открытый раздел или наружу."""
+    c = as_user("viewer", overrides={
+        code: False for code in _all_view_caps() if code != "kafka.view"
+    })
+
+    body = c.get("/users").get_data(as_text=True)
+
+    assert "/kafka" in body
+    assert "/logout" in body
+
+
+def test_user_without_anything_can_still_log_out(as_user):
+    c = as_user("viewer", overrides={code: False for code in _all_view_caps()})
+
+    response = c.get("/")
+
+    assert response.status_code == 403
+    assert "/logout" in response.get_data(as_text=True)
+
+
+def test_sidebar_hides_a_toolkit_with_nothing_in_it(as_user):
+    c = as_user("viewer", overrides={
+        code: False for code in _all_view_caps() if code != "kafka.view"
+    })
+
+    body = c.get("/kafka").get_data(as_text=True)
+
+    assert "Greenplum Toolkit" not in body
+    assert "Kafka" in body
+
+
+def _all_view_caps():
+    return [code for code in sec.CAPABILITY_CODES if code.endswith(".view")]

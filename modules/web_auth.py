@@ -12,7 +12,7 @@ before_request по карте POLICY. Причина простая: маршр
 """
 
 from flask import (
-    current_app, g, has_request_context, jsonify, redirect, request, url_for,
+    g, has_request_context, jsonify, redirect, render_template, request, url_for,
 )
 
 import modules.security as sec
@@ -248,6 +248,69 @@ def user_can(capability):
     return capability in current_capabilities()
 
 
+# ------------------------------------------------------------
+# Куда человеку можно
+# ------------------------------------------------------------
+
+# (возможность, адрес, название). Порядок задаёт и точку входа: человек
+# без Dashboard попадает в первый открытый ему раздел, а не в отказ.
+SECTIONS = (
+    ("dashboard.view", "/", "Dashboard"),
+    ("health.view", "/health", "Здоровье БД"),
+    ("connections.view", "/connections", "Подключения"),
+    ("objects.view", "/objects", "Объекты"),
+    ("sync.view", "/gpcopy", "Синхронизация"),
+    ("maintenance.view", "/maintenance", "Maintenance"),
+    ("vacuum.view", "/vacuum", "Vacuum / Analyze"),
+    ("backups.view", "/backups", "Резервные копии"),
+    ("grants.view", "/grants", "Гранты"),
+    ("schedules.view", "/schedules", "Расписания"),
+    ("kafka.view", "/kafka", "Kafka"),
+    ("users.manage", "/users", "Пользователи"),
+)
+
+# Какие возможности оживляют набор инструментов в боковом меню. Набор,
+# из которого не открыть ни одной страницы, показывать незачем.
+TOOLKIT_CAPS = {
+    "gp": ("dashboard.view", "health.view", "connections.view",
+           "objects.view", "sync.view", "maintenance.view", "vacuum.view",
+           "backups.view", "grants.view", "schedules.view"),
+    "pg": ("connections.view", "sync.view", "backups.view",
+           "schedules.view"),
+    "kafka": ("kafka.view",),
+}
+
+
+def available_sections():
+    """Разделы, открытые текущему пользователю."""
+    caps = current_capabilities()
+
+    return [(path, label) for code, path, label in SECTIONS if code in caps]
+
+
+def landing_path():
+    """
+    Первая страница, куда человека можно пустить, или None.
+
+    Нужна потому, что «/» — общая точка входа, а Dashboard есть не у
+    всех: без этого пользователь с одной только Kafka упирался в отказ,
+    из которого единственная кнопка вела обратно в тот же отказ.
+    """
+    caps = current_capabilities()
+
+    for code, path, _label in SECTIONS:
+        if code in caps:
+            return path
+
+    return None
+
+
+def can_toolkit(name):
+    caps = current_capabilities()
+
+    return any(code in caps for code in TOOLKIT_CAPS.get(name, ()))
+
+
 def scope_connections(connections):
     """
     Оставляет только те кластеры, что выданы пользователю.
@@ -331,8 +394,11 @@ def _deny(status, message, login_redirect=False):
     if login_redirect:
         return redirect(url_for("auth.login_page", next=request.path))
 
-    template = current_app.jinja_env.get_template("forbidden.html")
-    return current_app.make_response((template.render(message=message), status))
+    # render_template, а не jinja_env напрямую: странице отказа нужны
+    # и текущий пользователь, и список открытых ему разделов
+    return render_template(
+        "forbidden.html", message=message, sections=available_sections(),
+    ), status
 
 
 def install_auth(app):
@@ -384,6 +450,14 @@ def install_auth(app):
             return _deny(403, "Доступ к этому разделу не настроен")
 
         if not user_can(required):
+            # «/» открывают все и всегда — значит, он обязан вести туда,
+            # куда этому человеку можно, а не в отказ
+            if endpoint == "dashboard_page" and not _wants_json():
+                target = landing_path()
+
+                if target and target != request.path:
+                    return redirect(target)
+
             return _deny(403, "Недостаточно прав: {}".format(
                 sec.capability_label(required)))
 
@@ -399,6 +473,7 @@ def install_auth(app):
         return {
             "current_user": current_user(),
             "can": user_can,
+            "can_toolkit": can_toolkit,
         }
 
     return app
