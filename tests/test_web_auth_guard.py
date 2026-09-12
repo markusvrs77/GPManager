@@ -269,3 +269,38 @@ def test_sidebar_hides_a_toolkit_with_nothing_in_it(as_user):
 
 def _all_view_caps():
     return [code for code in sec.CAPABILITY_CODES if code.endswith(".view")]
+
+
+def test_sidebar_hides_the_coming_soon_stubs(as_user):
+    """
+    Заглушки «скоро» открыть нельзя никому — в меню им не место.
+
+    Проверяется на администраторе: если пометки исчезли даже у него,
+    значит, скрыты они по существу, а не по нехватке прав.
+    """
+    body = as_user("admin").get("/", follow_redirects=True).get_data(as_text=True)
+
+    assert "скоро" not in body
+    assert "Oracle Toolkit" not in body
+    assert "Pipelines" not in body
+
+
+def test_empty_direction_takes_its_heading_with_it(as_user):
+    """Заголовок над пустым списком — такая же ложь, как ссылка в отказ."""
+    c = as_user("viewer", overrides={
+        code: False for code in _all_view_caps() if code != "kafka.view"
+    })
+
+    body = c.get("/kafka").get_data(as_text=True)
+
+    assert "DB Operations" not in body
+    assert "Data Flow" in body
+
+
+def test_viewer_without_jobs_does_not_poll_the_jobs_api(as_user):
+    """Иначе наблюдатель ловил бы 403 каждые тридцать секунд."""
+    c = as_user("viewer", overrides={
+        code: False for code in _all_view_caps() if code != "kafka.view"
+    })
+
+    assert "/api/jobs/active" not in c.get("/kafka").get_data(as_text=True)

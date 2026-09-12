@@ -153,7 +153,15 @@
             </a>
         </div>
 
+        {#- В меню только то, что человеку выдано. Заглушки «скоро» —
+            обещания, а не разделы: открыть в них нечего никому, поэтому
+            их здесь нет. Вернуть на место — поставить true. -#}
+        {% set show_soon = false %}
+        {% set has_dbops = can_toolkit('gp') or can_toolkit('pg') or show_soon %}
+        {% set has_flow = can_toolkit('kafka') or show_soon %}
+
         <div class="sb-body">
+            {% if has_dbops %}
             <!-- Направление: DB Operations -->
             <button class="sb-sec-hd top" id="secHd-dbops" data-sec="dbops"
                     type="button" aria-expanded="true" aria-controls="secBody-dbops">
@@ -176,6 +184,7 @@
                     <span class="lbl">Postgres Toolkit</span>
                 </a>
                 {% endif %}
+                {% if show_soon %}
                 <div class="tk-item stub" title="Oracle Toolkit">
                     <span class="tk-logo ora">OR</span>
                     <span class="lbl">Oracle Toolkit</span>
@@ -186,8 +195,11 @@
                     <span class="lbl">MySQL Toolkit</span>
                     <span class="soon">скоро</span>
                 </div>
+                {% endif %}
             </nav>
+            {% endif %}
 
+            {% if has_flow %}
             <!-- Направление: Data Flow -->
             <button class="sb-sec-hd top" id="secHd-flow" data-sec="flow"
                     type="button" aria-expanded="true" aria-controls="secBody-flow">
@@ -202,6 +214,7 @@
                     <span class="lbl">Kafka</span>
                 </a>
                 {% endif %}
+                {% if show_soon %}
                 <div class="tk-item stub" title="Debezium">
                     <span class="tk-logo dz">DZ</span>
                     <span class="lbl">Debezium</span>
@@ -217,7 +230,9 @@
                     <span class="lbl">Pipelines</span>
                     <span class="soon">скоро</span>
                 </div>
+                {% endif %}
             </nav>
+            {% endif %}
         </div>
 
         <div class="sb-foot">
@@ -401,6 +416,9 @@
     });
 
     /* ---------- running sync jobs, badged on the Greenplum toolkit ---------- */
+    {#- Опрос заводится только при видимом наборе Greenplum: иначе
+        наблюдатель с одной Kafka ловил бы 403 каждые тридцать секунд. -#}
+    {% if can_toolkit('gp') and can('jobs.view') %}
     function pollSyncBadge() {
         fetch('/api/jobs/active')
             .then(function (r) { return r.json(); })
@@ -418,6 +436,7 @@
     }
     pollSyncBadge();
     setInterval(pollSyncBadge, 30000);
+    {% endif %}
 })();
 </script>
 
