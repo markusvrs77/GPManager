@@ -102,8 +102,16 @@
   line-height: 1.5; }
 .us-dlg-gap { margin-top: 12px; }
 
-@media (max-width: 900px) {
+/* Порог высокий не случайно: сайдбар съедает 220 пикселей, и при
+   девятистах окна разбору остаётся треть — роль в выпадающем списке
+   уже не помещается целиком. Список уходит наверх заранее. */
+@media (max-width: 1150px) {
   .us { grid-template-columns: minmax(0, 1fr); }
+  .us-list { flex-direction: row; flex-wrap: wrap; }
+  .us-row { width: auto; min-width: 200px; }
+  .us-add { width: auto; }
+}
+@media (max-width: 640px) {
   .us-grid { grid-template-columns: minmax(0, 1fr); }
 }
 </style>
