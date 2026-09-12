@@ -113,6 +113,51 @@ html[data-sb="mini"] .gp-sb .sb-foot { justify-content: center; }
 .gp-sb .gp-theme svg { width: 18px; height: 18px; }
 .gp-sb .gp-theme:hover { background: var(--surface-2); color: var(--text); }
 
+/* ---------- карточка учётной записи в подвале сайдбара ---------- */
+/* Имя и роль всегда на виду: путать боевой стенд с тестовым и не знать,
+   под кем ты в нём сидишь, — разные беды, и вторая решается дёшево. */
+.gp-sb .gp-me { position: relative; flex: 1; min-width: 0; }
+
+.gp-sb .gp-me-btn { display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 7px; border: 1px solid transparent; border-radius: 11px;
+  background: none; color: inherit; cursor: pointer; text-align: left;
+  transition: background var(--dur-fast), border-color var(--dur-fast); }
+.gp-sb .gp-me-btn:hover { background: var(--surface-2);
+  border-color: var(--hairline); }
+
+.gp-sb .gp-me-av { width: 28px; height: 28px; border-radius: 50%; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800; color: #fff; background: var(--accent-grad); }
+
+.gp-sb .gp-me-nm { min-width: 0; line-height: 1.25; }
+.gp-sb .gp-me-nm b { display: block; font-size: 12.5px; font-weight: 700;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gp-sb .gp-me-nm span { font-size: 11px; color: var(--text-muted); }
+
+/* в свёрнутом сайдбаре остаётся только кружок с инициалами */
+html[data-sb="mini"] .gp-sb .sb-foot { flex-direction: column-reverse;
+  align-items: center; gap: 6px; }
+html[data-sb="mini"] .gp-sb .gp-me { flex: none; }
+html[data-sb="mini"] .gp-sb .gp-me-nm { display: none; }
+
+/* Меню переносится в body и позиционируется скриптом: у сайдбара
+   overflow: hidden, и всплывающее меню внутри него просто обрезалось. */
+.gp-me-menu { position: fixed; min-width: 180px; padding: 5px;
+  border: 1px solid var(--hairline); border-radius: 12px;
+  background: var(--surface); box-shadow: var(--shadow); z-index: 1090; }
+.gp-me-menu[hidden] { display: none; }
+
+.gp-me-menu a,
+.gp-me-menu button { display: block; width: 100%; padding: 7px 10px;
+  border: 0; border-radius: 8px; background: none; color: var(--text);
+  font: inherit; font-size: 13px; text-align: left; text-decoration: none;
+  cursor: pointer; }
+.gp-me-menu a:hover,
+.gp-me-menu button:hover { background: var(--row-hover); }
+.gp-me-menu form { margin: 4px 0 0; padding-top: 4px;
+  border-top: 1px solid var(--hairline); }
+.gp-me-menu form button { color: var(--crit); }
+
 /* ---- content links under the theme, not browser blue ---- */
 .gp-shell-content a:not(.btn) { color: var(--a2); text-decoration: none; }
 .gp-shell-content a:not(.btn):hover { color: var(--a2); text-decoration: underline; }
@@ -202,5 +247,9 @@ html[data-sb="mini"] .gp-sb .sb-foot { justify-content: center; }
   .gp-sb .sb-head { flex-direction: column; gap: 10px; padding: 12px 8px; }
   .gp-sb .sb-sec-hd { justify-content: center; padding: 6px 0; }
   .gp-sb .tk-item { justify-content: center; padding: 9px 0; }
+  .gp-sb .sb-foot { flex-direction: column-reverse; align-items: center;
+    gap: 6px; }
+  .gp-sb .gp-me { flex: none; }
+  .gp-sb .gp-me-nm { display: none; }
   .gp-tabs { margin-left: 0; width: 100%; }
 }

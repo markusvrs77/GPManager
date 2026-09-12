@@ -32,7 +32,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css') }}?v=2">
 </head>
 <body>
 
@@ -78,6 +78,8 @@
     {% set page_title, page_crumb = 'Резервные копии', 'gpbackup / gprestore' %}
 {% elif p.startswith('/health') %}
     {% set page_title, page_crumb = 'Здоровье БД', 'аналитика без нагрузки' %}
+{% elif p.startswith('/users') %}
+    {% set page_title, page_crumb = 'Пользователи', 'учётные записи, права и доступ к кластерам' %}
 {% elif p.startswith('/objects') %}
     {% set page_title, page_crumb = 'Объекты', 'дерево схем и таблиц' %}
 {% elif p.startswith('/skew') or p.startswith('/reorganize') %}
@@ -100,32 +102,32 @@
 {% if tk == 'gp' %}
     {% set tk_name = 'Greenplum Toolkit' %}
     {% set tk_tabs = [
-        ('/',            'Dashboard',        p in ['/', '/dashboard']),
-        ('/health',      'Здоровье БД',      p.startswith('/health')),
-        ('/connections', 'Подключения',      p.startswith('/connections')),
-        ('/gpcopy',      'Синхронизация',    p.startswith('/gpcopy')),
-        ('/maintenance', 'Maintenance',      p.startswith('/maintenance')),
-        ('/vacuum',      'Vacuum / Analyze', p.startswith('/vacuum')),
-        ('/backups',     'Резервные копии',  p.startswith('/backups')),
-        ('/grants',      'Гранты',           p.startswith('/grants')),
-        ('/schedules',   'Расписания',       p.startswith('/schedules'))
+        ('/',            'Dashboard',        p in ['/', '/dashboard'],          'dashboard.view'),
+        ('/health',      'Здоровье БД',      p.startswith('/health'),           'health.view'),
+        ('/connections', 'Подключения',      p.startswith('/connections'),      'connections.view'),
+        ('/gpcopy',      'Синхронизация',    p.startswith('/gpcopy'),           'sync.view'),
+        ('/maintenance', 'Maintenance',      p.startswith('/maintenance'),      'maintenance.view'),
+        ('/vacuum',      'Vacuum / Analyze', p.startswith('/vacuum'),           'vacuum.view'),
+        ('/backups',     'Резервные копии',  p.startswith('/backups'),          'backups.view'),
+        ('/grants',      'Гранты',           p.startswith('/grants'),           'grants.view'),
+        ('/schedules',   'Расписания',       p.startswith('/schedules'),        'schedules.view')
     ] %}
 {% elif tk == 'pg' %}
     {% set tk_name = 'Postgres Toolkit' %}
     {% set tk_tabs = [
-        ('/connections?toolkit=pg', 'Подключения',     p.startswith('/connections')),
-        ('/gpcopy?toolkit=pg',      'Синхронизация',   p.startswith('/gpcopy')),
-        ('/pg/backups',             'Резервные копии', p.startswith('/pg/backups')),
-        ('/schedules?toolkit=pg',   'Расписания',      p.startswith('/schedules'))
+        ('/connections?toolkit=pg', 'Подключения',     p.startswith('/connections'), 'connections.view'),
+        ('/gpcopy?toolkit=pg',      'Синхронизация',   p.startswith('/gpcopy'),      'sync.view'),
+        ('/pg/backups',             'Резервные копии', p.startswith('/pg/backups'),  'backups.view'),
+        ('/schedules?toolkit=pg',   'Расписания',      p.startswith('/schedules'),   'schedules.view')
     ] %}
 {% else %}
     {% set tk_name = 'Kafka' %}
     {% set tk_tabs = [
-        ('/kafka',             'Обзор кластера',   p == '/kafka'),
-        ('/kafka/connections', 'Подключения',      p.startswith('/kafka/connections')),
-        ('/kafka/groups',      'Консьюмер-группы', p.startswith('/kafka/groups')),
-        ('/kafka/messages',    'Сообщения',        p.startswith('/kafka/messages')),
-        ('/kafka/acl',         'Доступы',          p.startswith('/kafka/acl'))
+        ('/kafka',             'Обзор кластера',   p == '/kafka',                      'kafka.view'),
+        ('/kafka/connections', 'Подключения',      p.startswith('/kafka/connections'), 'kafka.view'),
+        ('/kafka/groups',      'Консьюмер-группы', p.startswith('/kafka/groups'),      'kafka.view'),
+        ('/kafka/messages',    'Сообщения',        p.startswith('/kafka/messages'),    'kafka.view'),
+        ('/kafka/acl',         'Доступы',          p.startswith('/kafka/acl'),         'kafka.view')
     ] %}
 {% endif %}
 
@@ -151,7 +153,15 @@
             </a>
         </div>
 
+        {#- В меню только то, что человеку выдано. Заглушки «скоро» —
+            обещания, а не разделы: открыть в них нечего никому, поэтому
+            их здесь нет. Вернуть на место — поставить true. -#}
+        {% set show_soon = false %}
+        {% set has_dbops = can_toolkit('gp') or can_toolkit('pg') or show_soon %}
+        {% set has_flow = can_toolkit('kafka') or show_soon %}
+
         <div class="sb-body">
+            {% if has_dbops %}
             <!-- Направление: DB Operations -->
             <button class="sb-sec-hd top" id="secHd-dbops" data-sec="dbops"
                     type="button" aria-expanded="true" aria-controls="secBody-dbops">
@@ -159,17 +169,22 @@
                 <span class="sec-chev" aria-hidden="true">▾</span>
             </button>
             <nav class="sb-sec-body" id="secBody-dbops">
+                {% if can_toolkit('gp') %}
                 <a href="/" class="tk-item{% if tk == 'gp' %} active{% endif %}"
                    title="Greenplum Toolkit">
                     <span class="tk-logo gp">GP</span>
                     <span class="lbl">Greenplum Toolkit</span>
                     <span class="nav-badge" id="gpNavSyncBadge" style="display: none;"></span>
                 </a>
+                {% endif %}
+                {% if can_toolkit('pg') %}
                 <a href="/connections?toolkit=pg" class="tk-item{% if tk == 'pg' %} active{% endif %}"
                    title="Postgres Toolkit">
                     <span class="tk-logo pg">PG</span>
                     <span class="lbl">Postgres Toolkit</span>
                 </a>
+                {% endif %}
+                {% if show_soon %}
                 <div class="tk-item stub" title="Oracle Toolkit">
                     <span class="tk-logo ora">OR</span>
                     <span class="lbl">Oracle Toolkit</span>
@@ -180,8 +195,11 @@
                     <span class="lbl">MySQL Toolkit</span>
                     <span class="soon">скоро</span>
                 </div>
+                {% endif %}
             </nav>
+            {% endif %}
 
+            {% if has_flow %}
             <!-- Направление: Data Flow -->
             <button class="sb-sec-hd top" id="secHd-flow" data-sec="flow"
                     type="button" aria-expanded="true" aria-controls="secBody-flow">
@@ -189,11 +207,14 @@
                 <span class="sec-chev" aria-hidden="true">▾</span>
             </button>
             <nav class="sb-sec-body" id="secBody-flow">
+                {% if can_toolkit('kafka') %}
                 <a href="/kafka" class="tk-item{% if tk == 'kafka' %} active{% endif %}"
                    title="Kafka">
                     <span class="tk-logo kf">KF</span>
                     <span class="lbl">Kafka</span>
                 </a>
+                {% endif %}
+                {% if show_soon %}
                 <div class="tk-item stub" title="Debezium">
                     <span class="tk-logo dz">DZ</span>
                     <span class="lbl">Debezium</span>
@@ -209,10 +230,40 @@
                     <span class="lbl">Pipelines</span>
                     <span class="soon">скоро</span>
                 </div>
+                {% endif %}
             </nav>
+            {% endif %}
         </div>
 
         <div class="sb-foot">
+            {% if current_user %}
+            <div class="gp-me" id="gpMe">
+                <button class="gp-me-btn" id="gpMeBtn" type="button"
+                        aria-haspopup="true" aria-expanded="false"
+                        title="{{ current_user.username }}">
+                    <span class="gp-me-av">
+                        {{ current_user.username[:2] | upper }}</span>
+                    <span class="gp-me-nm">
+                        <b>{{ current_user.username }}</b>
+                        <span>{{ {'viewer': 'наблюдатель',
+                                  'operator': 'оператор',
+                                  'admin': 'администратор'}
+                                 .get(current_user.role, current_user.role) }}</span>
+                    </span>
+                </button>
+
+                <div class="gp-me-menu" id="gpMeMenu" hidden>
+                    {% if can('users.manage') %}
+                    <a href="/users">Пользователи</a>
+                    {% endif %}
+                    <a href="/account/password">Сменить пароль</a>
+                    <form method="post" action="/logout">
+                        <button type="submit">Выйти</button>
+                    </form>
+                </div>
+            </div>
+            {% endif %}
+
             <button class="gp-theme" id="gpThemeBtn" type="button"
                     aria-label="Переключить светлую или тёмную тему">
                 <svg viewBox="0 0 20 20" fill="none" stroke="currentColor"
@@ -233,8 +284,10 @@
             </div>
 
             <nav class="gp-tabs" aria-label="Функции набора {{ tk_name }}">
-                {% for href, label, is_active in tk_tabs %}
+                {% for href, label, is_active, need in tk_tabs %}
+                {% if can(need) %}
                 <a href="{{ href }}"{% if is_active %} aria-current="page"{% endif %}>{{ label }}</a>
+                {% endif %}
                 {% endfor %}
             </nav>
         </header>
@@ -279,6 +332,50 @@
     }
     update();
 
+    /* ---------- меню учётной записи ---------- */
+    var meBtn = document.getElementById('gpMeBtn');
+    var meMenu = document.getElementById('gpMeMenu');
+
+    if (meBtn && meMenu) {
+        /* у сайдбара overflow: hidden — меню внутри него обрезается,
+           поэтому оно живёт в body и позиционируется по кнопке */
+        document.body.appendChild(meMenu);
+
+        function placeMenu() {
+            var r = meBtn.getBoundingClientRect();
+            meMenu.style.left = Math.max(8, r.left) + 'px';
+            meMenu.style.top = 'auto';
+            meMenu.style.bottom =
+                (window.innerHeight - r.top + 6) + 'px';
+        }
+
+        meBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            if (meMenu.hidden) { placeMenu(); }
+            meMenu.hidden = !meMenu.hidden;
+            meBtn.setAttribute('aria-expanded', meMenu.hidden ? 'false' : 'true');
+        });
+
+        window.addEventListener('resize', function () {
+            if (!meMenu.hidden) { placeMenu(); }
+        });
+
+        document.addEventListener('click', function (e) {
+            if (!meMenu.hidden && !meMenu.contains(e.target)) {
+                meMenu.hidden = true;
+                meBtn.setAttribute('aria-expanded', 'false');
+            }
+        });
+
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && !meMenu.hidden) {
+                meMenu.hidden = true;
+                meBtn.setAttribute('aria-expanded', 'false');
+                meBtn.focus();
+            }
+        });
+    }
+
     /* ---------- burger: collapse the sidebar to a rail ---------- */
     var sbBtn = document.getElementById('gpSbToggle');
     function sbUpdate() {
@@ -319,6 +416,9 @@
     });
 
     /* ---------- running sync jobs, badged on the Greenplum toolkit ---------- */
+    {#- Опрос заводится только при видимом наборе Greenplum: иначе
+        наблюдатель с одной Kafka ловил бы 403 каждые тридцать секунд. -#}
+    {% if can_toolkit('gp') and can('jobs.view') %}
     function pollSyncBadge() {
         fetch('/api/jobs/active')
             .then(function (r) { return r.json(); })
@@ -336,6 +436,7 @@
     }
     pollSyncBadge();
     setInterval(pollSyncBadge, 30000);
+    {% endif %}
 })();
 </script>
 
