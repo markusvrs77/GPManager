@@ -1,0 +1,41 @@
+{% extends "auth_base.html" %}
+
+{% block title %}Первичная настройка — Opsentri{% endblock %}
+{% block heading %}Первый администратор{% endblock %}
+
+{% block lead %}
+<p class="auth-lead">
+    В системе ещё нет ни одной учётной записи. Создайте администратора —
+    дальше учётные записи заводит он, самостоятельной регистрации здесь нет.
+</p>
+<p class="auth-lead auth-lead-warn">
+    Эта страница открыта без пароля и закроется сразу после создания
+    администратора. Пройдите её до того, как приложение станет доступно
+    остальным.
+</p>
+{% endblock %}
+
+{% block form %}
+<form class="auth-form" method="post" action="{{ url_for('auth.setup_submit') }}">
+    <label class="auth-field">
+        <span>Имя пользователя</span>
+        <input type="text" name="username" autocomplete="username"
+               value="{{ username or '' }}" autofocus required>
+    </label>
+
+    <label class="auth-field">
+        <span>Пароль</span>
+        <input type="password" name="password" autocomplete="new-password"
+               minlength="10" required>
+        <small>не короче 10 символов</small>
+    </label>
+
+    <label class="auth-field">
+        <span>Пароль ещё раз</span>
+        <input type="password" name="password2" autocomplete="new-password"
+               minlength="10" required>
+    </label>
+
+    <button class="auth-submit" type="submit">Создать и войти</button>
+</form>
+{% endblock %}

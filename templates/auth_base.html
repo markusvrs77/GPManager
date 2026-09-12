@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>{% block title %}Opsentri{% endblock %}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23cc3a0d'/%3E%3Cpath d='M8.5 21a7.5 7.5 0 1 1 15 0' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3Cpath d='M16 19.5l4.6-5.6' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='19.5' r='2.1' fill='white'/%3E%3C/svg%3E">
+
+    <script>
+    (function () {
+        try {
+            var t = localStorage.getItem('gp-theme');
+            if (t) { document.documentElement.setAttribute('data-theme', t); }
+        } catch (e) {}
+    })();
+    </script>
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='fonts/fonts.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}?v=2">
+</head>
+<body class="auth-body">
+
+<main class="auth-card">
+    <div class="auth-brand">
+        <span class="auth-logo" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#fff"
+                 stroke-width="2" stroke-linecap="round">
+                <path d="M4.5 16.5a8.5 8.5 0 1 1 15 0"/>
+                <path d="M12 15l4.4-5.4"/>
+                <circle cx="12" cy="15" r="1.7" fill="#fff" stroke="none"/>
+            </svg>
+        </span>
+        <span class="auth-name">Opsentri</span>
+    </div>
+
+    <h1 class="auth-title">{% block heading %}{% endblock %}</h1>
+    {% block lead %}{% endblock %}
+
+    {% if error %}
+    <div class="auth-error" role="alert">{{ error }}</div>
+    {% endif %}
+
+    {% block form %}{% endblock %}
+</main>
+
+</body>
+</html>

@@ -116,8 +116,26 @@ app = Flask(__name__)
 
 # вкладка Kafka живёт отдельным Blueprint: app.py и так слишком большой
 from kafka_routes import kafka_bp  # noqa: E402
+from auth_routes import auth_bp  # noqa: E402
+from users_routes import users_bp  # noqa: E402
 
 app.register_blueprint(kafka_bp)
+app.register_blueprint(auth_bp)
+app.register_blueprint(users_bp)
+
+from modules.web_auth import install_auth, scope_connections  # noqa: E402
+
+install_auth(app)
+
+
+# Все четырнадцать мест в app.py читают список кластеров через это имя.
+# Фильтр здесь, в одной точке, надёжнее четырнадцати правок: новый
+# маршрут получит его даром, а забыть его будет уже негде.
+_all_connections = list_connections
+
+
+def list_connections():  # noqa: F811
+    return scope_connections(_all_connections())
 
 
 @app.route("/")

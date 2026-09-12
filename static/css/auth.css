@@ -1,0 +1,173 @@
+/* Экраны входа, первичной настройки и отказа в доступе.
+
+   Свой файл, а не theme.css: эти страницы не наследуют оболочку с
+   сайдбаром и вкладками, и тащить ради них весь shell.css незачем. */
+
+.auth-body {
+    box-sizing: border-box;
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-4);
+    /* цвет отдельной строкой: в сокращённой записи background цвет из
+       var() рядом с градиентами разбирается не везде, и фон пропадал */
+    background-color: var(--bg);
+    background-image:
+        radial-gradient(70rem 40rem at 15% -10%, var(--mesh-a), transparent 60%),
+        radial-gradient(60rem 36rem at 110% 110%, var(--mesh-b), transparent 60%);
+    font-family: var(--font-ui);
+    color: var(--text);
+}
+
+.auth-body *, .auth-body *::before, .auth-body *::after { box-sizing: border-box; }
+
+.auth-card {
+    width: 100%;
+    max-width: 25rem;
+    padding: var(--space-6);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+}
+
+.auth-brand {
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+    margin-bottom: var(--space-4);
+}
+
+.auth-logo {
+    width: 2rem;
+    height: 2rem;
+    display: grid;
+    place-items: center;
+    border-radius: .6rem;
+    background: var(--accent-grad);
+}
+
+.auth-logo svg { width: 1.25rem; height: 1.25rem; }
+
+.auth-name {
+    font-weight: 650;
+    letter-spacing: .01em;
+}
+
+.auth-title {
+    margin: 0 0 var(--space-2);
+    font-size: 1.35rem;
+    font-weight: 620;
+    letter-spacing: -.01em;
+}
+
+.auth-lead {
+    margin: 0 0 var(--space-3);
+    font-size: .875rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+}
+
+/* Предупреждение про открытую страницу настройки должно читаться как
+   предупреждение, а не как подпись мелким шрифтом. */
+.auth-lead-warn {
+    padding: .625rem .75rem;
+    border-left: 3px solid var(--warn);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+    color: var(--text);
+}
+
+.auth-error {
+    margin: 0 0 var(--space-3);
+    padding: .625rem .75rem;
+    border-left: 3px solid var(--crit);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--crit) 14%, transparent);
+    font-size: .875rem;
+}
+
+.auth-form {
+    display: grid;
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+}
+
+.auth-field {
+    display: grid;
+    gap: .35rem;
+}
+
+.auth-field > span {
+    font-size: .8125rem;
+    font-weight: 550;
+    color: var(--text-muted);
+}
+
+.auth-field > small {
+    font-size: .75rem;
+    color: var(--text-muted);
+}
+
+.auth-field input {
+    width: 100%;
+    padding: .58rem .7rem;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text);
+    font: inherit;
+    font-size: .9375rem;
+    transition: border-color var(--dur-fast) var(--ease),
+                box-shadow var(--dur-fast) var(--ease);
+}
+
+.auth-field input:focus {
+    outline: none;
+    border-color: var(--a1);
+    box-shadow: 0 0 0 3px var(--ring);
+}
+
+.auth-submit {
+    margin-top: var(--space-1);
+    padding: .62rem 1rem;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: var(--accent-grad);
+    color: #fff;
+    font: inherit;
+    font-size: .9375rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter var(--dur-fast) var(--ease);
+}
+
+.auth-submit:hover { filter: brightness(1.07); }
+.auth-submit:active { filter: brightness(.95); }
+
+.auth-submit-link {
+    display: block;
+    margin-top: var(--space-4);
+    text-align: center;
+    text-decoration: none;
+}
+
+.auth-alt {
+    margin-top: var(--space-4);
+    text-align: center;
+}
+
+.auth-alt button {
+    border: 0;
+    background: none;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: .8125rem;
+    text-decoration: underline;
+    text-underline-offset: .2em;
+    cursor: pointer;
+}
+
+.auth-alt button:hover { color: var(--text); }

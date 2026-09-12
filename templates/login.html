@@ -1,0 +1,24 @@
+{% extends "auth_base.html" %}
+
+{% block title %}Вход — Opsentri{% endblock %}
+{% block heading %}Вход{% endblock %}
+
+{% block form %}
+<form class="auth-form" method="post" action="{{ url_for('auth.login_submit') }}">
+    <input type="hidden" name="next" value="{{ next }}">
+
+    <label class="auth-field">
+        <span>Пользователь</span>
+        <input type="text" name="username" autocomplete="username"
+               value="{{ username or '' }}" autofocus required>
+    </label>
+
+    <label class="auth-field">
+        <span>Пароль</span>
+        <input type="password" name="password" autocomplete="current-password"
+               required>
+    </label>
+
+    <button class="auth-submit" type="submit">Войти</button>
+</form>
+{% endblock %}

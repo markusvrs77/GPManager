@@ -38,6 +38,9 @@ CAPABILITIES = [
     ("health.view", "Здоровье БД — просмотр"),
     ("connections.view", "Подключения — просмотр"),
     ("connections.edit", "Подключения — изменять"),
+    ("objects.view", "Объекты — просмотр"),
+    ("jobs.view", "Задачи — просмотр"),
+    ("jobs.stop", "Задачи — останавливать"),
     ("sync.view", "Синхронизация — просмотр"),
     ("sync.run", "Синхронизация — запускать перенос"),
     ("maintenance.view", "Maintenance — просмотр"),
@@ -67,7 +70,7 @@ ROLE_DEFAULTS = {
     "viewer": VIEW_CAPS,
     "operator": VIEW_CAPS | frozenset({
         "sync.run", "maintenance.run", "vacuum.run", "backups.run",
-        "schedules.edit",
+        "schedules.edit", "jobs.stop",
     }),
     "admin": CAPABILITY_CODES,
 }
@@ -88,6 +91,21 @@ _SCRYPT_N = 2 ** 14
 _SCRYPT_R = 8
 _SCRYPT_P = 1
 _DKLEN = 32
+
+
+MIN_PASSWORD_LENGTH = 10
+
+
+def check_password_policy(password):
+    """Единственное требование — длина.
+
+    Требования вида «цифра, заглавная и спецсимвол» гонят людей к
+    «Parol123!» и к бумажке под клавиатурой; длина даёт больше стойкости
+    и не мешает пользоваться менеджером паролей.
+    """
+    if not password or len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(
+            "Пароль короче {} символов".format(MIN_PASSWORD_LENGTH))
 
 
 def hash_password(password):

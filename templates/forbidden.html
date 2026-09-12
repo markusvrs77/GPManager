@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>Нет доступа — Opsentri</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script>
+    (function () {
+        try {
+            var t = localStorage.getItem('gp-theme');
+            if (t) { document.documentElement.setAttribute('data-theme', t); }
+        } catch (e) {}
+    })();
+    </script>
+    <link rel="stylesheet" href="/static/fonts/fonts.css">
+    <link rel="stylesheet" href="/static/css/tokens.css">
+    <link rel="stylesheet" href="/static/css/auth.css?v=2">
+</head>
+<body class="auth-body">
+<main class="auth-card">
+    <h1 class="auth-title">Нет доступа</h1>
+    <p class="auth-lead">{{ message }}</p>
+    <p class="auth-lead">
+        Если раздел нужен для работы — попросите администратора выдать право.
+    </p>
+    <a class="auth-submit auth-submit-link" href="/">На главную</a>
+</main>
+</body>
+</html>
