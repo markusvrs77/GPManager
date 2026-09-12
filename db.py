@@ -425,6 +425,70 @@ def init_db():
             """
         )
 
+        # --- пользователи и права (см. modules/security.py) ---
+        # Пароль хранится только как scrypt-хэш, токен сессии — только как
+        # SHA-256: файл базы не должен давать возможности войти.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL
+                    CHECK (role IN ('viewer', 'operator', 'admin')),
+                is_active INTEGER NOT NULL DEFAULT 1,
+                must_change_password INTEGER NOT NULL DEFAULT 1,
+                failed_logins INTEGER NOT NULL DEFAULT 0,
+                locked_until TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+
+        # Точечные исключения поверх роли: allowed=1 добавляет возможность,
+        # allowed=0 отбирает выданную ролью.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_permissions (
+                user_id INTEGER NOT NULL,
+                capability TEXT NOT NULL,
+                allowed INTEGER NOT NULL,
+                PRIMARY KEY (user_id, capability)
+            )
+            """
+        )
+
+        # Какие кластеры доступны. Пусто означает «ни одного»: правило
+        # «пусто = все» удобно ровно до первого забытого доступа к PROD.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_connections (
+                user_id INTEGER NOT NULL,
+                connection_id INTEGER NOT NULL,
+                PRIMARY KEY (user_id, connection_id)
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                ip TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_user_sessions_user
+            ON user_sessions(user_id)
+            """
+        )
+
     ensure_column_exists(
         "skew_results",
         "job_id",
