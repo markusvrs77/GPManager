@@ -552,6 +552,156 @@ def delete_acls(cluster, filter_spec):
         _close(admin)
 
 
+# ------------------------------------------------------------
+# Пользователи SCRAM
+# ------------------------------------------------------------
+
+def _scram_enums(kafka):
+    from kafka.admin import (
+        ScramMechanism, UserScramCredentialDeletion,
+        UserScramCredentialUpsertion,
+    )
+
+    return {
+        "mechanism": ScramMechanism,
+        "upsert": UserScramCredentialUpsertion,
+        "delete": UserScramCredentialDeletion,
+    }
+
+
+def _scram_mechanism(enums, name):
+    """'SCRAM-SHA-512' → ScramMechanism.SCRAM_SHA_512."""
+    try:
+        return enums["mechanism"][str(name).replace("-", "_")]
+    except KeyError:
+        raise KafkaUnavailable("Механизм не поддержан клиентом: {}".format(name))
+
+
+def _scram_unsupported(cluster, error):
+    """
+    Брокер старше 2.7 про SCRAM через API не знает.
+
+    Отличить это от «кластер лежит» важно: в первом случае лечится
+    обновлением или kafka-configs.sh, во втором — сетью.
+    """
+    text = str(error)
+
+    if "UnsupportedVersion" in type(error).__name__ or "UNSUPPORTED" in text.upper():
+        return KafkaUnavailable(
+            "Брокеры не умеют управлять SCRAM по сети: нужен Kafka 2.7 "
+            "или новее, иначе только kafka-configs.sh на самом брокере")
+
+    return None
+
+
+def fetch_scram_users(cluster):
+    """Все, у кого заведены SCRAM-учётки."""
+    try:
+        kafka = _import_kafka()
+    except ImportError:
+        raise KafkaUnavailable(INSTALL_HINT)
+
+    admin = open_admin(cluster)
+
+    try:
+        answer = admin.describe_user_scram_credentials()
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        unsupported = _scram_unsupported(cluster, error)
+
+        if unsupported:
+            raise unsupported
+
+        raise _request_failed(cluster, error)
+    finally:
+        _close(admin)
+
+    users = []
+
+    for username, entry in sorted((answer or {}).items()):
+        # ошибка по одному пользователю не должна прятать остальных
+        if (entry or {}).get("error"):
+            users.append({"username": username, "error": str(entry["error"]),
+                          "mechanisms": []})
+            continue
+
+        users.append({
+            "username": username,
+            "mechanisms": (entry or {}).get("credential_infos") or [],
+        })
+
+    return users
+
+
+def upsert_scram_user(cluster, spec):
+    """Заводит учётку или меняет ей пароль — для Kafka это одно действие."""
+    try:
+        kafka = _import_kafka()
+    except ImportError:
+        raise KafkaUnavailable(INSTALL_HINT)
+
+    enums = _scram_enums(kafka)
+
+    alteration = enums["upsert"](
+        user=spec["username"],
+        mechanism=_scram_mechanism(enums, spec["mechanism"]),
+        password=spec["password"].encode("utf-8"),
+        iterations=spec["iterations"],
+    )
+
+    return _apply_scram(cluster, spec["username"], [alteration])
+
+
+def delete_scram_user(cluster, username, mechanism):
+    """Снимает у пользователя один механизм."""
+    try:
+        kafka = _import_kafka()
+    except ImportError:
+        raise KafkaUnavailable(INSTALL_HINT)
+
+    enums = _scram_enums(kafka)
+
+    alteration = enums["delete"](
+        user=username,
+        mechanism=_scram_mechanism(enums, mechanism),
+    )
+
+    return _apply_scram(cluster, username, [alteration])
+
+
+def _apply_scram(cluster, username, alterations):
+    """
+    Отправляет изменения и проверяет ответ по каждому пользователю.
+
+    Проверка обязательна: alter_user_scram_credentials не бросает
+    исключение, когда брокер отказал, — он складывает отказ в ответ.
+    Без разбора ответа страница рапортовала бы об успехе на пустом месте.
+    """
+    admin = open_admin(cluster)
+
+    try:
+        answer = admin.alter_user_scram_credentials(alterations)
+    except KafkaUnavailable:
+        raise
+    except Exception as error:
+        unsupported = _scram_unsupported(cluster, error)
+
+        if unsupported:
+            raise unsupported
+
+        raise _request_failed(cluster, error)
+    finally:
+        _close(admin)
+
+    problem = (answer or {}).get(username)
+
+    if problem:
+        raise KafkaUnavailable("Брокер отказал: {}".format(problem))
+
+    return True
+
+
 def _as_bytes(value):
     if value is None or value == "":
         return None

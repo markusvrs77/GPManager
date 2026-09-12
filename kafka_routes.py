@@ -25,14 +25,17 @@ from modules.kafka_client import (
     create_topic,
     delete_acls,
     delete_group,
+    delete_scram_user,
     delete_topic,
     fetch_acls,
+    fetch_scram_users,
     fetch_topic_configs,
     library_available,
     ping,
     read_messages,
     reset_offsets,
     send_message,
+    upsert_scram_user,
 )
 from modules.kafka_clusters import (
     create_cluster,
@@ -49,6 +52,15 @@ from modules.kafka_groups import (
     find_group,
 )
 from modules.kafka_messages import build_read_plan, format_record
+from modules.kafka_users import (
+    MECHANISMS,
+    MIN_PASSWORD_LENGTH,
+    audit_details,
+    build_user_spec,
+    format_user,
+    validate_mechanism,
+    validate_username,
+)
 from modules.kafka_overview import collect_overview
 from modules.kafka_topics import (
     assert_can_grow,
@@ -535,6 +547,8 @@ def kafka_acl_page():
         pattern_types=PATTERN_TYPES,
         permissions=PERMISSIONS,
         presets=sorted(PRESETS.items()),
+        mechanisms=MECHANISMS,
+        min_password_length=MIN_PASSWORD_LENGTH,
     )
 
 
@@ -566,6 +580,100 @@ def api_kafka_acls_list(cluster_id):
 
     return jsonify({"ok": True, "anonymous": _is_anonymous(cluster),
                     "acls": [format_acl(a) for a in rows]})
+
+
+# ------------------------------------------------------------
+# Пользователи SCRAM
+# ------------------------------------------------------------
+
+@kafka_bp.route("/api/kafka/clusters/<int:cluster_id>/users",
+                methods=["GET"])
+def api_kafka_users(cluster_id):
+    try:
+        cluster = _cluster_or_404(cluster_id)
+    except LookupError as error:
+        return _fail(error, 404)
+
+    try:
+        rows = fetch_scram_users(cluster)
+    except KafkaUnavailable as error:
+        return _fail(error, 502)
+
+    return jsonify({
+        "ok": True,
+        "anonymous": _is_anonymous(cluster),
+        "users": [format_user(r["username"], r["mechanisms"]) for r in rows],
+    })
+
+
+@kafka_bp.route("/api/kafka/clusters/<int:cluster_id>/users",
+                methods=["POST"])
+def api_kafka_user_upsert(cluster_id):
+    body = request.get_json(silent=True) or {}
+
+    try:
+        cluster = _cluster_or_404(cluster_id)
+        spec = build_user_spec(body)
+    except LookupError as error:
+        return _fail(error, 404)
+    except ValueError as error:
+        return _fail(error)
+
+    # в журнал уходит заявка без пароля: он не должен пережить запрос
+    details = audit_details(spec)
+
+    try:
+        upsert_scram_user(cluster, spec)
+    except KafkaUnavailable as error:
+        audit_write(cluster_id, "upsert_kafka_user", spec["username"],
+                    details, "error")
+        return _fail(error, 502)
+
+    audit_write(cluster_id, "upsert_kafka_user", spec["username"],
+                details, "ok")
+
+    return jsonify({
+        "ok": True,
+        "user": {
+            "username": spec["username"],
+            "principal": "User:{}".format(spec["username"]),
+            "mechanism": spec["mechanism"],
+        },
+        # учётка сама по себе не даёт ничего — про это легко забыть
+        "hint": "Пользователь заведён. Прав у него пока нет: выдайте "
+                "правила на принципал User:{}".format(spec["username"]),
+    })
+
+
+@kafka_bp.route("/api/kafka/clusters/<int:cluster_id>/users/<username>",
+                methods=["DELETE"])
+def api_kafka_user_delete(cluster_id, username):
+    try:
+        cluster = _cluster_or_404(cluster_id)
+        name = validate_username(username)
+        mechanism = validate_mechanism(request.args.get("mechanism"))
+    except LookupError as error:
+        return _fail(error, 404)
+    except ValueError as error:
+        return _fail(error)
+
+    details = {"username": name, "mechanism": mechanism}
+
+    try:
+        delete_scram_user(cluster, name, mechanism)
+    except KafkaUnavailable as error:
+        audit_write(cluster_id, "delete_kafka_user", name, details, "error")
+        return _fail(error, 502)
+
+    audit_write(cluster_id, "delete_kafka_user", name, details, "ok")
+
+    return jsonify({
+        "ok": True,
+        # правила переживают учётку и достанутся тёзке, если его заведут
+        "hint": "Учётная запись снята. Правила на User:{} остались — "
+                "отзовите их отдельно, если они больше не нужны."
+                .format(name),
+    })
 
 
 def _grant_specs(body):

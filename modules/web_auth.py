@@ -187,6 +187,7 @@ POLICY = {
     "kafka.api_kafka_topic_configs": "kafka.view",
     "kafka.api_kafka_messages_read": "kafka.view",
     "kafka.api_kafka_acls_list": "kafka.view",
+    "kafka.api_kafka_users": "kafka.view",
     "kafka.api_kafka_cluster_create": "kafka.edit",
     "kafka.api_kafka_cluster_update": "kafka.edit",
     "kafka.api_kafka_cluster_delete": "kafka.edit",
@@ -199,6 +200,9 @@ POLICY = {
     "kafka.api_kafka_message_send": "kafka.edit",
     "kafka.api_kafka_acl_grant": "kafka.edit",
     "kafka.api_kafka_acl_revoke": "kafka.edit",
+    # завести SCRAM-учётку значит выдать вход в кластер
+    "kafka.api_kafka_user_upsert": "kafka.edit",
+    "kafka.api_kafka_user_delete": "kafka.edit",
 }
 
 
