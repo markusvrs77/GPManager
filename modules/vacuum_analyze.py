@@ -162,7 +162,14 @@ def run_vacuum_analyze_job(job_id):
 
     action = str(config.get("action") or "VACUUM_ANALYZE").upper().strip()
 
-    conn = None
+    # параллельные воркеры: каждому своё подключение,
+    # таблицы разбираются из общей очереди
+    try:
+        workers = int(config.get("workers") or 1)
+    except Exception:
+        workers = 1
+
+    workers = max(1, min(workers, 8))
 
     try:
         mark_job_running(job_id)
@@ -172,36 +179,36 @@ def run_vacuum_analyze_job(job_id):
         if not connection:
             raise Exception("Connection not found: {}".format(connection_id))
 
-        conn = open_gp_connection(connection)
+        pending = [
+            item for item in get_job_items(job_id)
+            # переподхват после рестарта: готовые строки не переделываем
+            if item.get("status") not in ("done", "failed", "skipped")
+        ]
 
-        # VACUUM нельзя выполнять внутри транзакции
-        conn.autocommit = True
+        import queue as queue_mod
+        import threading
 
-        items = get_job_items(job_id)
+        task_queue = queue_mod.Queue()
 
-        for item in items:
+        for item in pending:
+            task_queue.put(item)
+
+        worker_errors = []
+        processed = [0]
+
+        def process_one(conn, item, worker_no):
             item_id = item["id"]
-            schema_name = item["schema_name"]
-            table_name = item["table_name"]
 
-            if is_stop_requested(job_id):
-                mark_item_skipped(item_id, "Job stopped by user")
-                continue
-
-            mark_item_running(item_id)
+            mark_item_running(item_id, worker_id=worker_no)
 
             try:
-                item_action = (
-                        item.get("action")
-                        or action
-                        or "VACUUM_ANALYZE"
-                )
-
-                item_action = str(item_action).upper().strip()
+                item_action = str(
+                    item.get("action") or action or "VACUUM_ANALYZE"
+                ).upper().strip()
 
                 query = build_vacuum_sql(
-                    schema_name=schema_name,
-                    table_name=table_name,
+                    schema_name=item["schema_name"],
+                    table_name=item["table_name"],
                     action=item_action,
                 )
 
@@ -213,7 +220,66 @@ def run_vacuum_analyze_job(job_id):
             except Exception as e:
                 mark_item_failed(item_id, str(e))
 
+            processed[0] += 1
             refresh_job_progress(job_id)
+
+        def worker_loop(worker_no):
+            if task_queue.empty():
+                return
+
+            try:
+                conn = open_gp_connection(connection)
+                # VACUUM нельзя выполнять внутри транзакции
+                conn.autocommit = True
+            except Exception as e:
+                worker_errors.append(str(e))
+                return
+
+            try:
+                while True:
+                    try:
+                        item = task_queue.get_nowait()
+                    except queue_mod.Empty:
+                        break
+
+                    if is_stop_requested(job_id):
+                        mark_item_skipped(item["id"], "Job stopped by user")
+                        refresh_job_progress(job_id)
+                        continue
+
+                    process_one(conn, item, worker_no)
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        if workers == 1:
+            worker_loop(1)
+        else:
+            threads = [
+                threading.Thread(
+                    target=worker_loop, args=(n + 1,), daemon=True,
+                )
+                for n in range(workers)
+            ]
+
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        # ни один воркер не смог подключиться — таблицы не тронуты
+        if worker_errors and processed[0] == 0 and pending:
+            while not task_queue.empty():
+                try:
+                    leftover = task_queue.get_nowait()
+                    mark_item_failed(leftover["id"], worker_errors[0][:500])
+                except queue_mod.Empty:
+                    break
+
+            refresh_job_progress(job_id)
+            raise Exception(worker_errors[0])
 
         if is_stop_requested(job_id):
             mark_job_cancelled(job_id)
@@ -226,9 +292,3 @@ def run_vacuum_analyze_job(job_id):
 
     finally:
         clear_stop_flag(job_id)
-
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass

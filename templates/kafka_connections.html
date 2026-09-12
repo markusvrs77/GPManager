@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+
+{% block title %}Подключения Kafka · Opsentri{% endblock %}
+
+{% block content %}
+
+<style>
+/* ============ Kafka: подключения ============ */
+.kc { max-width: 1100px; display: flex; flex-direction: column; gap: 14px; }
+
+.kc-panel { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); overflow: hidden; }
+.kc-panel > h2 { font-size: 12px; font-weight: 800; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-muted);
+  margin: 0; padding: 11px 16px; border-bottom: 1px solid var(--hairline);
+  display: flex; align-items: center; gap: 10px; }
+.kc-panel > h2 .sp { flex: 1; }
+
+.kc-note { border-radius: var(--radius); padding: 10px 14px; font-size: 13px;
+  border: 1px solid var(--hairline); color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent); }
+
+.kc-row { display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--hairline); }
+.kc-row:last-child { border-bottom: none; }
+.kc-row .addr { font-size: 12px; color: var(--text-muted);
+  font-family: var(--mono, monospace); margin-top: 2px; }
+.kc-row .acts { display: flex; gap: 8px; flex: none; }
+.kc-tag { font-size: 11px; padding: 1px 8px; border-radius: var(--radius-pill);
+  border: 1px solid var(--hairline); color: var(--text-muted);
+  margin-left: 8px; white-space: nowrap; }
+
+.kc-empty { padding: 18px 16px; font-size: 13px; color: var(--text-muted); }
+
+.kc-form { padding: 14px 16px; }
+.kc-form .fgrid { display: grid; gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 900px) {
+  .kc-form .fgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.kc-form .form-label { font-size: 11.5px; font-weight: 700;
+  letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 4px; }
+.kc-form .wide { grid-column: 1 / -1; }
+.kc-form details { margin: 12px 0 4px; }
+.kc-form summary { cursor: pointer; font-size: 12.5px;
+  color: var(--text-muted); user-select: none; }
+.kc-form details[open] summary { margin-bottom: 12px; }
+.kc-form .buttons { display: flex; gap: 8px; margin-top: 14px;
+  flex-wrap: wrap; }
+.kc-hint { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+<div class="kc" id="kcRoot">
+
+  {% if not library_ready %}
+  <div class="kc-note">
+    Библиотека <code>kafka-python</code> не установлена — проверка связи не
+    сработает. На сервере выполните
+    <code>pip install -r requirements.txt</code> и перезапустите app.py.
+  </div>
+  {% endif %}
+
+  <div class="kc-panel">
+    <h2>Кластеры Kafka<span class="sp"></span>
+      <button class="btn btn-sm btn-outline-primary" id="kcAdd" type="button">
+        + Добавить кластер</button></h2>
+
+    <div id="kcList"></div>
+
+    <div class="kc-form" id="kcForm" hidden>
+      <div class="fgrid">
+        <div class="wide">
+          <label class="form-label" for="kcName">Название</label>
+          <input type="text" id="kcName" class="form-control"
+                 placeholder="Kafka PROD">
+        </div>
+        <div class="wide">
+          <label class="form-label" for="kcServers">Адреса брокеров</label>
+          <input type="text" id="kcServers" class="form-control"
+                 placeholder="broker1:9092, broker2:9092">
+          <div class="kc-hint">Через запятую. Порт можно не писать —
+            подставится 9092.</div>
+        </div>
+        <div>
+          <label class="form-label" for="kcTimeout">Таймаут, секунд</label>
+          <input type="number" id="kcTimeout" class="form-control"
+                 value="15" min="1" max="300">
+        </div>
+      </div>
+
+      <details id="kcMore">
+        <summary>Расширенные: протокол, SASL, SSL</summary>
+        <div class="fgrid">
+          <div>
+            <label class="form-label" for="kcProto">Протокол</label>
+            <select id="kcProto" class="form-select">
+              <option value="PLAINTEXT">PLAINTEXT</option>
+              <option value="SASL_PLAINTEXT">SASL_PLAINTEXT</option>
+              <option value="SASL_SSL">SASL_SSL</option>
+              <option value="SSL">SSL</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label" for="kcMech">SASL-механизм</label>
+            <select id="kcMech" class="form-select">
+              <option value="">—</option>
+              <option value="PLAIN">PLAIN</option>
+              <option value="SCRAM-SHA-256">SCRAM-SHA-256</option>
+              <option value="SCRAM-SHA-512">SCRAM-SHA-512</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label" for="kcUser">Пользователь</label>
+            <input type="text" id="kcUser" class="form-control">
+          </div>
+          <div>
+            <label class="form-label" for="kcPass">Пароль</label>
+            <input type="password" id="kcPass" class="form-control"
+                   placeholder="••••••••">
+          </div>
+          <div>
+            <label class="form-label" for="kcCa">CA-файл</label>
+            <input type="text" id="kcCa" class="form-control"
+                   placeholder="/etc/kafka/ca.pem">
+          </div>
+          <div>
+            <label class="form-label" for="kcCert">Сертификат</label>
+            <input type="text" id="kcCert" class="form-control"
+                   placeholder="/etc/kafka/client.pem">
+          </div>
+          <div>
+            <label class="form-label" for="kcKey">Ключ</label>
+            <input type="text" id="kcKey" class="form-control"
+                   placeholder="/etc/kafka/client.key">
+          </div>
+        </div>
+      </details>
+
+      <div class="buttons">
+        <button class="btn btn-sm btn-primary" id="kcSave" type="button">
+          Сохранить</button>
+        <button class="btn btn-sm btn-secondary" id="kcSaveTest" type="button">
+          Сохранить и проверить связь</button>
+        <button class="btn btn-sm btn-outline-primary" id="kcCancel"
+                type="button">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/kafka_connections.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,861 @@
+<!doctype html>
+<html lang="ru" data-theme="light" data-nav="open">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Opsentri — прототип с правками</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f1f0ec; --card:#fff; --card-2:#f7f6f3; --line:#eae8e2;
+  --ink:#1a1a17; --ink-2:#65645d;
+  --a:#f0562b; --a1:#cc3a0d; --a2:#c0330a; --a-soft:#fde9e1;
+  --ok:#167a3c; --ok-soft:#e3f2e7; --warn:#a05a08; --warn-soft:#f7ecd9;
+  --crit:#c22a20; --crit-soft:#fbe6e3;
+  --r:20px; --r-s:12px; --nav-w:250px;
+  --sh:0 1px 2px rgba(26,26,23,.05), 0 10px 26px -14px rgba(26,26,23,.2);
+}
+[data-theme="dark"]{
+  --bg:#111110; --card:#1c1c19; --card-2:#232320; --line:#2e2e29;
+  --ink:#f1f0eb; --ink-2:#aba9a1; --a2:#ff9877; --a-soft:#3a1d12;
+  --ok:#5cc77f; --ok-soft:#16301f; --warn:#e8b45c; --warn-soft:#33280f;
+  --crit:#ff8a7a; --crit-soft:#331a16;
+  --sh:0 1px 2px rgba(0,0,0,.4), 0 10px 26px -14px rgba(0,0,0,.8);
+}
+[data-nav="collapsed"]{--nav-w:64px}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Fira Sans","Segoe UI",system-ui,sans-serif;font-size:14px;line-height:1.5;
+  -webkit-font-smoothing:antialiased}
+::selection{background:var(--a);color:#fff}
+:focus-visible{outline:2px solid var(--a2);outline-offset:2px;border-radius:4px}
+*{scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
+h1,h2,h3{margin:0;letter-spacing:-.02em}
+svg{display:block}
+.num{font-variant-numeric:tabular-nums}
+.mono{font-family:"Fira Code",ui-monospace,monospace}
+
+.app{display:grid;grid-template-columns:var(--nav-w) minmax(0,1fr);gap:13px;padding:13px;min-height:100vh}
+
+.nav{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);
+  display:flex;flex-direction:column;padding:11px 9px;position:sticky;top:13px;
+  max-height:calc(100vh - 26px);overflow:hidden}
+.navtop{display:flex;align-items:center;gap:8px;padding:0 3px 10px;border-bottom:1px solid var(--line);margin-bottom:8px}
+.burger{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;flex:none}
+.burger:hover{background:var(--card-2)}
+.wm{display:flex;align-items:center;gap:8px;min-width:0}
+.wm i{width:29px;height:29px;border-radius:9px;background:var(--a1);display:grid;place-items:center;flex:none}
+.wm b{font-weight:800;font-size:15px;white-space:nowrap}
+.navbody{flex:1;overflow-y:auto;overflow-x:hidden}
+.grph{width:100%;display:flex;align-items:center;gap:7px;padding:8px 9px;border-radius:10px;
+  font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-2);text-align:left;margin-top:3px}
+.grph:hover{background:var(--card-2);color:var(--ink)}
+.grph .chev{margin-left:auto;transition:transform .18s;flex:none}
+.grp[data-open="false"] .chev{transform:rotate(-90deg)}
+.grp[data-open="false"] .grpi{display:none}
+.grpi{display:flex;flex-direction:column;gap:2px}
+.item{display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:10px;
+  color:var(--ink-2);font-weight:600;font-size:13px;width:100%;text-align:left;white-space:nowrap;overflow:hidden}
+.item:hover{background:var(--card-2);color:var(--ink)}
+.item[aria-current="true"]{background:var(--a-soft);color:var(--a2)}
+.item .tk{width:23px;height:23px;border-radius:7px;flex:none;display:grid;place-items:center;
+  font-size:9px;font-weight:800;color:#fff}
+.tk.gp{background:#2f7d3a}.tk.pg{background:#2c5c80}.tk.ora{background:#a83a2b}
+.tk.my{background:#0a6478}.tk.kf{background:#3b414a}.tk.dz{background:#4e7029}
+.tk.lr{background:#7a5f33}.tk.pl{background:#4a5bbf}
+.item .soon{margin-left:auto;flex:none;font-size:11px;font-weight:700;background:var(--card-2);
+  color:var(--ink-2);border-radius:99px;padding:1px 7px}
+.item .cnt{margin-left:auto;flex:none;font-size:11px;font-weight:700;background:var(--a1);color:#fff;
+  border-radius:99px;padding:1px 7px}
+.navfoot{padding-top:8px;border-top:1px solid var(--line);margin-top:8px;display:flex;gap:4px;align-items:center}
+.navfoot button{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;color:var(--ink-2);flex:none}
+.navfoot button:hover{background:var(--card-2);color:var(--ink)}
+.who{display:flex;align-items:center;gap:8px;min-width:0;padding:4px 6px;border-radius:10px}
+.who:hover{background:var(--card-2)}
+.who i{width:28px;height:28px;border-radius:99px;background:var(--a-soft);color:var(--a2);
+  display:grid;place-items:center;font-weight:800;font-size:11px;flex:none}
+.who span{display:flex;flex-direction:column;line-height:1.25;min-width:0;text-align:left}
+.who b{font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.who em{font-style:normal;font-size:11px;color:var(--ink-2)}
+[data-nav="collapsed"] .wm b,[data-nav="collapsed"] .grph span,
+[data-nav="collapsed"] .item .lb,[data-nav="collapsed"] .item .soon,
+[data-nav="collapsed"] .item .cnt,[data-nav="collapsed"] .who span,
+[data-nav="collapsed"] .lang{display:none}
+[data-nav="collapsed"] .navtop{flex-direction:column;gap:8px}
+[data-nav="collapsed"] .grph{justify-content:center;padding:5px 0;pointer-events:none}
+[data-nav="collapsed"] .grph .chev{display:none}
+[data-nav="collapsed"] .grph::after{content:"";width:18px;height:1px;background:var(--line)}
+[data-nav="collapsed"] .grp[data-open="false"] .grpi{display:flex}
+[data-nav="collapsed"] .item{justify-content:center;padding:8px 0}
+[data-nav="collapsed"] .navfoot{flex-direction:column}
+
+.main{display:flex;flex-direction:column;gap:13px;min-width:0}
+.bar{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);
+  display:flex;align-items:center;gap:16px;padding:10px 14px;flex-wrap:wrap}
+.secid{display:flex;flex-direction:column;min-width:0}
+.secid .tkn{font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-2)}
+.secid h1{font-size:19px;font-weight:800}
+.tabs{display:flex;gap:2px;background:var(--card-2);border-radius:99px;padding:4px;flex-wrap:wrap;margin-left:auto}
+.tabs button{padding:7px 13px;border-radius:99px;color:var(--ink-2);font-weight:600;font-size:13px;white-space:nowrap}
+.tabs button:hover{color:var(--ink)}
+.tabs button[aria-current="true"]{background:var(--ink);color:var(--card)}
+
+.panel{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);padding:18px}
+.panel h2{font-size:15px;font-weight:800;margin-bottom:3px}
+.panel .sub{color:var(--ink-2);font-size:13px;margin:0 0 14px}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:13px}
+@media(max-width:1000px){.grid2{grid-template-columns:1fr}}
+.chip{display:inline-flex;align-items:center;gap:6px;border-radius:99px;padding:4px 11px;
+  font-size:12px;font-weight:700;background:var(--card-2);color:var(--ink-2)}
+.chip.ok{background:var(--ok-soft);color:var(--ok)}
+.chip.warn{background:var(--warn-soft);color:var(--warn)}
+.chip.crit{background:var(--crit-soft);color:var(--crit)}
+.chip.acc{background:var(--a-soft);color:var(--a2)}
+.chip button{color:inherit;font-weight:700;text-decoration:underline;text-underline-offset:2px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:10px 16px;
+  border-radius:var(--r-s);font-weight:700;font-size:13px}
+.btn.solid{background:var(--a1);color:#fff}
+.btn.solid:hover{filter:brightness(1.12)}
+.btn.ghost{background:var(--card-2);color:var(--ink);border:1px solid var(--line)}
+.btn.ghost:hover{background:var(--line)}
+.btn.danger{background:var(--crit);color:#fff}
+.btn[disabled]{opacity:.5;cursor:not-allowed;filter:none}
+.btn.sm{padding:6px 11px;font-size:12px}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.sep{height:1px;background:var(--line);margin:14px 0}
+.muted{color:var(--ink-2)}
+.f13{font-size:13px}
+
+.alert{border-radius:var(--r-s);padding:13px 15px;font-weight:600;
+  --st:var(--ink-2);background:color-mix(in srgb, var(--st) 14%, var(--card-2));
+  border:1.5px solid color-mix(in srgb, var(--st) 62%, transparent)}
+.alert.crit{--st:var(--crit);color:color-mix(in srgb, var(--crit) 82%, var(--ink));font-weight:700}
+.alert.warn{--st:var(--warn);font-weight:700}
+.alert.ok{--st:var(--ok)}
+.alert h3{font-size:14px;font-weight:800;margin-bottom:3px}
+.alert p{margin:0;font-weight:500;color:var(--ink)}
+
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:12px;font-weight:700;color:var(--ink-2);padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:11px 10px;border-bottom:1px solid var(--line);font-size:13px}
+tr:last-child td{border-bottom:0}
+tbody tr:hover td{background:var(--card-2)}
+.stick{position:sticky;left:0;background:var(--card);z-index:2}
+tbody tr:hover .stick{background:var(--card-2)}
+.scrollx{overflow-x:auto}
+
+.seg{height:11px;border-radius:99px;overflow:hidden;display:flex;background:var(--card-2)}
+.seg i{display:block;height:100%}
+.seg i.d{background:var(--ok)}.seg i.e{background:var(--crit)}.seg i.a{background:var(--a)}
+
+.skel{background:linear-gradient(90deg,var(--card-2),var(--line),var(--card-2));
+  background-size:200% 100%;animation:sk 1.4s ease-in-out infinite;border-radius:8px;height:38px}
+@keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@media(prefers-reduced-motion:reduce){.skel{animation:none}*{transition:none!important}}
+
+.env{font-size:11px;font-weight:800;letter-spacing:.06em;border-radius:99px;padding:2px 8px}
+.env.prod{background:var(--crit-soft);color:var(--crit)}
+.env.test{background:var(--warn-soft);color:var(--warn)}
+.env.dev{background:var(--card-2);color:var(--ink-2)}
+
+.conn{border:1px solid var(--line);border-radius:var(--r-s);padding:14px;background:var(--card)}
+.conn .h{display:flex;align-items:center;gap:9px;margin-bottom:9px;flex-wrap:wrap}
+.conn dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px}
+.conn dt{color:var(--ink-2)}
+.conn dd{margin:0}
+.roles{display:flex;gap:2px;background:var(--card-2);border-radius:99px;padding:3px;margin-top:11px;width:fit-content}
+.roles button{padding:4px 11px;border-radius:99px;font-size:12px;font-weight:700;color:var(--ink-2)}
+.roles button[aria-pressed="true"]{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.1)}
+
+.qline{display:flex;gap:7px;flex-wrap:wrap;align-items:center;padding:11px 13px;background:var(--card-2);
+  border-radius:var(--r-s);margin-bottom:13px}
+.qline .ax{font-size:12px;color:var(--ink-2);font-weight:600}
+
+.gate{border:1.5px dashed var(--line);border-radius:var(--r-s);padding:14px;margin-top:13px}
+.gate.armed{border-style:solid;border-color:var(--ok);background:var(--ok-soft)}
+.gate.blocked{border-style:solid;border-color:var(--crit);background:var(--crit-soft)}
+
+.opsel{display:flex;gap:2px;background:var(--card-2);border-radius:99px;padding:3px;width:fit-content;flex-wrap:wrap}
+.opsel button{padding:6px 13px;border-radius:99px;font-size:13px;font-weight:700;color:var(--ink-2)}
+.opsel button[aria-pressed="true"]{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.1)}
+
+.tog{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer}
+.tog input{width:16px;height:16px;accent-color:var(--a1)}
+
+.q{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:11px;align-items:center;
+  padding:11px 0;border-bottom:1px solid var(--line)}
+.q:last-of-type{border-bottom:0}
+.q .sig{min-width:0}
+.q summary{font-size:12px;color:var(--ink-2);cursor:pointer;margin-top:4px}
+.q pre{margin:6px 0 0;font-size:12px;background:var(--card-2);padding:9px;border-radius:8px;
+  overflow-x:auto;font-family:"Fira Code",monospace}
+
+.diff{display:flex;flex-direction:column;gap:6px;margin-top:11px}
+.diff div{display:flex;gap:9px;align-items:center;font-size:13px;padding:7px 10px;border-radius:8px}
+.diff .add{background:var(--ok-soft);color:var(--ok)}
+.diff .del{background:var(--crit-soft);color:var(--crit)}
+
+.note{font-size:12px;color:var(--ink-2);margin:9px 0 0}
+.foot{color:var(--ink-2);font-size:12px;padding:0 4px 6px}
+
+@media(max-width:820px){
+  .app{grid-template-columns:1fr}
+  .nav{position:static;max-height:none}
+  [data-nav="collapsed"] .navbody{display:none}
+  .tabs{margin-left:0;width:100%}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="nav">
+    <div class="navtop">
+      <button class="burger" id="burger" aria-label="Свернуть навигацию" aria-expanded="true">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 5.5h14M3 10h14M3 14.5h14"/></svg>
+      </button>
+      <span class="wm"><i>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M4.5 16.5a8.5 8.5 0 1 1 15 0"/><path d="M12 15l4.4-5.4"/><circle cx="12" cy="15" r="1.7" fill="#fff" stroke="none"/></svg>
+      </i><b>Opsentri</b></span>
+    </div>
+    <div class="navbody" id="navbody"></div>
+    <div class="navfoot">
+      <button id="themeBtn" title="Тёмная тема" aria-label="Переключить тему">
+        <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" id="themeIcon"><circle cx="10" cy="10" r="3.6"/><path d="M10 1.6v2.2M10 16.2v2.2M18.4 10h-2.2M3.8 10H1.6M15.9 4.1l-1.6 1.6M5.7 14.3l-1.6 1.6M15.9 15.9l-1.6-1.6M5.7 5.7L4.1 4.1"/></svg>
+      </button>
+      <button class="lang" id="langBtn" title="Язык интерфейса" aria-label="Язык интерфейса"
+        style="width:auto;padding:0 10px;font-size:12px;font-weight:800;letter-spacing:.06em">RU</button>
+      <button class="who" id="whoBtn" style="width:auto;flex:1;justify-content:flex-start">
+        <i>МК</i><span><b>Меирбек</b><em>operator · PROD</em></span>
+      </button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="bar">
+      <div class="secid"><span class="tkn" id="tkName">Greenplum Toolkit</span><h1 id="pgTitle">Dashboard</h1></div>
+      <nav class="tabs" id="tabs"></nav>
+    </div>
+    <div id="view"></div>
+    <p class="foot">Прототип предложений. Данные синтетические, кластера за ним нет — состояния воспроизведены по тому, что видели на GP_TEST.</p>
+  </div>
+</div>
+
+<script>
+(function(){
+var $=function(s){return document.querySelector(s);}, root=document.documentElement;
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+function fmt(s){return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');}
+
+var S={
+  tk:'gp', page:'dash',
+  runs:[
+    {id:46,kind:'Анализ перекоса',done:47,total:822,err:775,st:'interrupted',when:'25.07 22:58'},
+    {id:50,kind:'VACUUM ANALYZE',done:151,total:151,err:0,st:'done',when:'26.07 07:46'},
+    {id:49,kind:'VACUUM ANALYZE',done:151,total:151,err:0,st:'done',when:'26.07 07:44'},
+    {id:39,kind:'VACUUM FULL',done:0,total:30,err:0,st:'interrupted',when:'25.07 22:45'}
+  ],
+  conns:[
+    {id:1,name:'dwh-gp-01',env:'prod',db:'adb',host:'10.4.12.7',role:'src',seg:96,tested:null,ver:null},
+    {id:2,name:'GP_TEST',env:'test',db:'adb',host:'172.17.56.240',role:'both',seg:24,tested:null,ver:null}
+  ],
+  copy:{src:2,dst:2,strategy:null,when:'now',previewed:false,ttl:0,
+    sel:{1:true,2:true,3:true},keyEdit:null,from:'01.09',to:'07.09'},
+  vac:{op:'VACUUM ANALYZE',destructive:false,selected:12},
+  health:{loaded:false,secs:0,timer:null},
+  grants:{scope:'запись',view:'матрица',gran:'схемы',stale:22},
+  acl:{previewed:false}
+};
+
+/* Каталог таблиц с их реальными свойствами: объявленный логический ключ,
+   партиционирование, колонка даты. Именно эти три факта решают, какая
+   стратегия применима, а не флаг CLI. */
+var TABLES=[
+ {id:1,name:'public.fact_transactions',rows:'4.81 млрд',key:['txn_id'],part:true,date:'created_at',
+  cols:['txn_id','account_id','created_at','amount']},
+ {id:2,name:'public.fact_balances_daily',rows:'2.10 млрд',key:['account_id','report_dt'],part:true,date:'report_dt',
+  cols:['account_id','report_dt','balance']},
+ {id:3,name:'staging.load_events_raw',rows:'918 млн',key:null,part:false,date:'loaded_at',
+  cols:['event_id','payload','loaded_at','source']},
+ {id:4,name:'dwh_dds.d_account',rows:'41.9 млн',key:['account_id'],part:false,date:null,
+  cols:['account_id','client_id','opened_dt']},
+ {id:5,name:'mart.agg_channel_month',rows:'88.4 млн',key:null,part:false,date:null,
+  cols:['channel_id','month','revenue']},
+ {id:6,name:'audit.event_log_2019',rows:'12.9 млн',key:null,part:true,date:'ts',
+  cols:['ts','actor','action']}
+];
+var STRAT=[
+ {id:'full',name:'Полная замена',why:'приёмник очищается и наполняется заново',
+  need:function(){return null;},warn:'Текущее содержимое приёмных таблиц будет потеряно.'},
+ {id:'part',name:'Партиции целиком',why:'переносим партиции, которых в приёмнике нет',
+  need:function(x){return x.part?null:'не партиционирована';}},
+ {id:'window',name:'Окно с очисткой',why:'удалить диапазон в приёмнике и вставить его заново',
+  need:function(x){return x.date?null:'нет колонки даты';}},
+ {id:'key',name:'По ключу',why:'сопоставление в промежуточной таблице: обновить изменившиеся, вставить новые',
+  need:function(x){return (x.key&&x.key.length)?null:'ключ не объявлен';}},
+ {id:'except',name:'Окно и EXCEPT ALL',why:'разность мультимножеств в границах окна, ключ не требуется',
+  need:function(x){return x.date?null:'нет колонки даты';}}
+];
+function selTables(){ return TABLES.filter(function(x){return S.copy.sel[x.id];}); }
+
+var NAV=[
+ {g:'DB OPERATIONS',items:[
+   {id:'gp',tk:'gp',label:'Greenplum Toolkit'},
+   {id:'pg',tk:'pg',label:'Postgres Toolkit'},
+   {id:'ora',tk:'ora',label:'Oracle Toolkit',soon:1},
+   {id:'my',tk:'my',label:'MySQL Toolkit',soon:1}]},
+ {g:'DATA FLOW',items:[
+   {id:'kafka',tk:'kf',label:'Kafka'},
+   {id:'dbz',tk:'dz',label:'Debezium',soon:1},
+   {id:'lr',tk:'lr',label:'OpenLogReplicator',soon:1},
+   {id:'pl',tk:'pl',label:'Pipelines',soon:1}]}
+];
+var TABS={
+  gp:[['dash','Dashboard'],['health','Здоровье БД'],['conn','Подключения'],['copy','Синхронизация'],
+      ['maint','Maintenance'],['vac','Vacuum / Analyze'],['grants','Гранты']],
+  pg:[['pgconn','Подключения'],['pgbk','Резервные копии']],
+  kafka:[['kacl','Доступы'],['kgroups','Консьюмер-группы']]
+};
+var TKNAME={gp:'Greenplum Toolkit',pg:'Postgres Toolkit',kafka:'Kafka',
+  ora:'Oracle Toolkit',my:'MySQL Toolkit',dbz:'Debezium',lr:'OpenLogReplicator',pl:'Pipelines'};
+
+function buildNav(){
+  var running=S.runs.filter(function(r){return r.st==='running';}).length;
+  var h='';
+  NAV.forEach(function(sec){
+    h+='<section class="grp" data-open="true"><button class="grph"><span>'+sec.g+'</span>'+
+       '<svg class="chev" width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5.5 8l4.5 4.4L14.5 8"/></svg></button><div class="grpi">';
+    sec.items.forEach(function(it){
+      h+='<button class="item" data-sec="'+it.id+'" title="'+esc(it.label)+'">'+
+         '<span class="tk '+it.tk+'">'+it.tk.toUpperCase()+'</span>'+
+         '<span class="lb">'+esc(it.label)+'</span>'+
+         (it.soon?'<span class="soon">скоро</span>':
+          (it.id==='gp'&&running?'<span class="cnt">'+running+'</span>':''))+'</button>';
+    });
+    h+='</div></section>';
+  });
+  $('#navbody').innerHTML=h;
+  $('#navbody').querySelectorAll('.grph').forEach(function(b){
+    b.addEventListener('click',function(){
+      var s=b.parentElement; s.dataset.open=s.dataset.open==='true'?'false':'true';
+    });
+  });
+  $('#navbody').querySelectorAll('.item').forEach(function(b){
+    b.addEventListener('click',function(){ go(b.dataset.sec); });
+    b.setAttribute('aria-current', b.dataset.sec===S.tk?'true':'false');
+  });
+}
+function go(tk,page){
+  S.tk=tk;
+  var t=TABS[tk];
+  S.page=page||(t?t[0][0]:'stub');
+  render();
+}
+
+function firstRun(t,d,cta){
+  return '<section class="panel" style="text-align:center;padding:44px 22px">'+
+    '<h2 style="font-size:21px">'+esc(t)+'</h2>'+
+    '<p class="sub" style="max-width:56ch;margin:9px auto 16px">'+esc(d)+'</p>'+
+    '<button class="btn solid" data-goto="conn">'+esc(cta)+'</button>'+
+    '<p class="note" style="max-width:60ch;margin:16px auto 0">Было: два пустых заголовка «Источники / Назначения», 80% пустого экрана и инструкция «найди вкладку сам» без ссылки.</p></section>';
+}
+
+var P={
+
+dash:function(){
+  var running=S.runs.filter(function(r){return r.st==='running';}).length;
+  var attn=S.runs.filter(function(r){return r.st==='interrupted'||r.st==='failed';}).length;
+  var h='<section class="panel"><div class="row" style="justify-content:space-between">'+
+    '<div><h2>Состояние смены</h2><p class="sub" style="margin:0">окно обслуживания до 05:00</p></div>'+
+    '<span class="chip">проверка кластера 25 мин назад</span></div>'+
+    '<div class="row" style="margin-top:13px">'+
+      '<span class="chip '+(running?'acc':'ok')+'"><b>'+running+'</b> активных задач</span>'+
+      (attn?'<span class="chip crit" style="flex:1;justify-content:flex-start"><b>Требует внимания:</b>&nbsp;'+
+        attn+' прерванных · 15 таблиц без vacuum · 3 запроса дольше 24 ч</span>'
+       :'<span class="chip ok" style="flex:1;justify-content:flex-start">Ничего не требует внимания</span>')+
+    '</div>'+
+    '<p class="note">Было: четыре счётчика, ни один не отвечал на вопрос «мне надо что-то делать?». Плитка «0 запусков» была подписана «все успешно».</p>'+
+  '</section>';
+
+  h+='<section class="panel" style="margin-top:13px"><h2>Запуски</h2>'+
+     '<p class="sub">прерванные подняты наверх и несут действие прямо в строке</p><table><tbody>';
+  var w={interrupted:0,failed:0,running:1,done:2};
+  S.runs.slice().sort(function(a,b){return (w[a.st]===undefined?3:w[a.st])-(w[b.st]===undefined?3:w[b.st]);})
+   .forEach(function(r){
+    var bad=r.st==='interrupted'||r.st==='failed';
+    h+='<tr><td style="width:62px" class="mono">#'+r.id+'</td>'+
+       '<td><b>'+esc(r.kind)+'</b><br><span class="muted f13">'+r.done+' из '+r.total+
+         (r.err?' · <span style="color:var(--crit)">ошибок '+r.err+'</span>':'')+'</span></td>'+
+       '<td style="width:180px"><div class="seg">'+
+         '<i class="d" style="width:'+Math.round(r.done/r.total*100)+'%"></i>'+
+         '<i class="e" style="width:'+Math.round(r.err/r.total*100)+'%"></i></div>'+
+         '<span class="muted f13">'+(r.st==='running'?'идёт сейчас':r.st==='done'?'завершено':'прервано')+'</span></td>'+
+       '<td style="width:106px" class="muted mono f13">'+r.when+'</td>'+
+       '<td style="width:156px;text-align:right">'+
+         (bad?'<button class="btn solid sm" data-resume="'+r.id+'">Возобновить с '+(r.done+1)+'-й</button>':
+          r.st==='running'?'<button class="btn ghost sm" data-stop="'+r.id+'">Остановить</button>':
+          '<button class="btn ghost sm" data-repeat="'+r.id+'">Повторить</button>')+'</td></tr>';
+  });
+  h+='</tbody></table></section>';
+  return h;
+},
+
+conn:function(){
+  var h='<section class="panel"><div class="row" style="justify-content:space-between">'+
+    '<div><h2>Подключения</h2><p class="sub" style="margin:0">сгруппированы по окружению, одна карточка на подключение</p></div>'+
+    '<button class="btn solid sm">Добавить</button></div>';
+  ['prod','test','dev'].forEach(function(env){
+    var list=S.conns.filter(function(c){return c.env===env;});
+    if(!list.length) return;
+    h+='<div class="sep"></div><div class="row" style="margin-bottom:11px"><span class="env '+env+'">'+env.toUpperCase()+'</span>'+
+       '<span class="muted f13">'+list.length+' подключение</span></div><div class="grid2">';
+    list.forEach(function(c){
+      h+='<div class="conn"><div class="h"><span class="env '+c.env+'">'+c.env.toUpperCase()+'</span>'+
+         '<b>'+esc(c.name)+'</b><span class="muted mono f13">'+esc(c.db)+'</span></div>'+
+         '<dl><dt>Хост</dt><dd class="mono">'+esc(c.host)+'</dd>'+
+         '<dt>Сегментов</dt><dd class="mono">'+c.seg+'</dd></dl>'+
+         '<div class="roles">'+
+           [['src','источник'],['dst','приёмник'],['both','оба']].map(function(r){
+             var dis=(c.env==='prod'&&r[0]!=='src');
+             return '<button data-role="'+c.id+':'+r[0]+'" aria-pressed="'+(c.role===r[0])+'"'+
+               (dis?' disabled title="production может быть только источником" style="opacity:.4;cursor:not-allowed"':'')+
+               '>'+r[1]+'</button>';
+           }).join('')+'</div>'+
+         (c.env==='prod'?'<p class="note">Production заблокирован как приёмник — инвариант исполняется здесь, а не в документации.</p>':'')+
+         '<div class="row" style="margin-top:11px"><button class="btn ghost sm" data-test="'+c.id+'">Проверить</button>'+
+           '<button class="btn ghost sm">Изменить</button></div>'+
+         (c.tested?'<div class="alert ok" style="margin-top:11px;padding:9px 11px"><p class="f13">Проверено '+esc(c.tested)+' · '+esc(c.db)+' · '+esc(c.ver)+'</p></div>':'')+
+         '</div>';
+    });
+    h+='</div>';
+  });
+  h+='<p class="note">Было: одно подключение отрисовано двумя карточками в «Источниках» и «Назначениях», окружения в интерфейсе не существовало, результат проверки улетал вниз страницы.</p></section>';
+  return h;
+},
+
+copy:function(){
+  var src=S.conns.filter(function(c){return c.id===S.copy.src;})[0];
+  var dst=S.conns.filter(function(c){return c.id===S.copy.dst;})[0];
+  var same=S.copy.src===S.copy.dst, prodDst=dst.env==='prod', blocked=same||prodDst;
+  var sel=selTables();
+
+  var h='<section class="panel"><h2>1 &middot; Что переносим</h2>'+
+    '<p class="sub">пара «источник → приёмник» — защищённый узел</p><div class="grid2">';
+  [['src','Источник'],['dst','Приёмник']].forEach(function(p){
+    h+='<div><span class="muted f13" style="font-weight:700">'+p[1]+'</span>'+
+       '<div class="row" style="margin-top:7px">'+S.conns.map(function(c){
+         var on=S.copy[p[0]]===c.id;
+         return '<button class="conn" data-pick="'+p[0]+':'+c.id+'" style="flex:1;text-align:left'+
+           (on?';border-color:var(--a);background:var(--a-soft)':'')+'">'+
+           '<div class="h" style="margin:0"><span class="env '+c.env+'">'+c.env.toUpperCase()+'</span>'+
+           '<b>'+esc(c.name)+'</b><span class="muted mono f13">'+esc(c.db)+'</span></div></button>';
+       }).join('')+'</div></div>';
+  });
+  h+='</div>';
+  if(blocked){
+    h+='<div class="alert crit" style="margin-top:13px"><h3>'+
+      (same?'Приёмник совпадает с источником':'Production не может быть приёмником')+'</h3>'+
+      '<p>Копирование заблокировано. '+(same?'Выберите другой приёмник.':'Инвариант продукта: production — источник, никогда приёмник.')+'</p></div>';
+  }
+
+  h+='<div class="sep"></div><div class="row" style="justify-content:space-between">'+
+     '<span class="muted f13" style="font-weight:700">Таблицы &middot; выбрано '+sel.length+' из '+TABLES.length+'</span>'+
+     '<span class="muted f13">свойства проверены на источнике</span></div>'+
+     '<div class="scrollx"><table style="margin-top:9px"><thead><tr><th style="width:26px"></th><th>Таблица</th>'+
+     '<th style="width:92px">Строк</th><th>Ключ</th><th style="width:98px">Партиции</th>'+
+     '<th style="width:120px">Колонка даты</th></tr></thead><tbody>';
+  TABLES.forEach(function(x){
+    var on=!!S.copy.sel[x.id];
+    h+='<tr><td><input type="checkbox" data-tsel="'+x.id+'"'+(on?' checked':'')+
+       ' aria-label="'+esc(x.name)+'"></td>'+
+       '<td class="mono">'+esc(x.name)+'</td>'+
+       '<td class="mono muted f13">'+x.rows+'</td>'+
+       '<td>'+(x.key&&x.key.length
+          ? '<span class="chip ok">'+x.key.join(' + ')+'</span>'
+          : (S.copy.keyEdit===x.id
+             ? x.cols.map(function(c){return '<button class="chip acc" data-keycol="'+x.id+':'+c+'">'+c+'</button>';}).join(' ')
+             : '<button class="chip warn" data-setkey="'+x.id+'">не объявлен &middot; назначить</button>'))+'</td>'+
+       '<td>'+(x.part?'<span class="chip ok">да</span>':'<span class="chip">нет</span>')+'</td>'+
+       '<td>'+(x.date?'<span class="chip ok mono">'+x.date+'</span>':'<span class="chip">нет</span>')+'</td></tr>';
+  });
+  h+='</tbody></table></div>'+
+     '<p class="note">Ключ берётся не из pg_constraint, а объявляется оператором: в Greenplum уникальное ограничение возможно только если ключ дистрибуции входит в его состав, поэтому у большинства таблиц DWH его физически нет.</p></section>';
+
+  h+='<section class="panel" style="margin-top:13px"><h2>2 &middot; Как переносим</h2>'+
+     '<p class="sub">стратегия вместо флага CLI: вопрос оператора — чем гарантируется отсутствие дублей</p>';
+  if(!sel.length){
+    h+='<div class="alert"><p>Сначала выберите хотя бы одну таблицу.</p></div>';
+  } else {
+    STRAT.forEach(function(s){
+      var bad=sel.map(function(x){var q=s.need(x); return q?{n:x.name,r:q}:null;}).filter(Boolean);
+      var on=S.copy.strategy===s.id;
+      h+='<div class="conn" style="margin-top:9px'+(on?';border-color:var(--a);background:var(--a-soft)':'')+'">'+
+         '<div class="row" style="justify-content:space-between">'+
+         '<div style="min-width:0"><b>'+esc(s.name)+'</b>'+
+         '<div class="muted f13">'+esc(s.why)+'</div></div>'+
+         (bad.length
+           ? '<span class="chip crit">недоступна для '+bad.length+' из '+sel.length+'</span>'
+           : '<button class="btn '+(on?'solid':'ghost')+' sm" data-strat="'+s.id+'">'+(on?'выбрана':'выбрать')+'</button>')+
+         '</div>';
+      if(bad.length){
+        h+='<p class="note">'+bad.map(function(z){return '<span class="mono">'+esc(z.n)+'</span> — '+z.r;}).join(' &middot; ')+'</p>';
+      } else if(on&&s.warn){
+        h+='<div class="alert crit" style="margin-top:11px"><p>'+esc(s.warn)+'</p></div>';
+      }
+      h+='</div>';
+    });
+    if(S.copy.strategy==='window'||S.copy.strategy==='except'){
+      h+='<div class="row" style="margin-top:13px"><span class="muted f13" style="font-weight:700">Окно</span>'+
+         '<span class="chip mono">'+S.copy.from+' — '+S.copy.to+'</span>'+
+         '<span class="muted f13">границы окна определяют и стоимость, и идемпотентность</span></div>';
+    }
+  }
+  h+='</section>';
+
+  h+='<section class="panel" style="margin-top:13px"><h2>3 &middot; Когда</h2>'+
+     '<div class="opsel">'+[['now','Сейчас'],['cron','По расписанию']].map(function(o){
+       return '<button data-when="'+o[0]+'" aria-pressed="'+(S.copy.when===o[0])+'">'+o[1]+'</button>';
+     }).join('')+'</div>'+
+     (S.copy.when==='cron'
+       ? '<p class="note">Каждый день в 02:00 &middot; <span class="mono">0 2 * * *</span> &middot; при наложении пропустить &middot; ближайший запуск завтра 02:00</p>'
+       : '')+'</section>';
+
+  var st=STRAT.filter(function(s){return s.id===S.copy.strategy;})[0];
+  var ready=!blocked&&sel.length&&st&&!sel.some(function(x){return st.need(x);});
+  var sum;
+  if(!sel.length){ sum='Выберите таблицы на первом шаге.'; }
+  else if(!st){ sum='Выберите стратегию на втором шаге.'; }
+  else {
+    var route='из <b>'+esc(src.name)+' ('+src.env+') / '+esc(src.db)+'</b> в <b>'+
+      esc(dst.name)+' ('+dst.env+') / '+esc(dst.db)+'</b>';
+    sum={
+      full:'Полностью заменить <b>'+sel.length+' таблиц</b> '+route+' &middot; приёмные таблицы <b>будут очищены</b>',
+      part:'Перенести <b>партиции, отсутствующие в приёмнике</b>, для <b>'+sel.length+' таблиц</b> '+route+' &middot; дубли невозможны по построению',
+      window:'Заменить окно <b>'+S.copy.from+' — '+S.copy.to+'</b> в <b>'+sel.length+' таблицах</b> '+route+
+             ' &middot; в приёмнике диапазон <b>сначала удаляется</b>, затем вставляется заново &middot; повторный запуск не задвоит',
+      key:'Сопоставить <b>'+sel.length+' таблиц</b> '+route+' по объявленному ключу &middot; изменившиеся строки обновятся, новые вставятся &middot; дубли ключа в промежуточной таблице <b>остановят задачу</b>',
+      except:'Дописать недостающие строки в окне <b>'+S.copy.from+' — '+S.copy.to+'</b> для <b>'+sel.length+
+             ' таблиц</b> '+route+' методом <b>EXCEPT ALL</b> &middot; ключ не требуется, кратность сохраняется, повторный запуск не задвоит'
+    }[st.id]+' &middot; дополнительные аргументы: нет';
+  }
+
+  h+='<section class="panel" style="margin-top:13px"><div class="gate '+
+     (blocked?'blocked':S.copy.previewed?'armed':'')+'" style="margin-top:0">'+
+     '<p style="margin:0 0 11px">'+sum+'</p>';
+  if(S.copy.previewed){
+    h+='<div class="row"><span class="chip ok">DDL проверен &middot; расхождений нет</span>'+
+       '<span class="chip warn">превью действительно ещё <b class="num" id="ttl">'+fmt(S.copy.ttl)+'</b></span></div>'+
+       '<div class="row" style="margin-top:11px"><button class="btn solid" id="runBtn">'+
+       (S.copy.when==='cron'?'Создать расписание':'Запустить перенос')+'</button>'+
+       '<button class="btn ghost" id="resetPrev">Изменить задание</button></div>';
+  } else {
+    h+='<div class="row"><button class="btn solid" id="prevBtn"'+(ready?'':' disabled')+'>Проверить DDL</button>'+
+       '<button class="btn ghost" disabled>'+(S.copy.when==='cron'?'Создать расписание':'Запустить')+' &middot; сначала превью</button></div>';
+  }
+  h+='</div><p class="note">Было: четыре флага CLI как равные варианты — очистить, дописать, пропустить, пересоздать. «Дописать» предлагалось и для таблиц без ключа, где оно молча задваивает данные при повторном запуске.</p></section>';
+  return h;
+},
+vac:function(){
+  var d=S.vac.destructive;
+  var h='<section class="panel"><h2>Vacuum / Analyze</h2>'+
+    '<p class="sub">безопасные операции по умолчанию, разрушительные — за отдельным переключателем</p>'+
+    '<div class="opsel">'+['ANALYZE','VACUUM','VACUUM ANALYZE'].map(function(o){
+      return '<button data-op="'+o+'" aria-pressed="'+(S.vac.op===o)+'">'+o+'</button>';
+    }).join('')+'</div>'+
+    '<div style="margin-top:13px"><label class="tog"><input type="checkbox" id="destr"'+(d?' checked':'')+'>'+
+      'Показать разрушительные операции</label></div>';
+  if(d){
+    h+='<div class="opsel" style="margin-top:9px">'+['VACUUM FULL','VACUUM FREEZE'].map(function(o){
+        return '<button data-op="'+o+'" aria-pressed="'+(S.vac.op===o)+'">'+o+'</button>';
+      }).join('')+'</div>';
+  }
+  if(S.vac.op==='VACUUM FULL'){
+    h+='<div class="alert crit" style="margin-top:13px"><h3>VACUUM FULL берёт ACCESS EXCLUSIVE</h3>'+
+       '<p>Таблица переписывается целиком. Выбранные '+S.vac.selected+' таблиц будут недоступны на время работы — на витрине это часы, а не минуты.</p></div>';
+  }
+  h+='<div class="sep"></div><div class="row"><span class="chip">Выбрано: <b>'+S.vac.selected+'</b> таблиц</span>'+
+     '<button class="btn ghost sm" id="clearSel">Снять выбор</button>'+
+     '<button class="btn ghost sm" id="pickSel">Выбрать 12</button></div>'+
+     '<div class="row" style="margin-top:13px"><button class="btn '+(S.vac.op==='VACUUM FULL'?'danger':'solid')+'" id="vacRun"'+
+       (S.vac.selected?'':' disabled')+'>Запустить '+S.vac.op+' · '+S.vac.selected+' таблиц · GP_TEST / adb</button></div>'+
+     '<p class="note">Кнопка сама стала превью: нельзя нажать, не прочитав область действия. При нуле выбранных заблокирована — раньше была активна.</p>'+
+     '<div class="sep"></div><div class="row" style="justify-content:space-between">'+
+     '<div><h2>Прошлый запуск</h2><p class="sub" style="margin:0">архив, а не идущая задача</p></div>'+
+     '<span class="chip">Архив · завершено 26.07 07:46</span></div>'+
+     '<div class="row" style="margin-top:11px"><span class="muted f13">#50 · VACUUM ANALYZE · 151 из 151</span>'+
+     '<button class="btn ghost sm" data-repeat="50">Повторить эти 151 таблицу</button></div>'+
+     '<p class="note">Было: тот же зелёный хром «100%», что и у идущей задачи — вернувшийся оператор решал, что его прогон закончился.</p></section>';
+  return h;
+},
+
+maint:function(){
+  var r=S.runs.filter(function(x){return x.id===46;})[0];
+  var h='';
+  if(r.st==='interrupted'){
+    h+='<div class="alert crit"><h3>Задача #46 прервана перезапуском приложения</h3>'+
+      '<p>Обработано 47 из 822 объектов, 775 завершились ошибкой. 25.07 22:58.</p>'+
+      '<div class="row" style="margin-top:11px"><button class="btn solid sm" data-resume="46">Возобновить с 48-й</button>'+
+      '<button class="btn ghost sm">Открыть отчёт</button></div></div>';
+  } else if(r.st==='running'){
+    h+='<div class="alert ok"><h3>Задача #46 возобновлена</h3><p>Идёт с 48-го объекта.</p></div>';
+  }
+  h+='<section class="panel" style="margin-top:13px"><h2>Анализ перекоса</h2>'+
+     '<p class="sub">прогресс показывает сделано, ошибки и остаток, а не «100%»</p>'+
+     '<div class="seg"><i class="d" style="width:6%"></i><i class="e" style="width:94%"></i></div>'+
+     '<div class="row" style="margin-top:9px"><span class="chip ok">завершено 47</span>'+
+     '<span class="chip crit">ошибок 775</span><span class="chip">осталось 0</span></div>'+
+     '<p class="note">Было: сплошная оранжевая полоса «Прогресс 100%», под ней мелким «Ошибки 775».</p>'+
+     '<div class="sep"></div>'+
+     '<div class="alert warn"><h3>Перед запуском</h3><p>Проанализировать 822 таблицы в 16 схемах на GP_TEST / adb. По последнему прогону около 40 минут.</p></div>'+
+     '<div class="row" style="margin-top:13px"><button class="btn solid">Запустить анализ · 822 таблицы</button></div></section>';
+  return h;
+},
+
+health:function(){
+  if(!S.health.loaded){
+    return '<section class="panel"><div class="row" style="justify-content:space-between">'+
+      '<div><h2>Здоровье БД</h2><p class="sub" style="margin:0">снимаю срез с GP_TEST — подключение одно, спрашивать нечего</p></div>'+
+      '<div class="row"><span class="chip" id="secs">'+S.health.secs+' с</span>'+
+      '<button class="btn ghost sm" id="cancelH">Отменить</button></div></div>'+
+      ['Сегменты','База','Активность','Мёртвые строки','Spill-файлы'].map(function(t){
+        return '<div style="margin-top:13px"><span class="muted f13" style="font-weight:700">'+t+'</span>'+
+          '<div class="skel" style="margin-top:7px"></div></div>';
+      }).join('')+
+      '<p class="note">Было: пустая страница, кнопка «Обновить» без выбранного кластера молчала, потом 25 секунд плоского текста без спиннера и отмены.</p></section>';
+  }
+  return '<section class="panel"><div class="row" style="justify-content:space-between">'+
+    '<div><h2>Здоровье БД</h2><p class="sub" style="margin:0">GP_TEST / adb</p></div>'+
+    '<div class="row"><span class="chip">срез снят 3 мин назад</span>'+
+    '<button class="btn ghost sm" id="reH">Обновить</button></div></div>'+
+    '<div class="row" style="margin-top:13px">'+
+      '<span class="chip crit">Мастер без standby — единая точка отказа</span>'+
+      '<span class="chip warn">Cache hit 70% — ниже рекомендуемых 90%</span>'+
+      '<span class="chip crit">Spill 11.2 ТБ</span></div>'+
+    '<p class="note">Было: карточка «Сегменты» помечена OK при отсутствии standby и зеркал; cache hit подан нейтральным фактом; 11417.0 GB не гуманизированы.</p>'+
+    '<div class="sep"></div><h2>Долгие запросы</h2><p class="sub">одинаковые сгруппированы, действие рядом</p>'+
+    '<div class="q"><span class="chip crit">48 ч 19 м</span>'+
+      '<div class="sig"><b>×7 сеансов</b> · tuz_etl_user · <span class="mono">INSERT dwh_stage.ref_user_akerke</span>'+
+      '<details><summary>показать полный SQL</summary><pre>INSERT INTO "dwh_stage"."ref_user_akerke" ("id", "login", "dept", ...)\nSELECT ... FROM "dwh_stage"."stg_user_akerke"</pre></details></div>'+
+      '<button class="btn danger sm" id="killQ">Завершить сеансы</button></div>'+
+    '<div class="q"><span class="chip warn">6 ч 02 м</span>'+
+      '<div class="sig">×1 сеанс · reporting · <span class="mono">SELECT dwh_bi.rep_pnm02_group_i_ii</span></div>'+
+      '<button class="btn ghost sm">Завершить</button></div>'+
+    '<p class="note">Было: семь одинаковых блобов по 300 символов, обрезанных посреди токена; «48 ч 19 м» после текста; кнопки завершения не было вообще — оператор шёл в psql.</p>'+
+    '<div class="sep"></div><h2>Больше всего мёртвых строк</h2>'+
+    '<p class="sub">диагноз связан с лечением одной кнопкой</p><table><tbody>'+
+    [['dwh_bi.rep_pnm02_group_i_ii','386 639 276','никогда'],
+     ['dwh_stage.stg_user_akerke','92 004 118','12.06'],
+     ['dwh_dds.d_account','41 880 003','01.07']].map(function(t){
+      return '<tr><td style="width:26px"><input type="checkbox" checked aria-label="'+t[0]+'"></td>'+
+        '<td class="mono">'+t[0]+'</td><td class="mono" style="width:126px">'+t[1]+' dead</td>'+
+        '<td class="muted mono f13" style="width:106px">vacuum: '+t[2]+'</td></tr>';
+    }).join('')+'</tbody></table>'+
+    '<div class="row" style="margin-top:13px"><button class="btn solid" id="toVac">Отправить 3 таблицы в Vacuum</button></div>'+
+    '<p class="note">Было: страница называла таблицу и не давала на неё нажать — оператор запоминал имя и искал среди 29 099 вручную.</p></section>';
+},
+
+grants:function(){
+  var st=S.grants.stale;
+  var h='<section class="panel"><div class="row" style="justify-content:space-between">'+
+    '<div><h2>Пользователи и гранты</h2><p class="sub" style="margin:0">права на объекты</p></div>'+
+    '<span class="chip '+(st>30?'crit':st>7?'warn':'ok')+'">'+(st?'Срез от 18.08 · '+st+' дн назад':'Срез свежий')+
+      ' <button id="reSlice">Обновить</button></span></div>'+
+    '<div class="qline" style="margin-top:13px"><span class="ax">Область:</span>'+
+      '<span class="chip acc">'+esc(S.grants.scope)+' <button data-qx="scope">✕</button></span>'+
+      '<span class="ax">Вид:</span><span class="chip">'+esc(S.grants.view)+'</span>'+
+      '<span class="ax">Гранулярность:</span><span class="chip">'+esc(S.grants.gran)+'</span>'+
+      '<span class="ax">Кластер:</span><span class="chip">GP_TEST</span></div>'+
+    '<p class="note" style="margin-top:-6px">Было: 16 одинаковых пилюль в двух рядах без подписей осей — вернувшись, оператор восстанавливал контекст по цвету.</p>'+
+    (st>7?'<div class="alert warn" style="margin:13px 0"><h3>Аудит по устаревшим данным</h3>'+
+      '<p>«Требует ревью: 55» посчитано по срезу '+st+'-дневной давности. До обновления это история, а не текущее состояние.</p></div>':'')+
+    '<div class="scrollx"><table><thead><tr><th class="stick">Пользователь</th>'+
+      ['dwh_stage','dwh_dds','dwh_bi','mart','public','audit','staging'].map(function(s){return '<th>'+s+'</th>';}).join('')+
+    '</tr></thead><tbody>';
+  [['tuz_etl_user',[3,2,1,0,2,0,3]],['reporting',[0,1,3,3,1,0,0]],['gpadmin',[3,3,3,3,3,3,3]],
+   ['analyst_ro',[0,0,1,1,1,0,0]],['bi_service',[1,1,3,2,0,0,1]]].forEach(function(u){
+    h+='<tr><td class="stick mono">'+u[0]+'</td>'+u[1].map(function(v){
+      var bg=v===0?'var(--card-2)':v===1?'color-mix(in srgb, var(--a) 22%, transparent)':
+             v===2?'color-mix(in srgb, var(--warn) 45%, transparent)':'color-mix(in srgb, var(--crit) 45%, transparent)';
+      return '<td style="background:'+bg+'"><b>'+['—','чтение','запись','запись везде'][v]+'</b></td>';
+    }).join('')+'</tr>';
+  });
+  h+='</tbody></table></div>'+
+    '<p class="note">Колонка пользователя залипает при прокрутке вправо, а заливка несёт уровень прав — раньше громкий канал занимало число таблиц, а сам ответ был только фоном.</p>'+
+    '<div class="row" style="margin-top:13px"><button class="btn solid" id="revoke">Подготовить REVOKE для 55 избыточных</button></div></section>';
+  return h;
+},
+
+kacl:function(){
+  var h='<section class="panel"><h2>Доступы Kafka</h2>'+
+    '<p class="sub">превью стало шлюзом, а не соседней кнопкой</p>'+
+    '<span class="muted f13" style="font-weight:700">Пресет операций</span>'+
+    '<div class="opsel" style="margin-top:7px">'+
+      ['Чтение','Запись','Администрирование'].map(function(o,i){
+        return '<button data-acl="'+o+'" aria-pressed="'+(i===0)+'">'+o+'</button>';
+      }).join('')+'</div>'+
+    '<details style="margin-top:9px"><summary class="muted f13" style="cursor:pointer">настроить точно — 10 операций</summary>'+
+    '<p class="note">Read · Write · Create · Delete · Alter · Describe · DescribeConfigs · AlterConfigs · ClusterAction · IdempotentWrite</p></details>'+
+    '<div class="sep"></div>'+
+    '<div class="alert warn"><h3>Запрет имеет приоритет над разрешением</h3>'+
+    '<p>Правило deny перекроет любое allow для того же принципала — в Kafka это не симметричная пара.</p></div>'+
+    '<div class="gate '+(S.acl.previewed?'armed':'')+'" style="margin-top:13px">';
+  if(!S.acl.previewed){
+    h+='<p style="margin:0 0 11px">Принципал <b>User:etl_writer</b> · топик <b>orders.*</b> · пресет <b>Чтение</b></p>'+
+       '<button class="btn solid" id="aclPrev">Показать, что изменится</button>';
+  } else {
+    h+='<p style="margin:0"><b>Что изменится</b></p>'+
+       '<div class="diff"><div class="add">+ 3 правила · User:etl_writer · READ на orders.*</div>'+
+       '<div class="del">− 1 правило · User:etl_writer · WRITE на orders.raw</div>'+
+       '<div>затронуто 2 принципала, 4 топика</div></div>'+
+       '<div class="row" style="margin-top:13px"><button class="btn solid" id="aclApply">Применить</button>'+
+       '<button class="btn ghost" id="aclCancel">Отменить</button></div>';
+  }
+  h+='</div><p class="note">Было: «Выдать права», «Показать, что попадёт под отзыв» и «Отозвать» тремя равноправными кнопками — отзыв нажимался без превью.</p></section>';
+  return h;
+},
+
+kgroups:function(){
+  return '<section class="panel"><h2>Консьюмер-группы</h2><p class="sub">срез ещё не снят</p>'+
+    '<div class="alert"><h3>Срез не снят</h3><p>Снимок метаданных кластера: операции читают его, а не ходят в брокеры на каждый клик.</p>'+
+    '<div class="row" style="margin-top:11px"><button class="btn solid sm">Снять срез</button></div></div>'+
+    '<div class="sep"></div><h2>Журнал действий</h2>'+
+    '<div class="alert" style="margin-top:9px"><p>Здесь останется запись о каждом сбросе оффсетов: кто, когда, какая группа, с какого значения на какое.</p></div>'+
+    '<p class="note">Было: заголовок «Журнал действий» над пустым контейнером — без содержимого и без пустого состояния.</p></section>';
+},
+pgconn:function(){ return firstRun('Postgres Toolkit не подключён',
+  'После подключения появятся pg_dump и pg_restore, синхронизация и расписания.','Добавить сервер PostgreSQL'); },
+pgbk:function(){ return firstRun('Postgres Toolkit не подключён',
+  'Резервные копии появятся здесь, как только будет сервер. Одно сообщение вместо двух спорящих.','Добавить сервер PostgreSQL'); },
+stub:function(){
+  return '<section class="panel" style="text-align:center;padding:44px 22px">'+
+    '<h2 style="font-size:21px">'+esc(TKNAME[S.tk]||'Раздел')+'</h2>'+
+    '<p class="sub" style="max-width:56ch;margin:9px auto 0">В продукте не реализовано. Место в структуре зарезервировано, чтобы набор инструментов рос без перестройки навигации.</p></section>';
+}
+};
+
+function render(){
+  var tabs=TABS[S.tk];
+  $('#tkName').textContent=TKNAME[S.tk]||'';
+  $('#tabs').innerHTML=tabs?tabs.map(function(t){
+    return '<button data-tab="'+t[0]+'" aria-current="'+(S.page===t[0])+'">'+t[1]+'</button>';
+  }).join(''):'';
+  var titles={dash:'Dashboard',health:'Здоровье БД',conn:'Подключения',copy:'Синхронизация данных',
+    maint:'Maintenance',vac:'Vacuum / Analyze',grants:'Пользователи и гранты',
+    kacl:'Доступы',kgroups:'Консьюмер-группы',pgconn:'Подключения PostgreSQL',pgbk:'Резервные копии'};
+  $('#pgTitle').textContent=titles[S.page]||TKNAME[S.tk]||'';
+  $('#view').innerHTML=(P[S.page]||P.stub)();
+  buildNav();
+  if(S.page==='health'&&!S.health.loaded) startHealth();
+}
+
+document.addEventListener('click',function(e){
+  var t=e.target.closest('button'); if(!t) return;
+  var d=t.dataset, r;
+
+  if(d.tab){ S.page=d.tab; render(); return; }
+  if(d.goto){ go('gp',d.goto); return; }
+  if(d.resume){ r=S.runs.filter(function(x){return x.id===+d.resume;})[0]; r.st='running'; r.err=0; render(); return; }
+  if(d.stop){ r=S.runs.filter(function(x){return x.id===+d.stop;})[0]; r.st='interrupted'; render(); return; }
+  if(d.repeat){ t.textContent='Поставлено в очередь'; t.disabled=true; return; }
+  if(d.role){
+    var pr=d.role.split(':'), c=S.conns.filter(function(x){return x.id===+pr[0];})[0];
+    if(!(c.env==='prod'&&pr[1]!=='src')) c.role=pr[1];
+    render(); return;
+  }
+  if(d.test){
+    var c2=S.conns.filter(function(x){return x.id===+d.test;})[0];
+    c2.tested=new Date().toTimeString().slice(0,5); c2.ver='GP 6.24'; render(); return;
+  }
+  if(d.pick){ var pk=d.pick.split(':'); S.copy[pk[0]]=+pk[1]; S.copy.previewed=false; render(); return; }
+  if(t.id==='prevBtn'){ S.copy.previewed=true; S.copy.ttl=900; render(); startTtl(); return; }
+  if(t.id==='resetPrev'){ S.copy.previewed=false; render(); return; }
+  if(t.id==='runBtn'){
+    S.runs.unshift({id:52,kind:'gpcopy: перенос',done:0,total:selTables().length,err:0,st:'running',when:'сейчас'});
+    S.copy.previewed=false; go('gp','dash'); return;
+  }
+  if(d.strat){ S.copy.strategy=d.strat; S.copy.previewed=false; render(); return; }
+  if(d.setkey){ S.copy.keyEdit=+d.setkey; render(); return; }
+  if(d.keycol){
+    var kc=d.keycol.split(':'), tb=TABLES.filter(function(x){return x.id===+kc[0];})[0];
+    tb.key=[kc[1]]; S.copy.keyEdit=null; S.copy.previewed=false; render(); return;
+  }
+  if(d.when){ S.copy.when=d.when; S.copy.previewed=false; render(); return; }
+  if(d.op){ S.vac.op=d.op; render(); return; }
+  if(t.id==='clearSel'){ S.vac.selected=0; render(); return; }
+  if(t.id==='pickSel'){ S.vac.selected=12; render(); return; }
+  if(t.id==='vacRun'){
+    S.runs.unshift({id:53,kind:S.vac.op,done:0,total:S.vac.selected,err:0,st:'running',when:'сейчас'});
+    go('gp','dash'); return;
+  }
+  if(t.id==='cancelH'){ stopHealth(); S.health.loaded=true; render(); return; }
+  if(t.id==='reH'){ S.health.loaded=false; S.health.secs=0; render(); return; }
+  if(t.id==='killQ'){ t.textContent='7 сеансов завершены'; t.disabled=true; return; }
+  if(t.id==='toVac'){ S.vac.selected=3; go('gp','vac'); return; }
+  if(t.id==='reSlice'){ S.grants.stale=0; render(); return; }
+  if(t.id==='revoke'){ t.textContent='Превью REVOKE открыто'; t.disabled=true; return; }
+  if(d.qx){ S.grants.scope='все права'; render(); return; }
+  if(t.id==='aclPrev'){ S.acl.previewed=true; render(); return; }
+  if(t.id==='aclCancel'){ S.acl.previewed=false; render(); return; }
+  if(t.id==='aclApply'){ t.textContent='Применено'; t.disabled=true; return; }
+  if(d.acl){
+    document.querySelectorAll('[data-acl]').forEach(function(b){ b.setAttribute('aria-pressed','false'); });
+    t.setAttribute('aria-pressed','true'); return;
+  }
+});
+document.addEventListener('change',function(e){
+  if(e.target.dataset.tsel){
+    S.copy.sel[+e.target.dataset.tsel]=e.target.checked;
+    S.copy.previewed=false; render(); return;
+  }
+  if(e.target.id==='destr'){
+    S.vac.destructive=e.target.checked;
+    if(!S.vac.destructive&&/FULL|FREEZE/.test(S.vac.op)) S.vac.op='VACUUM ANALYZE';
+    render();
+  }
+});
+
+var ttlTimer=null;
+function startTtl(){
+  clearInterval(ttlTimer);
+  ttlTimer=setInterval(function(){
+    if(!S.copy.previewed){ clearInterval(ttlTimer); return; }
+    S.copy.ttl--;
+    var el=$('#ttl'); if(el) el.textContent=fmt(S.copy.ttl);
+    if(S.copy.ttl<=0){ clearInterval(ttlTimer); S.copy.previewed=false; render(); }
+  },1000);
+}
+function startHealth(){
+  stopHealth();
+  S.health.timer=setInterval(function(){
+    S.health.secs++;
+    var el=$('#secs'); if(el) el.textContent=S.health.secs+' с';
+    if(S.health.secs>=4){ stopHealth(); S.health.loaded=true; render(); }
+  },700);
+}
+function stopHealth(){ clearInterval(S.health.timer); S.health.timer=null; }
+
+$('#burger').addEventListener('click',function(){
+  var open=root.getAttribute('data-nav')==='open';
+  root.setAttribute('data-nav',open?'collapsed':'open');
+  this.setAttribute('aria-expanded',open?'false':'true');
+});
+$('#themeBtn').addEventListener('click',function(){
+  var dark=root.getAttribute('data-theme')==='dark';
+  root.setAttribute('data-theme',dark?'light':'dark');
+  $('#themeIcon').innerHTML=dark
+    ?'<circle cx="10" cy="10" r="3.6"/><path d="M10 1.6v2.2M10 16.2v2.2M18.4 10h-2.2M3.8 10H1.6M15.9 4.1l-1.6 1.6M5.7 14.3l-1.6 1.6M15.9 15.9l-1.6-1.6M5.7 5.7L4.1 4.1"/>'
+    :'<path d="M16.5 11.6A7 7 0 0 1 8.4 3.5a7 7 0 1 0 8.1 8.1z"/>';
+});
+$('#langBtn').addEventListener('click',function(){
+  this.textContent=this.textContent==='RU'?'EN':'RU';
+});
+
+render();
+})();
+</script>
+</body>
+</html>

@@ -42,6 +42,37 @@ def analyze_table_skew(connection_id, schema_name, table_name, job_id=None):
 
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # DISTRIBUTED REPLICATED: полная копия на каждом сегменте,
+            # gp_segment_id в запросе недоступен и перекос неприменим
+            cur.execute(
+                """
+                SELECT p.policytype
+                FROM gp_distribution_policy p
+                JOIN pg_class c ON c.oid = p.localoid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = %s AND c.relname = %s
+                """,
+                (schema_name, table_name),
+            )
+            policy = cur.fetchone()
+
+            if policy and policy.get("policytype") == "r":
+                result = {
+                    "schema_name": schema_name,
+                    "table_name": table_name,
+                    "total_rows": 0,
+                    "segment_count": 0,
+                    "avg_rows": 0,
+                    "max_rows": 0,
+                    "min_rows": 0,
+                    "skew_ratio": 0,
+                    "empty_segments": 0,
+                    "status": "REPLICATED",
+                    "segments": [],
+                }
+                save_skew_result(connection_id, result, job_id=job_id)
+                return result
+
             cur.execute(query)
             rows = cur.fetchall()
     finally:
@@ -168,6 +199,10 @@ def run_skew_job(job_id):
         mark_job_running(job_id)
 
         for item in items:
+            # переподхват после рестарта: готовые строки не переделываем
+            if item.get("status") in ("done", "failed", "skipped"):
+                continue
+
             if is_stop_requested(job_id):
                 safe_mark_job_cancelled(job_id, "Stop requested")
                 refresh_job_progress(job_id)

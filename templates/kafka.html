@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+
+{% block title %}Kafka · Opsentri{% endblock %}
+
+{% block content %}
+
+<style>
+/* ============ Kafka: обзор кластера ============ */
+.kf { max-width: 1560px; display: flex; flex-direction: column; gap: 14px; }
+
+.kf-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 10px 12px; }
+.kf-bar select { flex: 0 1 420px; min-width: 220px; }
+.kf-bar .sp { flex: 1 1 auto; }
+.kf-snap { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.kf-none { font-size: 13px; color: var(--text-muted); }
+
+.kf-note { border-radius: var(--radius); padding: 10px 14px; font-size: 13px;
+  border: 1px solid var(--hairline); }
+.kf-note.warn { color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.kf-note.err { color: var(--crit);
+  background: color-mix(in srgb, var(--crit) 12%, transparent); }
+
+.kf-panel { background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); overflow: hidden; }
+.kf-panel > h2 { font-size: 12px; font-weight: 800; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-muted);
+  margin: 0; padding: 11px 16px; border-bottom: 1px solid var(--hairline);
+  display: flex; align-items: center; gap: 10px; }
+.kf-panel > h2 .sp { flex: 1; }
+
+.kf-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--hairline); }
+.kf-tools input[type="search"] { flex: 0 1 280px; min-width: 180px; }
+.kf-check { display: flex; align-items: center; gap: 7px; font-size: 13px;
+  color: var(--text-muted); white-space: nowrap; cursor: pointer; }
+.kf-count { font-size: 12px; color: var(--text-muted); margin-left: auto; }
+
+.kf-list { max-height: 440px; overflow: auto; padding: 6px; }
+.kf-row { display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; padding: 8px 10px; border-radius: var(--radius-sm); }
+.kf-row .r { font-size: 12px; color: var(--text-muted); white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+.kf-row.topic { cursor: pointer; }
+.kf-row.topic:hover, .kf-row.topic.open { background: var(--surface-2); }
+
+.kf-tag { font-size: 11px; padding: 1px 8px; border-radius: var(--radius-pill);
+  border: 1px solid var(--hairline); color: var(--text-muted);
+  margin-left: 6px; white-space: nowrap; }
+.kf-tag.crit { color: var(--crit);
+  border-color: color-mix(in srgb, var(--crit) 45%, transparent); }
+
+.kf-parts { padding: 2px 10px 10px 22px; }
+.kf-part { font-size: 12px; color: var(--text-muted); padding: 3px 0;
+  font-variant-numeric: tabular-nums; }
+
+.kf-empty { padding: 18px 16px; font-size: 13px; color: var(--text-muted); }
+
+/* --- управление топиками --- */
+.kf-head-btn { margin-left: auto; }
+.kf-form { padding: 12px 16px; border-bottom: 1px solid var(--hairline);
+  display: none; }
+.kf-form.on { display: block; }
+.kf-form .fgrid { display: grid; gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) {
+  .kf-form .fgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.kf-form .form-label { font-size: 11.5px; font-weight: 700;
+  letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 4px; }
+.kf-form .buttons { display: flex; gap: 8px; margin-top: 12px; }
+.kf-acts { display: flex; gap: 8px; margin: 10px 0 2px; flex-wrap: wrap;
+  align-items: center; }
+.kf-cfg { margin-top: 8px; }
+.kf-cfg-row { display: flex; align-items: center; gap: 10px; padding: 3px 0;
+  font-size: 12px; }
+.kf-cfg-row .k { flex: 0 0 260px; color: var(--text-muted);
+  font-family: var(--mono, monospace); }
+.kf-cfg-row input { flex: 0 1 220px; }
+.kf-cfg-row .d { font-size: 11px; color: var(--text-muted); }
+</style>
+
+<div class="kf" id="kfRoot">
+
+  {% if not library_ready %}
+  <div class="kf-note warn">
+    Библиотека <code>kafka-python</code> не установлена. На сервере выполните
+    <code>pip install -r requirements.txt</code> и перезапустите app.py.
+  </div>
+  {% endif %}
+
+  <div class="kf-bar">
+    <select id="kfCluster" class="form-select form-select-sm"
+            {% if not clusters %}hidden{% endif %}>
+      {% for c in clusters %}
+      <option value="{{ c.id }}">{{ c.name }} — {{ c.bootstrap_servers }}</option>
+      {% endfor %}
+    </select>
+    {% if not clusters %}
+    <span class="kf-none">Кластеры ещё не заведены</span>
+    {% endif %}
+    <button class="btn btn-sm btn-secondary" id="kfPing" type="button"
+            {% if not clusters %}disabled{% endif %}>Проверить связь</button>
+    <a class="btn btn-sm btn-secondary" href="/kafka/connections">
+      Подключения</a>
+    <span class="sp"></span>
+    <span class="kf-snap" id="kfSnap">среза нет</span>
+    <button class="btn btn-sm btn-outline-primary" id="kfRefresh" type="button"
+            {% if not library_ready or not clusters %}disabled{% endif %}>
+      Обновить срез</button>
+  </div>
+
+  <div class="kf-note err" id="kfError" style="display: none;"></div>
+
+  <div class="kf-panel">
+    <h2>Брокеры</h2>
+    <div id="kfBrokers"></div>
+  </div>
+
+  <div class="kf-panel">
+    <h2>Топики
+      <button class="btn btn-sm btn-outline-primary kf-head-btn"
+              id="kfTopicAdd" type="button">+ Топик</button></h2>
+
+    <div class="kf-form" id="kfTopicForm">
+      <div class="fgrid">
+        <div>
+          <label class="form-label" for="kfTopicName">Имя</label>
+          <input type="text" id="kfTopicName" class="form-control"
+                 placeholder="dwh.orders">
+        </div>
+        <div>
+          <label class="form-label" for="kfTopicParts">Партиций</label>
+          <input type="number" id="kfTopicParts" class="form-control"
+                 value="1" min="1">
+        </div>
+        <div>
+          <label class="form-label" for="kfTopicRf">Репликация</label>
+          <input type="number" id="kfTopicRf" class="form-control"
+                 value="1" min="1">
+        </div>
+        <div>
+          <label class="form-label" for="kfTopicRet">Retention, часов</label>
+          <input type="number" id="kfTopicRet" class="form-control"
+                 placeholder="по умолчанию" min="1">
+        </div>
+        <div>
+          <label class="form-label" for="kfTopicPolicy">cleanup.policy</label>
+          <select id="kfTopicPolicy" class="form-select">
+            <option value="">по умолчанию</option>
+            <option value="delete">delete</option>
+            <option value="compact">compact</option>
+            <option value="compact,delete">compact,delete</option>
+          </select>
+        </div>
+      </div>
+      <div class="buttons">
+        <button class="btn btn-sm btn-primary" id="kfTopicSave"
+                type="button">Создать</button>
+        <button class="btn btn-sm btn-outline-primary" id="kfTopicCancel"
+                type="button">Отмена</button>
+      </div>
+    </div>
+
+    <div class="kf-tools">
+      <input type="search" id="kfFilter" class="form-control form-control-sm"
+             placeholder="поиск по имени топика">
+      <label class="kf-check">
+        <input type="checkbox" id="kfInternal"> показывать системные
+      </label>
+      <span class="kf-count" id="kfCount"></span>
+    </div>
+    <div id="kfTopics"></div>
+  </div>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/kafka.js') }}"></script>
+{% endblock %}

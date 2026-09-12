@@ -1,13 +1,60 @@
 import sqlite3
+import time
 from contextlib import contextmanager
 
-from config import SQLITE_DB_PATH
+import config
+
+# Приложение пишет в БД из многих потоков сразу: планировщик, воркеры задач,
+# опросы прогресса из браузера. В обычном журнальном режиме любой писатель
+# блокирует базу целиком, и остальные получают "database is locked".
+# WAL разводит читателей и писателя, busy_timeout заставляет подождать
+# очереди вместо мгновенной ошибки.
+SQLITE_TIMEOUT_SECONDS = 20.0
+SQLITE_BUSY_TIMEOUT_MS = 20000
+
+_wal_ready = False
 
 
 def get_sqlite_connection():
-    conn = sqlite3.connect(SQLITE_DB_PATH)
+    # Resolve config.SQLITE_DB_PATH at call time so tests can redirect it.
+    global _wal_ready
+
+    conn = sqlite3.connect(
+        config.SQLITE_DB_PATH, timeout=SQLITE_TIMEOUT_SECONDS,
+    )
     conn.row_factory = sqlite3.Row
+    # транзакция сразу берёт write-блокировку: иначе апгрейд read -> write
+    # отдаёт SQLITE_BUSY_SNAPSHOT, которого busy_timeout не ждёт
+    conn.isolation_level = "IMMEDIATE"
+
+    conn.execute("PRAGMA busy_timeout = {}".format(SQLITE_BUSY_TIMEOUT_MS))
+
+    if not _wal_ready:
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            _wal_ready = True
+        except sqlite3.Error:
+            # сетевая ФС или занятая база — работаем как раньше
+            pass
+
     return conn
+
+
+def _commit_with_retry(conn, attempts=6, delay=0.2):
+    """Коммит не должен падать из-за чужой транзакции — ждём и повторяем."""
+    for attempt in range(attempts):
+        try:
+            conn.commit()
+            return
+        except sqlite3.OperationalError as e:
+            locked = "locked" in str(e).lower() or "busy" in str(e).lower()
+
+            if not locked or attempt == attempts - 1:
+                raise
+
+            time.sleep(delay * (attempt + 1))
+
 
 @contextmanager
 def sqlite_cursor(commit=False):
@@ -16,7 +63,7 @@ def sqlite_cursor(commit=False):
         cur = conn.cursor()
         yield cur
         if commit:
-            conn.commit()
+            _commit_with_retry(conn)
     finally:
         conn.close()
 
@@ -64,7 +111,8 @@ def init_db():
                 started_at TEXT,
                 finished_at TEXT,
                 error_message TEXT,
-                log_file TEXT
+                log_file TEXT,
+                stop_requested INTEGER DEFAULT 0
             )
             """
         )
@@ -83,6 +131,22 @@ def init_db():
                 finished_at TEXT,
                 duration_seconds REAL,
                 error_message TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS backups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                connection_id INTEGER,
+                job_id INTEGER,
+                backup_timestamp TEXT,
+                dbname TEXT,
+                backup_type TEXT,
+                backup_dir TEXT,
+                status TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
@@ -159,10 +223,272 @@ def init_db():
             """
         )
 
+        # --- Scheduler (spec: docs/superpowers/specs/2026-07-21-scheduler-cron-design.md §3) ---
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                job_type TEXT NOT NULL,
+                config_json TEXT,
+                cron_expr TEXT NOT NULL,
+                timezone TEXT,
+                overlap_policy TEXT NOT NULL DEFAULT 'skip',
+                max_retries INTEGER NOT NULL DEFAULT 0,
+                retry_delay_seconds INTEGER NOT NULL DEFAULT 0,
+                notify_on TEXT NOT NULL DEFAULT 'failure',
+                notify_channel_ids TEXT,
+                next_run_at TEXT,
+                last_run_at TEXT,
+                last_status TEXT,
+                last_job_id INTEGER,
+                last_error TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schedule_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                schedule_id INTEGER NOT NULL,
+                fired_at TEXT,
+                run_date TEXT,
+                job_id INTEGER,
+                status TEXT NOT NULL,
+                attempt_no INTEGER NOT NULL DEFAULT 0,
+                error TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule_id
+            ON schedule_runs(schedule_id, status)
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scheduler_lock (
+                id INTEGER PRIMARY KEY,
+                holder TEXT,
+                heartbeat_at TEXT,
+                expires_at TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO scheduler_lock (id, holder, heartbeat_at, expires_at)
+            VALUES (1, NULL, NULL, NULL)
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notification_channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL,
+                config_json TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+
+        # срез прав («Пользователи и гранты»): страница читает его из
+        # SQLite и не ходит в источник, пока не нажали «обновить срез»
+        # найденные ключи синхронизации: поиск по данным дорогой, поэтому
+        # результат живёт в базе и переиспользуется при следующих запусках
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_keys (
+                connection_id INTEGER NOT NULL,
+                schema_name TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                columns_json TEXT NOT NULL,
+                source TEXT,
+                found_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (connection_id, schema_name, table_name)
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS grants_snapshots (
+                connection_id INTEGER PRIMARY KEY,
+                generated_at TEXT,
+                duration_seconds REAL,
+                payload_json TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS grants_schema_snapshots (
+                connection_id INTEGER NOT NULL,
+                schema_name TEXT NOT NULL,
+                generated_at TEXT,
+                payload_json TEXT,
+                PRIMARY KEY (connection_id, schema_name)
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS table_sets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                connection_id INTEGER,
+                tables_json TEXT,
+                rules_json TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT
+            )
+            """
+        )
+
+        # --- Kafka (spec: docs/superpowers/specs/
+        #     2026-08-31-kafka-manager-stage1-design.md) ---
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kafka_clusters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                bootstrap_servers TEXT NOT NULL,
+                security_protocol TEXT NOT NULL DEFAULT 'PLAINTEXT',
+                sasl_mechanism TEXT,
+                sasl_username TEXT,
+                sasl_password TEXT,
+                ssl_cafile TEXT,
+                ssl_certfile TEXT,
+                ssl_keyfile TEXT,
+                request_timeout_ms INTEGER NOT NULL DEFAULT 15000,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kafka_snapshots (
+                cluster_id INTEGER PRIMARY KEY,
+                taken_at TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                brokers_total INTEGER NOT NULL DEFAULT 0,
+                topics_total INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kafka_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cluster_id INTEGER,
+                action TEXT NOT NULL,
+                target TEXT,
+                details_json TEXT,
+                result TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kafka_group_snapshots (
+                cluster_id INTEGER PRIMARY KEY,
+                taken_at TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                groups_total INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_kafka_audit_cluster
+            ON kafka_audit(cluster_id, id DESC)
+            """
+        )
+
     ensure_column_exists(
         "skew_results",
         "job_id",
         "ALTER TABLE skew_results ADD COLUMN job_id INTEGER"
+    )
+
+    ensure_column_exists(
+        "jobs",
+        "stop_requested",
+        "ALTER TABLE jobs ADD COLUMN stop_requested INTEGER DEFAULT 0"
+    )
+
+    ensure_column_exists(
+        "connections",
+        "db_type",
+        "ALTER TABLE connections ADD COLUMN db_type TEXT DEFAULT 'greenplum'"
+    )
+
+    # роль коннектора: source | dest | both (для деления на
+    # «источники» и «назначения» и фильтрации в синхронизации)
+    ensure_column_exists(
+        "connections",
+        "role",
+        "ALTER TABLE connections ADD COLUMN role TEXT DEFAULT 'both'"
+    )
+
+    # инструмент, которым сделана копия: gpbackup | pg_dump
+    ensure_column_exists(
+        "backups",
+        "tool",
+        "ALTER TABLE backups ADD COLUMN tool TEXT DEFAULT 'gpbackup'"
+    )
+
+    # вес таблицы (байты) для взвешенного прогресса и live-счётчик
+    ensure_column_exists(
+        "job_items",
+        "size_bytes",
+        "ALTER TABLE job_items ADD COLUMN size_bytes INTEGER DEFAULT 0"
+    )
+
+    ensure_column_exists(
+        "job_items",
+        "bytes_done",
+        "ALTER TABLE job_items ADD COLUMN bytes_done INTEGER DEFAULT 0"
+    )
+
+    # PID внешнего процесса (gpcopy) — для переподхвата после рестарта
+    ensure_column_exists(
+        "jobs",
+        "pid",
+        "ALTER TABLE jobs ADD COLUMN pid INTEGER"
+    )
+
+    # партиции таблицы: всего / уже скопировано (live-прогресс gpcopy)
+    ensure_column_exists(
+        "job_items",
+        "parts_total",
+        "ALTER TABLE job_items ADD COLUMN parts_total INTEGER DEFAULT 0"
+    )
+
+    ensure_column_exists(
+        "job_items",
+        "parts_done",
+        "ALTER TABLE job_items ADD COLUMN parts_done INTEGER DEFAULT 0"
     )
 
 
@@ -172,23 +498,10 @@ def get_connection_by_id(connection_id):
     Не зависит от list_connections().
     """
 
-    import sqlite3
-    import os
-
     connection_id = int(connection_id)
 
-    db_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "instance",
-        "gp_reorganize_center.sqlite3"
-    )
-
-    if not os.path.exists(db_path):
-        # Если app.py запускается из корня проекта, пробуем второй вариант
-        db_path = os.path.join("instance", "gp_reorganize_center.sqlite3")
-
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    # Единый источник пути к БД (config.SQLITE_DB_PATH), чтобы тесты могли его подменить.
+    conn = get_sqlite_connection()
 
     try:
         cur = conn.cursor()

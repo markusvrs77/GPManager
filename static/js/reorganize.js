@@ -1,4 +1,4 @@
-let currentReorganizeJobId = null;
+﻿let currentReorganizeJobId = null;
 let currentReorganizePollTimer = null;
 
 let applyDistributionTimer = null;
@@ -101,15 +101,15 @@ function handleReorganizeActionButton() {
 function setReorganizeButtonRunMode() {
     const button = document.getElementById("reorganizeActionButton");
     button.dataset.mode = "run";
-    button.textContent = "Run Reorganize";
-    button.className = "btn btn-warning w-100 mb-3";
+    button.textContent = "Запустить реорганизацию";
+    button.className = "btn btn-primary w-100 mb-3";
     button.disabled = false;
 }
 
 function setReorganizeButtonStopMode() {
     const button = document.getElementById("reorganizeActionButton");
     button.dataset.mode = "stop";
-    button.textContent = "Stop current job";
+    button.textContent = "Остановить задачу";
     button.className = "btn btn-danger w-100 mb-3";
     button.disabled = false;
 }
@@ -117,7 +117,7 @@ function setReorganizeButtonStopMode() {
 function setReorganizeButtonStoppingMode() {
     const button = document.getElementById("reorganizeActionButton");
     button.dataset.mode = "stopping";
-    button.textContent = "Stopping...";
+    button.textContent = "Останавливаю…";
     button.className = "btn btn-secondary w-100 mb-3";
     button.disabled = true;
 }
@@ -412,6 +412,17 @@ function renderReorganizeJobItems(items) {
         return;
     }
 
+    // опрос идёт каждые пару секунд — прокрутку возвращаем на место
+    if (window.gpKeepScroll) {
+        window.gpKeepScroll(body, function () {
+            paintReorganizeJobItems(body, items);
+        });
+    } else {
+        paintReorganizeJobItems(body, items);
+    }
+}
+
+function paintReorganizeJobItems(body, items) {
     body.innerHTML = "";
 
     if (!items || !items.length) {
@@ -489,10 +500,16 @@ document.addEventListener("DOMContentLoaded", function () {
 let lastDistributionRecommendation = null;
 
 function getOneSelectedTable() {
-    const checked = document.querySelectorAll(".table-checkbox:checked");
+    // таблица из дерева объектов ИЛИ из списка «Таблицы с перекосом»
+    const checked = document.querySelectorAll(
+        ".table-checkbox:checked, .problem-skew-checkbox:checked"
+    );
 
     if (checked.length === 0) {
-        showReorganizeMessage("Выбери одну таблицу для recommendation.", "warning");
+        showReorganizeMessage(
+            "Выбери одну таблицу (в дереве или в списке перекошенных).",
+            "warning"
+        );
         return null;
     }
 
@@ -532,7 +549,7 @@ function loadDistributionRecommendation() {
 
     box.innerHTML = `
         <div class="alert alert-info">
-            Анализирую unique/primary key для ${selected.schema_name}.${selected.table_name}...
+            Анализирую unique/primary key для ${escapeHtml(selected.schema_name)}.${escapeHtml(selected.table_name)}...
         </div>
     `;
 
@@ -623,7 +640,7 @@ function loadDistributionRecommendation() {
 }
 
 
-function applyRecommendedDistribution() {
+async function applyRecommendedDistribution() {
     if (!lastDistributionRecommendation) {
         showReorganizeMessage("Сначала получи recommendation.", "warning");
         return;
@@ -637,14 +654,18 @@ function applyRecommendedDistribution() {
         return;
     }
 
-    const msg = `
-Будет выполнено:
-${lastDistributionRecommendation.recommended_sql_preview}
+    const rec = lastDistributionRecommendation;
+    const table = `${rec.schema_name}.${rec.table_name}`;
 
-Продолжить?
-`;
+    const yes = await window.gpConfirm(
+        `Таблица ${table} будет перераспределена. На больших таблицах это `
+        + `надолго блокирует запись.\n\nБудет выполнено:\n`
+        + `${rec.recommended_sql_preview}`,
+        { title: "Сменить распределение?", confirmText: "Выполнить",
+          danger: true }
+    );
 
-    if (!confirm(msg)) {
+    if (!yes) {
         return;
     }
 

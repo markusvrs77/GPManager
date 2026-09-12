@@ -1,0 +1,206 @@
+/* ============================================================
+   Opsentri shell — soft console
+   The sidebar groups the toolkits; the top bar carries the selected
+   toolkit's own functions. All colour comes from tokens.css.
+   ============================================================ */
+
+.gp-shell { display: flex; min-height: 100vh; background: var(--bg); }
+
+/* ---------- sidebar ---------- */
+.gp-sb { width: 252px; flex: none; display: flex; flex-direction: column;
+  background: var(--surface); border-right: 1px solid var(--hairline);
+  position: sticky; top: 0; height: 100vh; z-index: 20; overflow: hidden; }
+html[data-sb="mini"] .gp-sb { width: 66px; }
+
+.gp-sb .sb-head { display: flex; align-items: center; gap: 8px;
+  padding: 12px 12px 12px 10px; border-bottom: 1px solid var(--hairline); }
+.gp-sb .sb-burger { width: 38px; height: 38px; flex: none; border: none;
+  background: none; color: var(--text); border-radius: 12px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; }
+.gp-sb .sb-burger svg { width: 19px; height: 19px; }
+.gp-sb .sb-burger:hover { background: var(--surface-2); }
+
+.gp-sb .brand { display: flex; align-items: center; gap: 9px; min-width: 0;
+  color: var(--text); text-decoration: none; white-space: nowrap; }
+.gp-sb .brand .gp-logo { width: 30px; height: 30px; border-radius: 10px;
+  background: var(--accent-grad); color: #fff; flex: none;
+  display: flex; align-items: center; justify-content: center; }
+.gp-sb .brand .gp-logo svg { width: 18px; height: 18px; display: block; }
+.gp-sb .brand .bname { font-weight: 800; font-size: 15px; letter-spacing: -.01em;
+  transition: opacity var(--dur-fast) var(--ease); }
+html[data-sb="mini"] .gp-sb .sb-head { flex-direction: column; gap: 10px;
+  padding: 12px 8px; }
+html[data-sb="mini"] .gp-sb .brand .bname { display: none; }
+
+.gp-sb .sb-body { flex: 1; overflow-y: auto; overflow-x: hidden;
+  padding: 10px 10px 4px; }
+html[data-sb="mini"] .gp-sb .sb-body { padding: 10px 8px 4px; }
+
+/* ---- direction headers: DB Operations / Data Flow ---- */
+.gp-sb .sb-sec-hd { display: flex; align-items: center; gap: 8px;
+  width: 100%; border: none; background: transparent; cursor: pointer;
+  text-align: left; color: var(--text-muted); font: inherit;
+  padding: 8px 10px; border-radius: 10px; margin-top: 4px; }
+.gp-sb .sb-sec-hd:hover { background: var(--surface-2); color: var(--text); }
+.gp-sb .sec-ttl { font-weight: 800; font-size: 11px; letter-spacing: .09em;
+  text-transform: uppercase; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.gp-sb .sec-chev { margin-left: auto; font-size: 11px; flex: none;
+  transition: transform var(--dur-fast) var(--ease); }
+
+.gp-sb .sb-sec-body { display: flex; flex-direction: column; gap: 2px;
+  margin-top: 2px; }
+
+/* ---- toolkit rows ---- */
+.gp-sb .tk-item { display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px; border-radius: 11px; color: var(--text-muted);
+  text-decoration: none; font-size: 13px; font-weight: 600;
+  white-space: nowrap; overflow: hidden;
+  transition: background var(--dur-fast), color var(--dur-fast); }
+.gp-sb a.tk-item:hover { background: var(--surface-2); color: var(--text);
+  text-decoration: none; }
+.gp-sb a.tk-item.active { background: color-mix(in srgb, var(--a-bright) 14%, transparent);
+  color: var(--a2); }
+.gp-sb .tk-item.stub { cursor: default; }
+.gp-sb .tk-item .lbl { overflow: hidden; text-overflow: ellipsis; }
+.gp-sb .tk-item .soon { margin-left: auto; flex: none; font-size: 11px;
+  font-weight: 700; padding: 2px 7px; border-radius: var(--radius-pill);
+  background: var(--surface-2); color: var(--text-muted); }
+.gp-sb .nav-badge { margin-left: auto; flex: none; background: var(--a1);
+  color: #fff; font-size: 11px; font-weight: 700;
+  border-radius: var(--radius-pill); padding: 1px 7px; }
+
+/* the toolkit mark keeps each engine's own colour: it is an identity,
+   not an accent, so it never follows the theme */
+.gp-sb .tk-logo { width: 24px; height: 24px; border-radius: 8px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800; color: #fff; background: var(--a1); }
+.gp-sb .tk-logo.gp  { background: #2f7d3a; }
+.gp-sb .tk-logo.pg  { background: #2c5c80; }
+.gp-sb .tk-logo.ora { background: #a83a2b; }
+.gp-sb .tk-logo.my  { background: #0a6478; }
+.gp-sb .tk-logo.kf  { background: #3b414a; }
+.gp-sb .tk-logo.dz  { background: #4e7029; }
+.gp-sb .tk-logo.lr  { background: #7a5f33; }
+.gp-sb .tk-logo.pl  { background: #4a5bbf; }
+
+/* collapsed directions */
+html[data-sec-dbops="closed"] #secBody-dbops { display: none; }
+html[data-sec-dbops="closed"] #secHd-dbops .sec-chev { transform: rotate(-90deg); }
+html[data-sec-flow="closed"] #secBody-flow { display: none; }
+html[data-sec-flow="closed"] #secHd-flow .sec-chev { transform: rotate(-90deg); }
+
+/* collapsed rail: labels drop, marks stay, headers become dividers */
+html[data-sb="mini"] .gp-sb .sec-ttl,
+html[data-sb="mini"] .gp-sb .sec-chev,
+html[data-sb="mini"] .gp-sb .tk-item .lbl,
+html[data-sb="mini"] .gp-sb .tk-item .soon,
+html[data-sb="mini"] .gp-sb .nav-badge { display: none; }
+html[data-sb="mini"] .gp-sb .sb-sec-hd { justify-content: center;
+  padding: 6px 0; pointer-events: none; }
+html[data-sb="mini"] .gp-sb .sb-sec-hd::after { content: ""; width: 20px;
+  height: 1px; background: var(--hairline); }
+html[data-sb="mini"] .gp-sb .tk-item { justify-content: center; padding: 9px 0; }
+html[data-sb="mini"] #secBody-dbops,
+html[data-sb="mini"] #secBody-flow { display: flex; }
+
+.gp-sb .sb-foot { padding: 8px 10px 10px; border-top: 1px solid var(--hairline);
+  display: flex; gap: 4px; }
+html[data-sb="mini"] .gp-sb .sb-foot { justify-content: center; }
+.gp-sb .gp-theme { width: 38px; height: 38px; border-radius: 11px;
+  border: 1px solid var(--hairline); background: none; color: var(--text-muted);
+  cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.gp-sb .gp-theme svg { width: 18px; height: 18px; }
+.gp-sb .gp-theme:hover { background: var(--surface-2); color: var(--text); }
+
+/* ---- content links under the theme, not browser blue ---- */
+.gp-shell-content a:not(.btn) { color: var(--a2); text-decoration: none; }
+.gp-shell-content a:not(.btn):hover { color: var(--a2); text-decoration: underline; }
+
+/* ---------- main / topbar ---------- */
+.gp-shell-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.gp-top { display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  padding: 12px 22px; border-bottom: 1px solid var(--hairline);
+  background: var(--surface); position: sticky; top: 0; z-index: 10; }
+.gp-top .gp-top-id { display: flex; flex-direction: column; min-width: 0; }
+.gp-top .tk-name { font-size: 11px; font-weight: 800; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--text-muted); }
+.gp-top .pgtitle { font-size: 19px; font-weight: 800; margin: 1px 0 0;
+  letter-spacing: -.02em; }
+.gp-top .pgcrumb { color: var(--text-muted); font-size: 12.5px; }
+
+/* the selected toolkit's functions */
+.gp-tabs { display: flex; gap: 2px; flex-wrap: wrap; margin-left: auto;
+  background: var(--surface-2); border-radius: var(--radius-pill); padding: 4px; }
+.gp-tabs a { padding: 7px 14px; border-radius: var(--radius-pill);
+  color: var(--text-muted); text-decoration: none; font-size: 13px;
+  font-weight: 600; white-space: nowrap;
+  transition: background var(--dur-fast), color var(--dur-fast); }
+.gp-tabs a:hover { color: var(--text); text-decoration: none; }
+.gp-tabs a[aria-current="page"] { background: var(--text); color: var(--surface); }
+
+.gp-shell-content { flex: 1; }
+
+/* page entrance */
+@keyframes gpPageIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.gp-shell-content > * { animation: gpPageIn .32s var(--ease) both; }
+@media (prefers-reduced-motion: reduce) {
+  .gp-shell-content > * { animation: none; }
+  .gp-sb .tk-item, .gp-tabs a, .gp-sb .brand .bname { transition: none; }
+}
+
+/* ============================================================
+   Bootstrap component polish (existing pages)
+   ============================================================ */
+
+.card { border: 1px solid var(--hairline) !important;
+  border-radius: var(--radius) !important; background: var(--surface);
+  box-shadow: var(--shadow); overflow: hidden; }
+.card .card-header { display: flex; align-items: center; gap: 9px;
+  background: transparent !important; border-bottom: 1px solid var(--hairline);
+  font-size: 11.5px !important; font-weight: 800 !important;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-muted) !important; padding: 13px 18px;
+  justify-content: flex-start !important; }
+.card .card-header::before { content: ""; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--a-bright); flex: none; }
+.card .card-header > .btn, .card .card-header > button,
+.card .card-header > .d-flex, .card .card-header > select { margin-left: auto; }
+
+.btn { border-radius: var(--radius-sm); font-weight: 600; }
+.btn-primary { background: var(--accent-grad) !important; border: none !important;
+  color: #fff !important; transition: filter var(--dur-fast); }
+.btn-primary:hover { filter: brightness(1.12); }
+.btn-outline-primary { border-color: color-mix(in srgb, var(--a1) 45%, transparent) !important;
+  color: var(--a2) !important; background: transparent !important; }
+.btn-outline-primary:hover { background: color-mix(in srgb, var(--a-bright) 12%, transparent) !important;
+  color: var(--a2) !important; }
+
+.table thead th { font-size: 11px; font-weight: 800; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-muted);
+  border-bottom: 1px solid var(--hairline) !important; }
+.table tbody tr { transition: background var(--dur-fast); }
+.table tbody tr:hover { background: var(--row-hover); }
+
+.form-control, .form-select { border-radius: var(--radius-sm) !important;
+  border-color: var(--hairline) !important; }
+.form-control:focus, .form-select:focus {
+  border-color: color-mix(in srgb, var(--a1) 50%, transparent) !important;
+  box-shadow: 0 0 0 3px var(--ring) !important; }
+.form-label { font-size: 12px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--text-muted); }
+
+/* narrow screens: the sidebar is always a rail */
+@media (max-width: 900px) {
+  .gp-sb { width: 66px; }
+  .gp-sb .brand .bname, .gp-sb .tk-item .lbl, .gp-sb .tk-item .soon,
+  .gp-sb .nav-badge, .gp-sb .sec-ttl, .gp-sb .sec-chev { display: none; }
+  .gp-sb .sb-head { flex-direction: column; gap: 10px; padding: 12px 8px; }
+  .gp-sb .sb-sec-hd { justify-content: center; padding: 6px 0; }
+  .gp-sb .tk-item { justify-content: center; padding: 9px 0; }
+  .gp-tabs { margin-left: 0; width: 100%; }
+}

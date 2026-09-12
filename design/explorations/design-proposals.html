@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Opsentri — постраничные предложения</title>
+<style>
+:root{
+  --bg:#f1f0ec; --card:#fff; --card-2:#f7f6f3; --line:#eae8e2;
+  --ink:#1a1a17; --ink-2:#65645d; --a:#f0562b; --a-solid:#cc3a0d; --a-text:#c0330a;
+  --a-soft:#fde9e1; --ok:#167a3c; --ok-soft:#e3f2e7; --crit:#c22a20; --crit-soft:#fbe6e3;
+  --warn:#a05a08; --r:20px; --r-s:12px;
+  --sh:0 1px 2px rgba(26,26,23,.05), 0 8px 24px -12px rgba(26,26,23,.16);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#111110; --card:#1c1c19; --card-2:#232320; --line:#2e2e29;
+    --ink:#f1f0eb; --ink-2:#aba9a1; --a-text:#ff9877; --a-soft:#3a1d12;
+    --ok:#5cc77f; --ok-soft:#16301f; --crit:#ff8a7a; --crit-soft:#331a16; --warn:#e8b45c;
+    --sh:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+  }
+}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Fira Sans","Segoe UI",system-ui,sans-serif;font-size:15px;line-height:1.6}
+::selection{background:var(--a);color:#fff}
+:focus-visible{outline:2px solid var(--a-text);outline-offset:2px}
+*{scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+h1,h2,h3{margin:0;letter-spacing:-.02em}
+.wrap{max-width:1080px;margin:0 auto;padding:34px 22px 70px}
+
+header.top h1{font-size:34px;font-weight:800}
+header.top p{margin:8px 0 0;color:var(--ink-2);max-width:70ch}
+.prov{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+.prov span{background:var(--card);border-radius:99px;
+  padding:6px 13px;font-size:13px;color:var(--ink-2);box-shadow:var(--sh)}
+
+.verdict{background:var(--card);border-radius:var(--r);
+  box-shadow:var(--sh);padding:22px;margin:22px 0 34px}
+.verdict h2{font-size:19px;font-weight:800;margin-bottom:10px}
+.verdict p{margin:0 0 12px;max-width:78ch}
+.scores{display:flex;gap:22px;flex-wrap:wrap;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
+.scores div{display:flex;flex-direction:column}
+.scores b{font-size:24px;font-weight:800;letter-spacing:-.03em}
+.scores span{font-size:13px;color:var(--ink-2)}
+.scores .bad b{color:var(--crit)}
+
+.page{background:var(--card);border-radius:var(--r);
+  box-shadow:var(--sh);padding:22px;margin-bottom:16px}
+.page > h2{font-size:20px;font-weight:800;display:flex;align-items:baseline;gap:11px;flex-wrap:wrap}
+.page > h2 code, .issue code{font-family:ui-monospace,"Fira Code",monospace;font-size:14px;font-weight:600;
+  background:var(--card-2);border:1px solid var(--line);border-radius:99px;padding:2px 10px;color:var(--ink-2)}
+.goal{margin:6px 0 18px;color:var(--ink-2)}
+
+.issue{display:grid;grid-template-columns:26px minmax(0,1fr);gap:12px;margin-bottom:14px}
+.issue .n{width:26px;height:26px;border-radius:8px;background:var(--crit-soft);color:var(--crit);
+  display:grid;place-items:center;font-weight:800;font-size:13px}
+.issue.ok .n{background:var(--ok-soft);color:var(--ok)}
+.issue p{margin:0}
+.ev{display:block;margin-top:4px;font-size:13px;color:var(--ink-2);
+  font-family:ui-monospace,"Fira Code",monospace}
+
+.prop{background:var(--card-2);border:1px solid var(--line);border-radius:var(--r-s);
+  padding:16px;margin-top:16px}
+.prop h3{font-size:13px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--a-text);margin-bottom:10px}
+.prop ol{margin:0;padding-left:20px}
+.prop li{margin-bottom:8px}
+.prop li:last-child{margin-bottom:0}
+
+.ba{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:16px}
+@media(max-width:720px){.ba{grid-template-columns:1fr}}
+.ba > div{border:1px solid var(--line);border-radius:var(--r-s);overflow:hidden;background:var(--card)}
+.ba .cap{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;
+  padding:8px 12px;border-bottom:1px solid var(--line);color:var(--ink-2);background:var(--card-2)}
+.ba .now .cap{color:var(--crit)}
+.ba .next .cap{color:var(--ok)}
+.wire{padding:12px;display:flex;flex-direction:column;gap:7px}
+.wire .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.wire .blk{background:var(--card-2);border:1px solid var(--line);border-radius:7px;
+  padding:7px 9px;font-size:12px;color:var(--ink-2);flex:1;min-width:0}
+.wire .blk.solid{background:var(--a-solid);border-color:var(--a-solid);color:#fff;font-weight:700;flex:none}
+.wire .blk.ghost{opacity:.55;flex:none}
+.wire .blk.warn{background:var(--crit-soft);border-color:var(--crit);color:var(--crit);font-weight:700}
+.wire .blk.good{background:var(--ok-soft);border-color:var(--ok);color:var(--ok);font-weight:700;flex:none}
+.wire .blk.sm{flex:none;padding:5px 8px}
+.wire .blk.wide{flex:1}
+.wire .bar{height:9px;border-radius:99px;background:var(--card-2);overflow:hidden;display:flex}
+.wire .bar i{display:block;height:100%}
+.wire .bar i.done{background:var(--ok)}
+.wire .bar i.err{background:var(--crit)}
+.wire .bar i.acc{background:var(--a)}
+.wire .lbl{font-size:12px;color:var(--ink-2);letter-spacing:.01em;font-weight:700}
+.wire .note{font-size:12px;color:var(--ink-2)}
+
+.systemic{background:var(--card);border-radius:var(--r);
+  box-shadow:var(--sh);padding:22px;margin-top:34px}
+.systemic h2{font-size:22px;font-weight:800;margin-bottom:6px}
+.systemic > p{color:var(--ink-2);margin:0 0 18px;max-width:78ch}
+.sys{border-top:1px solid var(--line);padding-top:16px;margin-top:16px}
+.sys h3{font-size:17px;font-weight:800;margin-bottom:6px}
+.sys p{margin:0 0 8px;max-width:80ch}
+
+footer{margin-top:34px;color:var(--ink-2);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>Opsentri — что менять, постранично</h1>
+  <p>
+    Разбор шестнадцати страниц на живом кластере GP_TEST. Это предложения, а не вёрстка:
+    ничего из перечисленного в приложение не внесено. Схемы «сейчас → предлагаю» показывают
+    направление решения, а не финальный макет.
+  </p>
+  <div class="prov">
+    <span>Два изолированных ассессмента</span>
+    <span>Дизайн-обзор вслепую, без машинных улик</span>
+    <span>Замеры: контраст, консоль, фокус, адаптивность</span>
+    <span>Кластер живой, состояния настоящие</span>
+  </div>
+</header>
+
+<section class="verdict">
+  <h2>Вердикт: оболочка универсальная, специфичность живёт только в текстах</h2>
+  <p>
+    Снимите шапку, замените слова — и это админка чего угодно. Ни один структурный элемент не
+    отвечает на вопрос, который отличает продукт от всех остальных: «я вернулся через час,
+    что происходит с кластером и что я запустил?»
+  </p>
+  <p>
+    Три инварианта из PRODUCT.md не имеют в макете ни одного выделенного места: окружения
+    подключения в интерфейсе не существует, превью есть ровно на одной странице из шестнадцати,
+    а сквозной счётчик задач видит только четверть их типов.
+  </p>
+  <div class="scores">
+    <div class="bad"><b>1,3</b><span>средний балл по Нильсену из 4</span></div>
+    <div class="bad"><b>0</b><span>предотвращение ошибок</span></div>
+    <div><b>3 из 4</b><span>эстетика скина</span></div>
+    <div class="bad"><b>1 из 16</b><span>страниц с настоящим превью</span></div>
+  </div>
+</section>
+
+<section class="page">
+  <h2>Dashboard <code>/</code></h2>
+  <p class="goal">Дать за пять секунд ответ: что идёт, что сломалось, куда идти.</p>
+
+  <div class="issue"><span class="n">1</span><p>
+    <strong>Плитка врёт в лицо.</strong> «Запуски за 7 дней: 0» подписана «все успешно», а прямо
+    под ней список из шести прерванных и одного провалившегося.
+    <span class="ev">ноль запусков объявлен успехом</span>
+  </p></div>
+  <div class="issue"><span class="n">2</span><p>
+    <strong>Приоритет не читается.</strong> Прерванный прогон весит визуально столько же, сколько
+    успешный: разница — точка 6px и цвет тонкой полосы.
+  </p></div>
+  <div class="issue"><span class="n">3</span><p>
+    <strong>Числа кластеров противоречат друг другу.</strong> Здесь один GP_TEST, на подключениях —
+    две одинаковые карточки того же подключения.
+  </p></div>
+
+  <div class="ba">
+    <div class="now"><div class="cap">Сейчас</div><div class="wire">
+      <div class="row">
+        <span class="blk">0 · нет активных</span>
+        <span class="blk">0 · все успешно</span>
+        <span class="blk">0 / 0</span>
+      </div>
+      <span class="note">четыре счётчика, ни один не отвечает «мне надо что-то делать?»</span>
+      <div class="row"><span class="blk sm">#46 interrupted</span><span class="blk sm">#50 done</span></div>
+      <span class="note">одинаковый вес строк</span>
+    </div></div>
+    <div class="next"><div class="cap">Предлагаю</div><div class="wire">
+      <div class="row">
+        <span class="blk good sm">0 активных</span>
+        <span class="blk warn wide">Требует внимания: 6 прерванных · 1 провал · 15 таблиц без vacuum</span>
+      </div>
+      <span class="note">одна полоса состояния смены вместо четырёх счётчиков</span>
+      <div class="row"><span class="blk warn wide">#46 · перекос · 47 из 822</span><span class="blk solid sm">Возобновить</span></div>
+      <div class="row"><span class="blk ghost sm">#50 · vacuum · 151/151 · done</span></div>
+    </div></div>
+  </div>
+
+  <div class="prop"><h3>Что сделать</h3><ol>
+    <li>Заменить четыре счётчика на <strong>одну полосу состояния смены</strong>: активные слева, агрегат «требует внимания» в центре, свежесть последней проверки справа.</li>
+    <li>Переписать нулевое состояние: при нуле запусков — «за 7 дней запусков не было», а не «все успешно».</li>
+    <li>Поднять прерванные наверх списка и дать им <strong>действие прямо в строке</strong>: «Возобновить с 48-й». Сейчас единственный способ отреагировать — уйти и запустить 822 таблицы заново.</li>
+  </ol></div>
+</section>
+
+<section class="page">
+  <h2>Подключения <code>/connections</code></h2>
+  <p class="goal">Показать, куда приложение может ходить и с какими правами.</p>
+
+  <div class="issue"><span class="n">1</span><p>
+    <strong>Окружения нет.</strong> Карточка выводит роль («универсальный»), а не production / test /
+    development. Поля нет и в форме добавления.
+    <span class="ev">инвариант «production — источник, не приёмник» не имеет носителя в UI</span>
+  </p></div>
+  <div class="issue"><span class="n">2</span><p>
+    <strong>Одно подключение — две карточки.</strong> Роль «оба» попадает и в «Источники», и в
+    «Назначения». Две кнопки «Удалить» на одну сущность.
+  </p></div>
+  <div class="issue"><span class="n">3</span><p>
+    <strong>Результат проверки улетает вниз страницы</strong> — за пределы экрана, без привязки к
+    карточке. Плитка «+ Новое подключение» лежит внутри сетки приёмников.
+  </p></div>
+
+  <div class="ba">
+    <div class="now"><div class="cap">Сейчас</div><div class="wire">
+      <span class="lbl">Источники</span>
+      <div class="row"><span class="blk">GP_TEST · Greenplum · универсальный · #1</span></div>
+      <span class="lbl">Назначения</span>
+      <div class="row"><span class="blk">GP_TEST · Greenplum · универсальный · #1</span><span class="blk ghost sm">+</span></div>
+      <span class="note">то же подключение дважды · окружение неизвестно</span>
+    </div></div>
+    <div class="next"><div class="cap">Предлагаю</div><div class="wire">
+      <div class="row"><span class="lbl">Production</span><span class="blk solid sm">+ Добавить</span></div>
+      <div class="row"><span class="blk warn">PROD · dwh-gp-01 · adb</span></div>
+      <div class="row"><span class="blk sm">роль: только источник</span><span class="blk good sm">проверено 16:09</span></div>
+      <span class="lbl">Test</span>
+      <div class="row"><span class="blk">TEST · GP_TEST · adb</span></div>
+      <div class="row"><span class="blk sm">роль: источник и приёмник</span></div>
+    </div></div>
+  </div>
+
+  <div class="prop"><h3>Что сделать</h3><ol>
+    <li><strong>Окружение — первичный визуальный признак карточки</strong>, не поле. Бейдж PROD / TEST / DEV, и тот же бейдж обязан ехать в каждый селектор приёмника и в текст подтверждения удаления.</li>
+    <li><strong>Одна карточка на подключение</strong>, роль — переключатель внутри неё, группировка по окружению вместо группировки по роли.</li>
+    <li>Результат проверки — <strong>внутрь карточки</strong>, полоской под кнопками, с меткой времени и версией сервера.</li>
+  </ol></div>
+</section>
+
+<section class="page">
+  <h2>Синхронизация данных <code>/gpcopy</code></h2>
+  <p class="goal">Собрать задание переноса между кластерами и запустить или запланировать.</p>
+
+  <div class="issue"><span class="n">1</span><p>
+    <strong>Приёмник равен источнику, и ничто не возражает.</strong> Строка-резюме читается буквально:
+    «Скопировать 0 таблиц из GP_TEST в GP_TEST», кнопка запуска активна.
+    <span class="ev">из 34 кнопок страницы ни одна не заблокирована</span>
+  </p></div>
+  <div class="issue"><span class="n">2</span><p>
+    <strong>Иерархия перевёрнута.</strong> «Запустить» — solid primary, «Проверить DDL» — серый ghost
+    рядом. Инвариант требует обратного, и ничто не блокирует применение без превью.
+  </p></div>
+  <div class="issue"><span class="n">3</span><p>
+    <strong>Резюме умалчивает о самом опасном.</strong> Говорит «полное копирование», но не говорит
+    <code>--truncate</code>: последнее, что оператор читает перед нажатием, скрывает, что приёмные
+    таблицы будут очищены.
+  </p></div>
+  <div class="issue"><span class="n">4</span><p>
+    <strong>Эмодзи вместо иконосистемы</strong> — 29 вхождений. На RHEL без цветного шрифта часть
+    выродится в моно-глифы или пустые квадраты.
+  </p></div>
+
+  <div class="ba">
+    <div class="now"><div class="cap">Сейчас</div><div class="wire">
+      <div class="row"><span class="blk">GP_TEST</span><span class="blk sm">→</span><span class="blk">GP_TEST</span></div>
+      <div class="row"><span class="blk">Скопировать 0 таблиц из GP_TEST в GP_TEST — полное копирование</span></div>
+      <div class="row"><span class="blk solid">Запустить</span><span class="blk ghost sm">Проверить DDL</span></div>
+      <span class="note">резюме не упоминает --truncate</span>
+    </div></div>
+    <div class="next"><div class="cap">Предлагаю</div><div class="wire">
+      <div class="row"><span class="blk warn">TEST · GP_TEST / adb</span><span class="blk sm">→</span><span class="blk warn">TEST · GP_TEST / adb</span></div>
+      <div class="row"><span class="blk warn wide">Приёмник совпадает с источником — копирование заблокировано</span></div>
+      <div class="row"><span class="blk">12 таблиц · режим полный · существующие будут очищены (--truncate) · доп. аргументы: нет</span></div>
+      <div class="row"><span class="blk solid">Проверить DDL</span><span class="blk ghost sm">Запустить · нужно превью</span></div>
+    </div></div>
+  </div>
+
+  <div class="prop"><h3>Что сделать</h3><ol>
+    <li><strong>Пара «источник → приёмник» становится защищённым узлом.</strong> Оба селектора несут бейдж окружения; при совпадении или при PROD в приёмнике блок краснеет и запуск гаснет. Это единственное место, где инвариант можно исполнить, а не задекларировать.</li>
+    <li><strong>Резюме становится шлюзом.</strong> Пока превью не выполнено, «Запустить» заблокирована; после превью разблокируется и показывает срок годности. Это ложится на одноразовый истекающий токен из спецификации.</li>
+    <li>Дописать резюме до полного: окружения, база, режим, <strong>что будет с существующими таблицами</strong>, взведённые доп. аргументы.</li>
+    <li>Заменить эмодзи на штриховой SVG-набор одной толщины — темизируемый и предсказуемый офлайн.</li>
+  </ol></div>
+</section>
+
+<section class="page">
+  <h2>Vacuum / Analyze <code>/vacuum</code></h2>
+  <p class="goal">Выбрать таблицы, выполнить обслуживание, наблюдать прогресс.</p>
+
+  <div class="issue"><span class="n">1</span><p>
+    <strong>VACUUM FULL — равноправный пункт плоского селекта</strong> из пяти. Ни цветом, ни словом
+    не сказано, что он берёт ACCESS EXCLUSIVE и переписывает таблицу.
+    <span class="ev">кнопка запуска активна при «Выбрано: 0»</span>
+  </p></div>
+  <div class="issue"><span class="n">2</span><p>
+    <strong>Архив выглядит как живое.</strong> Панель по умолчанию открыта на июльском прогоне со
+    сплошной зелёной шкалой 151/151. Вернувшийся через час оператор решит, что его задача закончилась.
+  </p></div>
+  <div class="issue"><span class="n">3</span><p>
+    <strong>«Воркеры» — безымянное числовое поле</strong> без границ и без слова о том, что это
+    параллельные соединения к боевому кластеру.
+  </p></div>
+
+  <div class="ba">
+    <div class="now"><div class="cap">Сейчас</div><div class="wire">
+      <div class="row"><span class="blk">Операция: VACUUM FULL</span></div>
+      <div class="row"><span class="blk solid wide">Запустить Vacuum / Analyze</span></div>
+      <span class="note">активна при нуле выбранных</span>
+      <div class="row"><span class="lbl">Показан запуск #50 · DONE · 26.07</span></div>
+      <div class="bar"><i class="done" style="width:100%"></i></div>
+    </div></div>
+    <div class="next"><div class="cap">Предлагаю</div><div class="wire">
+      <div class="row"><span class="blk good sm">ANALYZE</span><span class="blk sm">VACUUM</span><span class="blk sm">VACUUM ANALYZE</span></div>
+      <div class="row"><span class="blk sm">разрушительные операции: выключены</span></div>
+      <div class="row"><span class="blk warn wide">VACUUM FULL берёт ACCESS EXCLUSIVE — 12 таблиц будут недоступны</span></div>
+      <div class="row"><span class="blk solid wide">Запустить VACUUM ANALYZE · 12 таблиц · GP_TEST / adb</span></div>
+      <div class="row"><span class="blk ghost sm">Архив · завершено 26.07</span><span class="blk sm">Повторить 151 таблицу</span></div>
+    </div></div>
+  </div>
+
+  <div class="prop"><h3>Что сделать</h3><ol>
+    <li><strong>Развести операции по риску на уровне композиции:</strong> безопасные сегментом по умолчанию, разрушительные за отдельным чекбоксом с красной строкой последствия.</li>
+    <li><strong>Кнопка сама становится превью:</strong> «Запустить VACUUM ANALYZE · 12 таблиц · GP_TEST / adb». Нельзя нажать, не прочитав. При нуле выбранных — заблокирована.</li>
+    <li><strong>Отделить архивный прогон от живого:</strong> завершённой задаче — приглушённая шапка «Архив» вместо шкалы прогресса и кнопка «Повторить».</li>
+  </ol></div>
+</section>
+
+<section class="page">
+  <h2>Maintenance <code>/maintenance</code></h2>
+  <p class="goal">Найти перекошенные таблицы и починить распределение.</p>
+
+  <div class="issue"><span class="n">1</span><p>
+    <strong>Прерванная задача объявлена шёпотом</strong> — по-английски, без иконки, в плашке светлее
+    соседней карточки. Кнопки «возобновить» нет.
+    <span class="ev">Last job #46 interrupted: Application restarted while job was running</span>
+  </p></div>
+  <div class="issue"><span class="n">2</span><p>
+    <strong>Полоса прогресса врёт.</strong> «Прогресс 100%» со сплошной заливкой, ниже — «Готово 47 ·
+    Ошибки 775». 94% провала показаны как заполненная шкала.
+  </p></div>
+  <div class="issue"><span class="n">3</span><p>
+    <strong>Одно пустое состояние напечатано дважды подряд</strong> в двух соседних панелях.
+  </p></div>
+
+  <div class="ba">
+    <div class="now"><div class="cap">Сейчас</div><div class="wire">
+      <div class="row"><span class="blk">Last job #46 interrupted: Application restarted…</span></div>
+      <div class="row"><span class="lbl">Прогресс 100%</span></div>
+      <div class="bar"><i class="acc" style="width:100%"></i></div>
+      <span class="note">Всего 822 · Готово 47 · Ошибки 775</span>
+    </div></div>
+    <div class="next"><div class="cap">Предлагаю</div><div class="wire">
+      <div class="row"><span class="blk warn wide">Задача #46 прервана перезапуском · 47 из 822 · 25.07 22:58</span></div>
+      <div class="row"><span class="blk solid sm">Возобновить с 48-й</span><span class="blk sm">Открыть отчёт</span></div>
+      <div class="bar"><i class="done" style="width:6%"></i><i class="err" style="width:94%"></i></div>
+      <span class="note">завершено с 775 ошибками</span>
+    </div></div>
+  </div>
+
+  <div class="prop"><h3>Что сделать</h3><ol>
+    <li><strong>Поднять «прервана» до баннера-действия</strong> наверху страницы, по-русски, с двумя кнопками: возобновить и открыть отчёт.</li>
+    <li><strong>Переопределить шкалу на «сделано / ошибки / осталось»</strong> — сегментированная полоса вместо «100%», число ошибок отдельным красным чипом у заголовка.</li>
+    <li>Перед запуском — <strong>строка области действия</strong>: «822 таблицы в 16 схемах на GP_TEST / adb · около 40 мин по последнему прогону».</li>
+  </ol></div>
+</section>
+
+<section class="page">
+  <h2>Здоровье БД <code>/health</code></h2>
+  <p class="goal">Снять диагностический срез кластера без нагрузки на данные.</p>
+
+  <div class="issue"><span class="n">1</span><p>
+    <strong>Страница про здоровье пустая по прибытии</strong> — при том, что подключение одно и оно
+    известно. Кнопка «Обновить» без выбранного кластера не делает ничего: ни сообщения, ни фокуса.
+  </p></div>
+  <div class="issue"><span class="n">2</span><p>
+    <strong>25 секунд тишины</strong> без спиннера, счётчика и отмены, при этом снизу продолжает висеть
+    противоречащее «Выбери кластер — покажу…».
+  </p></div>
+  <div class="issue"><span class="n">3</span><p>
+    <strong>Стена сырого SQL.</strong> Семь почти одинаковых INSERT по 300 символов, обрезанных посреди
+    токена. Нужное оператору «48 ч 19 м» стоит после блоба. Кнопки «завершить сеанс» нет вообще.
+  </p></div>
+  <div class="issue"><span class="n">4</span><p>
+    <strong>Зелёный OK на одноточечной конфигурации.</strong> Карточка «Сегменты» помечена OK,
+    внутри — «Мастер: 1 (без standby), Mirror: нет».
+  </p></div>
+  <div class="issue"><span class="n">5</span><p>
+    <strong>Моста к лечению нет.</strong> Страница называет таблицу с 386 млн мёртвых строк и
+    «vacuum: никогда» — и не даёт на это нажать. Оператор запоминает имя и ищет его среди 29 099 вручную.
+  </p></div>
+
+  <div class="ba">
+    <div class="now"><div class="cap">Сейчас</div><div class="wire">
+      <div class="row"><span class="blk">INSERT INTO "dwh_stage"."ref_user_akerke" (col1, col2, … "usr$aud</span></div>
+      <div class="row"><span class="blk">INSERT INTO "dwh_stage"."ref_user_akerke" (col1, col2, … "usr$aud</span></div>
+      <div class="row"><span class="blk sm">48 ч 19 м</span></div>
+      <span class="note">семь одинаковых блобов, время после текста, действия нет</span>
+    </div></div>
+    <div class="next"><div class="cap">Предлагаю</div><div class="wire">
+      <div class="row">
+        <span class="blk warn sm">48 ч 19 м</span>
+        <span class="blk">×7 сеансов · tuz_etl_user · INSERT dwh_stage.ref_user_akerke</span>
+        <span class="blk solid sm">Завершить</span>
+      </div>
+      <div class="row"><span class="blk sm">развернуть полный SQL</span></div>
+      <div class="row"><span class="blk warn wide">Мастер без standby — единая точка отказа</span></div>
+      <div class="row"><span class="blk sm">8 таблиц выбрано</span><span class="blk solid sm">Отправить в Vacuum</span></div>
+    </div></div>
+  </div>
+
+  <div class="prop"><h3>Что сделать</h3><ol>
+    <li><strong>Загружать срез автоматически</strong> при единственном подключении; кнопка становится «Обновить · снят 3 мин назад». На время загрузки — скелетоны карточек, счётчик секунд и отмена.</li>
+    <li><strong>Долгие запросы — в таблицу решений:</strong> нормализованная сигнатура одной строкой, группировка одинаковых в «×7 сеансов», справа кнопка завершения с превью-подтверждением.</li>
+    <li><strong>Связать диагноз с лечением одной кнопкой:</strong> чекбоксы на таблицах с мёртвыми строками и «Отправить 8 таблиц в Vacuum» — открывает обслуживание с уже собранным выбором.</li>
+    <li><strong>Дать порогам голос:</strong> «Cache hit 70%» с подписью «ниже рекомендуемых 90%», отсутствие standby понижает статус карточки с OK до «Внимание».</li>
+  </ol></div>
+</section>
+
+<section class="page">
+  <h2>Пользователи и гранты <code>/grants</code></h2>
+  <p class="goal">Увидеть, кто и что может делать с объектами, найти избыточные права.</p>
+
+  <div class="issue ok"><span class="n">+</span><p>
+    <strong>Контраст матрицы исправлен в этом проходе.</strong> Было белым по старому индиго — 1.61:1.
+    Стало тёмными чернилами на токенах.
+    <span class="ev">528 ячеек, ни одной ниже AA, минимум 4.84:1</span>
+  </p></div>
+  <div class="issue"><span class="n">1</span><p>
+    <strong>Данные устарели на 22 дня, сказано шёпотом.</strong> «Срез из БД · 22 дн назад» серым мелким
+    кеглем, при этом плитка «Требует ревью: 55» подана как текущий факт. Для аудита прав это опаснее
+    отсутствия данных.
+  </p></div>
+  <div class="issue"><span class="n">2</span><p>
+    <strong>Три независимые оси отрисованы одинаковыми пилюлями.</strong> Область, представление и
+    гранулярность — 16 контролов в двух рядах без разделителей.
+  </p></div>
+  <div class="issue"><span class="n">3</span><p>
+    <strong>Столбец с именем пользователя не залипает.</strong> Прокручиваешь вправо — теряешь, чью
+    строку читаешь. В матрице прав это фатально.
+  </p></div>
+  <div class="issue"><span class="n">4</span><p>
+    <strong>Ни одного действия.</strong> Найдя избыточные права, оператор идёт делать REVOKE в psql.
+  </p></div>
+
+  <div class="prop"><h3>Что сделать</h3><ol>
+    <li><strong>Сжать три группы чипов в одну строку запроса с подписанными осями:</strong> «Область: запись ✕ · Вид: матрица · Гранулярность: схемы · Кластер: GP_TEST ✕». Вернувшись через час, оператор читает контекст целиком, а не восстанавливает его по цвету пилюль.</li>
+    <li><strong>Свежесть среза — в первичный статус:</strong> чип у заголовка цветом «внимание» после 7 дней и «критично» после 30, с кнопкой обновления внутри чипа.</li>
+    <li><strong>Залипить колонку пользователя</strong> и поменять кодирование ячейки местами: заливка несёт уровень прав, число уходит во вторичный кегль.</li>
+    <li><strong>Дать действие:</strong> «Подготовить REVOKE» на строках из «требует ревью» — превью списка операторов с кнопкой применения, по образцу Kafka ACL.</li>
+  </ol></div>
+</section>
+
+<section class="page">
+  <h2>Резервные копии <code>/backups</code></h2>
+  <p class="goal">Создать или запланировать gpbackup, увидеть список копий.</p>
+
+  <div class="issue"><span class="n">1</span><p>
+    <strong>Схемы и таблицы вводятся руками</strong> в две textarea — при том, что приложение владеет
+    деревом из 29 099 таблиц. Это ровно тот набор psql-сниппетов, который продукт обещает заменить.
+  </p></div>
+  <div class="issue"><span class="n">2</span><p>
+    <strong>Самый опасный дефолт выражен подписью.</strong> «Пусто = вся БД»: не заполнил поле —
+    забэкапил весь склад. Без оценки объёма, без оценки времени, без подтверждения.
+  </p></div>
+  <div class="issue"><span class="n">3</span><p>
+    <strong>Два глагола в одной карточке</strong> над одними и теми же полями: «Создать бэкап» и
+    «Запланировать». Неясно, использует ли планировщик поля сверху.
+  </p></div>
+
+  <div class="prop"><h3>Что сделать</h3><ol>
+    <li><strong>Заменить обе textarea на селектор из дерева объектов</strong> с чипами выбранного и счётчиком «12 схем · 340 таблиц · около 2.1 ТБ». Ручной ввод оставить режимом «вставить списком».</li>
+    <li><strong>Превью перед созданием</strong> строкой над кнопкой; при пустых схемах — красное предупреждение «схемы не заданы, будет сохранена вся база». Кнопка несёт объём: «Создать бэкап · вся база».</li>
+    <li><strong>Разнести создание и планирование в две вкладки</strong> одной карточки, чтобы в форме был один глагол.</li>
+  </ol></div>
+</section>
+
+<section class="page">
+  <h2>Расписания <code>/schedules</code></h2>
+  <p class="goal">Создать периодическую задачу и увидеть список расписаний.</p>
+
+  <div class="issue"><span class="n">1</span><p>
+    <strong>Восемь типов задач в плоском селекте</strong> без группировки на «перенос данных» и
+    «обслуживание» — при том, что от типа зависят и последствия, и остальные поля формы.
+  </p></div>
+  <div class="issue"><span class="n">2</span><p>
+    <strong>Опять ручной ввод таблиц</strong> — теперь для задачи, которая выполнится сама в 02:00 без
+    наблюдателя. Опечатка в имени схемы выяснится ночью.
+  </p></div>
+  <div class="issue"><span class="n">3</span><p>
+    <strong>«Наложение: пропустить / очередь / параллельно» без объяснения последствий.</strong>
+    Параллельный VACUUM FULL наложит эксклюзивные локи друг на друга; интерфейс молчит.
+  </p></div>
+  <div class="issue"><span class="n">4</span><p>
+    <strong>Ни превью, ни пробного прогона.</strong> Узнать, что произойдёт ночью, до наступления ночи
+    нельзя. Плюс висящее тире в поле «следующий запуск».
+  </p></div>
+
+  <div class="prop"><h3>Что сделать</h3><ol>
+    <li><strong>Сгруппировать типы в две группы</strong> и добавить под селектом строку последствия для выбранного типа; для VACUUM FULL — предупреждение о блокировках вместе с выбором поведения при наложении.</li>
+    <li><strong>Строка-резюме перед сохранением:</strong> «Каждый день в 02:00 · VACUUM ANALYZE · 12 таблиц · GP_TEST / adb · при наложении пропустить · ближайший запуск завтра 02:00». Это заодно заполняет висящее тире.</li>
+    <li><strong>Кнопка «Проверить сейчас»</strong> рядом с созданием: та же валидация и список того, что попадёт под задачу. Расписание — единственная задача, которую никто не увидит в момент выполнения.</li>
+  </ol></div>
+</section>
+
+<section class="page">
+  <h2>Доступы Kafka <code>/kafka/acl</code></h2>
+  <p class="goal">Посмотреть правила ACL, выдать или отозвать права.</p>
+
+  <div class="issue ok"><span class="n">+</span><p>
+    <strong>Здесь живёт единственное настоящее превью продукта</strong> — «Показать, что попадёт под
+    отзыв». Эта страница должна стать эталоном для синхронизации, обслуживания и бэкапов.
+  </p></div>
+  <div class="issue"><span class="n">1</span><p>
+    <strong>Но превью стоит равноправной кнопкой между «Выдать» и «Отозвать».</strong> Отзыв нажимается
+    без него. Правильная идея реализована как необязательная.
+  </p></div>
+  <div class="issue"><span class="n">2</span><p>
+    <strong>Крупнейшая точка решения в продукте:</strong> 10 операций, тип ресурса присутствует на
+    странице дважды — в фильтре и в форме выдачи, без визуального различия между «я фильтрую» и «я выдаю».
+  </p></div>
+  <div class="issue"><span class="n">3</span><p>
+    <strong>«Разрешить / запретить» поданы симметричной парой</strong>, хотя deny в Kafka имеет
+    приоритет над allow.
+  </p></div>
+
+  <div class="ba">
+    <div class="now"><div class="cap">Сейчас</div><div class="wire">
+      <div class="row"><span class="blk solid sm">Выдать права</span><span class="blk sm">Показать, что попадёт под отзыв</span><span class="blk sm">Отозвать</span></div>
+      <span class="note">превью — сосед, а не шлюз</span>
+    </div></div>
+    <div class="next"><div class="cap">Предлагаю</div><div class="wire">
+      <div class="row"><span class="blk solid wide">Показать, что изменится</span></div>
+      <div class="row"><span class="blk good sm">+3 правила</span><span class="blk warn sm">−1 правило</span><span class="blk sm">2 принципала</span></div>
+      <div class="row"><span class="blk solid sm">Применить</span><span class="blk ghost sm">Отменить</span></div>
+    </div></div>
+  </div>
+
+  <div class="prop"><h3>Что сделать</h3><ol>
+    <li><strong>Сделать превью шлюзом:</strong> одна первичная кнопка «Показать, что изменится», после неё дифф и уже там «Применить». Отзыв без превью недоступен.</li>
+    <li><strong>Сжать 10 операций в 3 пресета</strong> — чтение, запись, администрирование — плюс «настроить точно» за ссылкой с чипом-сводкой.</li>
+    <li><strong>Развести фильтр и форму визуально:</strong> фильтр — светлая полоса над списком, форма — карточка с рамкой. Один селектор в двух ролях на одном экране — прямой источник ошибки выдачи прав.</li>
+  </ol></div>
+</section>
+
+<section class="page">
+  <h2>Остальные страницы</h2>
+  <p class="goal">Короче, потому что проблемы там однотипные.</p>
+
+  <div class="issue"><span class="n">1</span><p>
+    <strong>Объекты <code>/objects</code> — вне навигации и вне рескина.</strong> Попасть можно только
+    вводом URL: в списке вкладок её нет, как и страниц перекоса и реорганизации. Весь текст английский
+    при русском окружении, внутри — тёмно-синяя плита из прежнего стека посреди тёплого светлого мира,
+    пять одинаковых кнопок стопкой, причём «снять выделение» окрашена как опасное действие.
+    <strong>Решение:</strong> либо ввести в навигацию и переверстать, либо удалить маршрут — как
+    поступили с классическим gpcopy.
+  </p></div>
+
+  <div class="issue"><span class="n">2</span><p>
+    <strong>Postgres Toolkit <code>/connections?toolkit=pg</code> и <code>/pg/backups</code> — тупики.</strong>
+    Два пустых заголовка «Источники / Назначения», которые ничего не структурируют, и 80% пустого экрана.
+    На бэкапах два пустых состояния спорят друг с другом: слева «нет подключений», справа «создай первый
+    слева». <strong>Решение:</strong> один центрированный экран первого запуска с одной кнопкой и
+    <strong>ссылкой</strong>, а не инструкцией «найди вкладку сам».
+  </p></div>
+
+  <div class="issue"><span class="n">3</span><p>
+    <strong>Kafka <code>/kafka</code>, <code>/kafka/groups</code>, <code>/kafka/messages</code> — живые
+    органы управления, подключённые к пустоте.</strong> «Проверить связь» при нуле кластеров, «+ Топик»
+    активна, форма чтения активна, отправка сообщения — запись в поток — стоит равноправной кнопкой рядом
+    с чтением без подтверждения. Одно и то же пустое состояние напечатано дважды на трёх страницах.
+    Блок «Журнал действий» — озаглавленная пустота без пустого состояния.
+    <strong>Решение:</strong> одно сообщение на страницу, всегда со ссылкой-действием; отправку сообщения
+    увести в отдельную панель со сводкой и подтверждением; журналу дать пустое состояние с обещанием.
+  </p></div>
+
+  <div class="issue"><span class="n">4</span><p>
+    <strong>Подключения Kafka <code>/kafka/connections</code> — второй, несовместимый опыт той же задачи.</strong>
+    Здесь «Сохранить и проверить связь», на подключениях Greenplum — отдельная кнопка проверки на карточке.
+    Пустое состояние «нажмите + Добавить» выводится одновременно с уже раскрытой формой.
+    <strong>Решение:</strong> унифицировать паттерн между тулкитами и вывести чип безопасности
+    (PLAINTEXT / SASL_SSL) на карточку — это то, что проверяют глазами первым делом.
+  </p></div>
+</section>
+
+<section class="systemic">
+  <h2>Три системные вещи</h2>
+  <p>Они дороже любой отдельной страницы, потому что проявляются на всех сразу.</p>
+
+  <div class="sys">
+    <h3>1. Возврат к брошенной задаче не поддержан ничем</h3>
+    <p>
+      В данных шесть прерванных прогонов и один провалившийся. В интерфейсе: английская фраза в бледной
+      плашке, «Прогресс 100%» поверх 775 ошибок, панель обслуживания по умолчанию показывает июльский
+      прогон зелёными 100%, сквозной счётчик задач видит только копирование и не видит vacuum и перекос.
+      Кнопки «возобновить» нет ни на одной странице.
+    </p>
+    <p>
+      Первый принцип продукта — «состояние должно быть читаемо при возвращении» — не реализован нигде.
+      Это самая дорогая брешь, потому что именно этот сценарий отличает продукт от набора скриптов.
+    </p>
+  </div>
+
+  <div class="sys">
+    <h3>2. Превью есть на одной странице из шестнадцати</h3>
+    <p>
+      Инвариант «ничего разрушительного без превью, которое оператор увидел» реализован только в Kafka ACL,
+      и там он необязательный. Запуск копирования с очисткой приёмника, VACUUM FULL, бэкап всей базы и
+      ночное расписание — четыре разрушительные поверхности без единого шлюза.
+    </p>
+    <p>
+      Нужен один общий компонент: превью обязательно, применение разблокируется только после него,
+      у превью есть срок годности. Это ровно то, что описано в спецификации как одноразовый истекающий
+      токен — осталось дать ему форму.
+    </p>
+  </div>
+
+  <div class="sys">
+    <h3>3. Рескин прошёл слоем — треть приложения в прежней эпохе</h3>
+    <p>
+      Старый лист стилей грузится после токенов и содержит собственный фон страницы, радиус 14 против
+      токена 22 и почти чёрную плиту результата. Видимые следствия: тёмно-синий блок на странице объектов,
+      английские заголовки там же, холодные цвета в палитре диаграммы дашборда внутри тёплого мира.
+    </p>
+    <p>
+      Плюс два обещания, которые рескин должен был закрыть и не закрыл: переключателя языка нет вообще
+      при заявленном в PRODUCT.md требовании ru/en, и в подвале сайдбара стоит одна кнопка темы —
+      места под личность вошедшего и его роль в оболочке не предусмотрено.
+    </p>
+  </div>
+</section>
+
+<footer>
+  Наблюдения собраны на живом кластере GP_TEST. Цифры контраста, переполнений и счётчиков —
+  замеренные, не оценочные. Ничего из предложенного в приложение не внесено.
+</footer>
+
+</div>
+</body>
+</html>
