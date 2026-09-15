@@ -35,6 +35,8 @@ except ImportError:
 
 try:
     from modules.gpcopy import (
+        owner_item_keys,
+        skip_covered_items,
         quote_ident, build_gpcopy_command, open_psycopg2_connection_by_cfg,
         get_conn_dbname, get_conn_host, get_conn_port, get_conn_user,
         make_include_table_file, safe_mark_job_failed, get_item_value,
@@ -43,6 +45,8 @@ try:
     )
 except ImportError:
     from gpcopy import (
+        owner_item_keys,
+        skip_covered_items,
         quote_ident, build_gpcopy_command, open_psycopg2_connection_by_cfg,
         get_conn_dbname, get_conn_host, get_conn_port, get_conn_user,
         make_include_table_file, safe_mark_job_failed, get_item_value,
@@ -331,6 +335,23 @@ def normalize_partition_config(config):
     return cfg
 
 
+def _dedupe_copy_items(copy_items):
+    """Каждая партиция — одной строкой, в прежнем порядке (чистая)."""
+    seen = set()
+    out = []
+
+    for ci in copy_items:
+        key = (ci["schema_name"], ci["table_name"])
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        out.append(ci)
+
+    return out
+
+
 def run_gpcopy_partition_diff_job(job_id):
     include_file = None
     started = time.time()
@@ -353,6 +374,11 @@ def run_gpcopy_partition_diff_job(job_id):
         clear_stop_flag(job_id)
         mark_job_running(job_id)
 
+        # партиция, выбранная вместе с корнем, иначе попала бы в gpcopy
+        # дважды: от корня и отдельной строкой — а gpcopy льёт параллельно
+        _kept, covered = skip_covered_items(
+            get_job_items(job_id), config["source_connection_id"])
+
         explicit = config.get("partitions") or []
 
         if explicit:
@@ -366,11 +392,14 @@ def run_gpcopy_partition_diff_job(job_id):
             # Diff по всем таблицам сразу: stats (reltuples, мгновенно) —
             # дефолт; count_mode="exact" пересчитывает COUNT(*) батчами.
             exact = (config.get("count_mode") or "stats") == "exact"
-            roots = [
-                (entry.get("schema") or entry.get("schema_name"),
-                 entry.get("table") or entry.get("table_name"))
-                for entry in tables
-            ]
+            roots = []
+
+            for entry in tables:
+                key = (entry.get("schema") or entry.get("schema_name"),
+                       entry.get("table") or entry.get("table_name"))
+
+                if key not in covered and key not in roots:
+                    roots.append(key)
 
             diff_by_root, leaves_by_root = diff_partitions_stats(
                 source_cfg, dest_cfg, roots, exact=exact,
@@ -383,25 +412,23 @@ def run_gpcopy_partition_diff_job(job_id):
                     s, t = leaf_by_name[name]
                     copy_items.append({"schema_name": s, "table_name": t})
 
+        copy_items = _dedupe_copy_items(copy_items)
+
         if is_stop_requested(job_id):
             mark_job_cancelled(job_id)
             return
 
         items = get_job_items(job_id)
-        item_keys = [
-            (
-                get_item_value(i, "id"),
-                get_item_value(i, "schema_name"),
-                get_item_value(i, "table_name"),
-            )
-            for i in items
-        ]
+        item_keys = owner_item_keys(items)
 
         if not copy_items:
             # Всё совпадает — копировать нечего, это успех.
             from job_manager import mark_item_skipped
 
             for i in items:
+                if get_item_value(i, "status") == "skipped":
+                    continue
+
                 mark_item_skipped(
                     get_item_value(i, "id"), "Партиции совпадают"
                 )
@@ -443,6 +470,10 @@ def run_gpcopy_partition_diff_job(job_id):
             include_tables_file=include_file,
             jobs=int(config.get("jobs") or 4),
             truncate=True,
+            # без ANALYZE в приёмнике остаётся старый reltuples, и
+            # следующее сравнение «по статистике» снова видит расхождение
+            # там, где его нет, — режим вырождался в еженедельную заливку
+            analyze=True,
         )
 
         # общий каркас gpcopy: detached-процесс + лог + live-статусы,

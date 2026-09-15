@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timedelta
 
 import scheduler_store as store
-from job_manager import create_job, get_job
+from job_manager import create_job, current_username, get_job
 from modules.date_window import resolve_date_window
 
 
@@ -180,7 +180,15 @@ def _launch(schedule, run_date_str, attempt_no, now, existing_run_id=None):
         or config.get("source_connection_id")
     )
 
-    job_id = create_job(schedule["job_type"], connection_id, config)
+    # по таймеру задачу запускает расписание; кнопкой «Запустить» — человек
+    # через расписание, и это стоит различать
+    label = "расписание «{}»".format(schedule.get("name") or schedule_id)
+    who = current_username()
+
+    job_id = create_job(
+        schedule["job_type"], connection_id, config,
+        created_by="{} · {}".format(who, label) if who else label,
+    )
 
     if existing_run_id:
         store.update_run(existing_run_id, status="running", job_id=job_id)
