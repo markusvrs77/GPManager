@@ -123,7 +123,9 @@ app.register_blueprint(kafka_bp)
 app.register_blueprint(auth_bp)
 app.register_blueprint(users_bp)
 
-from modules.web_auth import install_auth, scope_connections  # noqa: E402
+from modules.web_auth import (  # noqa: E402
+    in_scope, install_auth, job_in_scope, schedule_in_scope, scope_connections,
+)
 
 install_auth(app)
 
@@ -138,12 +140,34 @@ def list_connections():  # noqa: F811
     return scope_connections(_all_connections())
 
 
+def _skew_results_in_scope(results):
+    """Результаты анализа перекоса только по выданным кластерам."""
+    return [
+        r for r in results
+        if in_scope([r["connection_id"]] if r.get("connection_id") else [])
+    ]
+
+
+def _latest_skew_job_in_scope():
+    """Последний анализ перекоса, который пользователю можно видеть."""
+    job = get_latest_job("skew")
+
+    if job is None or job_in_scope(job):
+        return job
+
+    for candidate in list_recent_jobs(["skew"], 100):
+        if job_in_scope(candidate):
+            return get_job(candidate["id"])
+
+    return None
+
+
 @app.route("/")
 @app.route("/dashboard")
 def dashboard_page():
     connections = list_connections()
-    last_results = get_last_skew_results(limit=1000)
-    latest_skew_job = get_latest_job("skew")
+    last_results = _skew_results_in_scope(get_last_skew_results(limit=1000))
+    latest_skew_job = _latest_skew_job_in_scope()
 
     skew_summary = build_skew_dashboard_summary(last_results)
 
@@ -325,7 +349,7 @@ def api_skew_results():
     return jsonify(
         {
             "ok": True,
-            "results": get_last_skew_results(limit),
+            "results": _skew_results_in_scope(get_last_skew_results(limit)),
         }
     )
 
@@ -846,7 +870,7 @@ def api_get_job_skew_results(job_id):
 
 @app.route("/api/jobs/latest/skew")
 def api_get_latest_skew_job():
-    job = get_latest_job("skew")
+    job = _latest_skew_job_in_scope()
 
     if not job:
         return jsonify(
@@ -871,7 +895,7 @@ def api_get_active_jobs():
     return jsonify(
         {
             "ok": True,
-            "jobs": get_active_jobs(job_type),
+            "jobs": [j for j in get_active_jobs(job_type) if job_in_scope(j)],
         }
     )
 
@@ -891,6 +915,9 @@ def api_jobs_recent():
 
     jobs = list_recent_jobs(
         job_types, min(limit * 5, 100) if toolkit else limit)
+
+    # задачи на невыданных кластерах в ленту не попадают
+    jobs = [j for j in jobs if job_in_scope(j)]
 
     # источник → назначение для ленты запусков; config_json наружу
     # не отдаём (там огромные списки таблиц)
@@ -2643,7 +2670,9 @@ def schedules_page():
 @app.route("/api/schedules", methods=["GET", "POST"])
 def api_schedules():
     if request.method == "GET":
-        return jsonify({"ok": True, "schedules": scheduler_store.list_schedules()})
+        return jsonify({"ok": True, "schedules": [
+            s for s in scheduler_store.list_schedules() if schedule_in_scope(s)
+        ]})
 
     data = request.get_json(silent=True) or {}
 

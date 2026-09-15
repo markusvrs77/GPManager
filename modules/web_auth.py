@@ -11,6 +11,8 @@ before_request по карте POLICY. Причина простая: маршр
 отдаёт 403. Новый маршрут придётся внести в карту осознанно.
 """
 
+import json
+
 from flask import (
     g, has_request_context, jsonify, redirect, render_template, request, url_for,
 )
@@ -365,16 +367,134 @@ def requested_connection_ids():
     if request.is_json:
         body = request.get_json(silent=True)
         if isinstance(body, dict):
-            for key in CONNECTION_KEYS:
-                value = body.get(key)
-                if value not in (None, ""):
-                    found.append(value)
+            # расписание приходит с кластерами во вложенном config — без
+            # этого пользователь с одним TEST мог завести расписание на PROD
+            for source in (body, body.get("config")):
+                found.extend(connection_ids_in(source))
 
     if request.form:
         for key in CONNECTION_KEYS:
             value = request.form.get(key)
             if value not in (None, ""):
                 found.append(value)
+
+    return found
+
+
+# ------------------------------------------------------------
+# Кластеры, названные не в запросе, а внутри объекта
+# ------------------------------------------------------------
+#
+# У задачи и расписания в адресе стоит их собственный номер, а кластеры
+# записаны в конфиге. Проверка по одному запросу их не видела: по номеру
+# чужой задачи можно было открыть её лог, остановить её и даже дозапустить
+# упавшие таблицы — копирование шло на кластер, которого пользователю
+# не выдавали.
+
+def connection_ids_in(config):
+    """id кластеров, записанные в словаре конфига."""
+    found = []
+
+    if isinstance(config, dict):
+        for key in CONNECTION_KEYS:
+            value = config.get(key)
+            if value not in (None, ""):
+                found.append(value)
+
+    return found
+
+
+def _config_of(row):
+    try:
+        parsed = json.loads((row or {}).get("config_json") or "{}")
+    except (TypeError, ValueError):
+        return {}
+
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def job_connection_ids(job):
+    ids = connection_ids_in(_config_of(job))
+
+    if job and job.get("connection_id") not in (None, ""):
+        ids.append(job["connection_id"])
+
+    return ids
+
+
+def in_scope(connection_ids):
+    """
+    Все ли названные кластеры доступны текущему пользователю.
+
+    Все, а не хотя бы один: перенос PROD -> TEST у пользователя с одним
+    TEST показал бы, что и когда читали с PROD.
+    """
+    if not has_request_context():
+        return True
+
+    allowed = sec.allowed_connection_ids(current_user())
+
+    if allowed is None:
+        return True
+
+    for value in connection_ids:
+        try:
+            if int(value) not in allowed:
+                return False
+        except (TypeError, ValueError):
+            return False
+
+    return True
+
+
+def job_in_scope(job):
+    return in_scope(job_connection_ids(job))
+
+
+def schedule_in_scope(schedule):
+    return in_scope(connection_ids_in(_config_of(schedule)))
+
+
+def referenced_connection_ids():
+    """Кластеры, на которые запрос ссылается через задачу, расписание
+    или результат анализа перекоса."""
+    from db import sqlite_cursor
+    from job_manager import get_job
+    import scheduler_store
+
+    args = request.view_args or {}
+    body = request.get_json(silent=True) if request.is_json else None
+    found = []
+
+    job_ids = [args.get("job_id")]
+
+    # дозапуск упавших таблиц берёт номер задачи из тела
+    if isinstance(body, dict):
+        job_ids.append(body.get("job_id"))
+
+    for job_id in job_ids:
+        try:
+            job = get_job(int(job_id)) if job_id not in (None, "") else None
+        except (TypeError, ValueError):
+            job = None
+
+        if job:
+            found.extend(job_connection_ids(job))
+
+    if args.get("schedule_id") is not None:
+        schedule = scheduler_store.get_schedule(int(args["schedule_id"]))
+
+        if schedule:
+            found.extend(connection_ids_in(_config_of(schedule)))
+
+    if args.get("result_id") is not None:
+        with sqlite_cursor() as cur:
+            cur.execute("SELECT connection_id FROM skew_results WHERE id = ?",
+                        (int(args["result_id"]),))
+            row = cur.fetchone()
+
+        if row and row["connection_id"] is not None:
+            found.append(row["connection_id"])
 
     return found
 
@@ -467,6 +587,11 @@ def install_auth(app):
 
         for connection_id in requested_connection_ids():
             if not sec.can_use_connection(g.user, connection_id):
+                return _deny(403, "Нет доступа к этому кластеру")
+
+        # администратору искать кластеры внутри объектов незачем
+        if sec.allowed_connection_ids(g.user) is not None:
+            if not in_scope(referenced_connection_ids()):
                 return _deny(403, "Нет доступа к этому кластеру")
 
         return None
