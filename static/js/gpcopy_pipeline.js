@@ -40,9 +40,12 @@
     /* ---------------- state ---------------- */
 
     var state = {
-        mode: "full",
+        // Ни режима, ни стратегии по умолчанию нет. Раньше здесь стояла
+        // «Полная замена», и кнопка «Запустить» после перезагрузки
+        // страницы очищала приёмник, хотя человек ничего не выбирал.
+        mode: null,
         incStrategy: "watermark",  // watermark | key
-        strategy: "full",          // чем гарантируется отсутствие дублей
+        strategy: null,            // чем гарантируется отсутствие дублей
         stratFacts: null,          // "schema.table" -> ответ /api/gpcopy/strategies
         stratState: "idle",        // idle | loading | ready | error
         stratError: "",
@@ -80,6 +83,7 @@
     function modeName() {
         var s = stratById(state.strategy);
         if (s) { return s.name.toLowerCase(); }
+        if (!state.mode) { return "стратегия не выбрана"; }
 
         if (state.mode === "inc") {
             return state.incStrategy === "key"
@@ -2414,6 +2418,11 @@
 
     function go() {
         if (!state.sel.size) { setMsg("Сначала выбери таблицы (шаг 1).", "err"); return; }
+        if (!state.strategy) {
+            setMsg("Выбери стратегию на шаге «Как»: без неё непонятно, " +
+                   "очищать приёмник или переносить только разницу.", "err");
+            return;
+        }
         if (isNaN(srcId()) || isNaN(dstId())) { setMsg("Выбери подключения.", "err"); return; }
         if (srcId() === dstId()) { setMsg("Источник и назначение совпадают.", "err"); return; }
 
@@ -2613,6 +2622,11 @@
             }
 
             var meta = (route ? route + " · " : "") + esc(j.started_at || "");
+            // кто запустил: без этого ручную полную заливку не отличить
+            // от запуска по расписанию
+            meta += " · " + (j.created_by
+                ? esc(j.created_by)
+                : "<i>источник запуска не записан</i>");
             if (failed && j.error_message) {
                 meta += " · " + esc(String(j.error_message).slice(0, 60));
             }
@@ -3407,7 +3421,8 @@
     function init() {
         // карточки стратегий рисуются из JS: набор зависит от тулкита,
         // доступность — от выбранных таблиц, поэтому не статика в шаблоне
-        pickStrategy(state.strategy);
+        renderStrategies();
+        renderSummary();
 
         // watermark и ключ стали отдельными стратегиями на шаге «КАК» —
         // второго переключателя внутри панели больше нет

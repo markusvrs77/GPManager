@@ -506,6 +506,74 @@ def find_owner_item(leaf_schema, leaf_table, item_keys):
     return prefix_hit
 
 
+def owner_item_keys(items):
+    """
+    Ключи для атрибуции партиций из лога — без пропущенных строк.
+
+    find_owner_item сначала ищет точное имя. Если отдельная строка
+    партиции осталась в списке, её прогресс прилип бы к пропущенной
+    строке, а не к корню, через который партиция на самом деле льётся.
+    """
+    return [
+        (
+            get_item_value(item, "id"),
+            get_item_value(item, "schema_name"),
+            get_item_value(item, "table_name"),
+        )
+        for item in items
+        if get_item_value(item, "status") != "skipped"
+    ]
+
+
+def skip_covered_items(items, source_connection_id):
+    """
+    Оставляет в задаче только то, что gpcopy должен получить отдельной
+    строкой. Партиции, чей корень тоже в задаче, и повторы помечаются
+    пропущенными с объяснением.
+
+    -> (оставшиеся items, {(schema, table): (schema, table) предка})
+    """
+    try:
+        from modules.table_catalog import (
+            drop_covered_partitions, fetch_partition_pairs,
+        )
+    except ImportError:
+        from table_catalog import drop_covered_partitions, fetch_partition_pairs
+
+    keys = [
+        (get_item_value(i, "schema_name"), get_item_value(i, "table_name"))
+        for i in items
+    ]
+
+    try:
+        child_parent = fetch_partition_pairs(int(source_connection_id))
+    except Exception as error:
+        # без иерархии нельзя поручиться, что партиция не уйдёт дважды
+        raise Exception(
+            "Не удалось прочитать иерархию партиций источника: {}".format(error))
+
+    kept_keys, covered = drop_covered_partitions(keys, child_parent)
+    kept_set = set(kept_keys)
+    kept = []
+    taken = set()
+
+    for item, key in zip(items, keys):
+        if key in kept_set and key not in taken:
+            taken.add(key)
+            kept.append(item)
+            continue
+
+        if key in covered:
+            reason = "Входит в {}.{} — копируется вместе с ней".format(
+                covered[key][0], covered[key][1])
+        else:
+            reason = "Повтор в списке — копируется один раз"
+
+        mark_item_skipped(get_item_value(item, "id"), reason)
+
+    return kept, covered
+
+
 RETRY_EXISTING_MODES = ("truncate", "drop", "skip_existing", "append")
 
 
@@ -1959,14 +2027,7 @@ def resume_unfinished_gpcopy_jobs():
 
         try:
             items = get_job_items(job_id)
-            item_keys = [
-                (
-                    get_item_value(i, "id"),
-                    get_item_value(i, "schema_name"),
-                    get_item_value(i, "table_name"),
-                )
-                for i in items
-            ]
+            item_keys = owner_item_keys(items)
             config = json.loads(job.get("config_json") or "{}")
         except Exception:
             continue
@@ -2126,7 +2187,19 @@ def run_gpcopy_job(job_id):
         if not dest_db:
             raise Exception("Destination database/dbname is empty")
 
+        # партиция, выбранная вместе с корнем, иначе ушла бы в gpcopy дважды
+        items, covered = skip_covered_items(items, source_connection_id)
+
         if mode == "date_filter":
+            if covered:
+                table_configs = [
+                    tc for tc in table_configs
+                    if (tc.get("schema") or tc.get("schema_name"),
+                        tc.get("table") or tc.get("table_name")) not in covered
+                ]
+                config["table_configs"] = table_configs
+                config.pop("date_table_configs", None)
+
             if not table_configs:
                 raise Exception("table_configs is empty")
 
@@ -2242,14 +2315,7 @@ def run_gpcopy_job(job_id):
         refresh_job_progress(job_id)
 
         # ключи для атрибуции партиций из лога к таблицам задачи
-        item_keys = [
-            (
-                get_item_value(item, "id"),
-                get_item_value(item, "schema_name"),
-                get_item_value(item, "table_name"),
-            )
-            for item in items
-        ]
+        item_keys = owner_item_keys(items)
 
         # сколько партиций у каждой таблицы — для пер-табличного индикатора
         try:

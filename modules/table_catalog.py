@@ -132,6 +132,56 @@ def fetch_partition_pairs(connection_id):
     return pairs
 
 
+def selected_ancestor(key, child_parent, selected):
+    """Ближайший предок таблицы, который сам есть в выборе, или None."""
+    # сама таблица в seen с самого начала: при петле в каталоге она иначе
+    # нашлась бы среди собственных предков и выпала бы из копирования
+    seen = {key}
+    parent = child_parent.get(key)
+
+    while parent is not None and parent not in seen:
+        if parent in selected:
+            return parent
+
+        seen.add(parent)
+        parent = child_parent.get(parent)
+
+    return None
+
+
+def drop_covered_partitions(tables, child_parent):
+    """
+    Убирает партиции, чей предок тоже выбран, и точные повторы (чистая).
+
+    Маска вида dwh_bi.* подхватывает и корень, и его партиции, и gpcopy
+    получал одну и ту же партицию дважды: от корня и отдельной строкой.
+    Копирует он параллельно (--jobs), поэтому два потока могли оба
+    очистить партицию и оба её залить — строки задваивались.
+
+    tables: [(schema, table)]; child_parent: {(s, t): (parent_s, parent_t)}.
+    -> (kept, covered): kept — без покрытых и повторов, в прежнем порядке;
+       covered — {(s, t): (s, t) выбранного предка}.
+    """
+    selected = set(tables)
+    kept = []
+    covered = {}
+    seen = set()
+
+    for key in tables:
+        if key in seen:
+            continue
+
+        seen.add(key)
+        ancestor = selected_ancestor(key, child_parent, selected)
+
+        if ancestor is None:
+            kept.append(key)
+        else:
+            covered[key] = ancestor
+
+    return kept, covered
+
+
 def classify_partition_roles(tables, child_parent):
     """
     Роли таблиц по pg_inherits (чистая функция).

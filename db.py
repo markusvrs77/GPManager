@@ -542,6 +542,14 @@ def init_db():
         "ALTER TABLE jobs ADD COLUMN pid INTEGER"
     )
 
+    # кто запустил: пользователь или расписание. Без этого полная заливка
+    # «ниоткуда» не отличалась от запуска по расписанию
+    ensure_column_exists(
+        "jobs",
+        "created_by",
+        "ALTER TABLE jobs ADD COLUMN created_by TEXT"
+    )
+
     # партиции таблицы: всего / уже скопировано (live-прогресс gpcopy)
     ensure_column_exists(
         "job_items",

@@ -22,9 +22,23 @@ def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def create_job(job_type, connection_id, config):
+def current_username():
+    """Кто запускает — если запуск идёт из веб-запроса вошедшего человека."""
+    try:
+        from modules.web_auth import current_user
+    except Exception:
+        return None
+
+    user = current_user()
+    return user["username"] if user else None
+
+
+def create_job(job_type, connection_id, config, created_by=None):
     if config is None:
         config = {}
+
+    if created_by is None:
+        created_by = current_username()
 
     tables = config.get("tables") or []
     total_items = len(tables)
@@ -42,9 +56,10 @@ def create_job(job_type, connection_id, config):
                 failed_items,
                 skipped_items,
                 progress_percent,
-                started_at
+                started_at,
+                created_by
             )
-            VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, ?)
+            VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?)
             """,
             (
                 job_type,
@@ -53,6 +68,7 @@ def create_job(job_type, connection_id, config):
                 json.dumps(config, ensure_ascii=False),
                 total_items,
                 now_str(),
+                created_by,
             ),
         )
 
@@ -141,7 +157,8 @@ def get_job(job_id):
                 started_at,
                 finished_at,
                 error_message,
-                log_file
+                log_file,
+                created_by
             FROM jobs
             WHERE id = ?
             """,
@@ -669,7 +686,8 @@ def get_latest_job(job_type=None):
                     started_at,
                     finished_at,
                     error_message,
-                    log_file
+                    log_file,
+                    created_by
                 FROM jobs
                 WHERE job_type = ?
                 ORDER BY id DESC
@@ -694,7 +712,8 @@ def get_latest_job(job_type=None):
                     started_at,
                     finished_at,
                     error_message,
-                    log_file
+                    log_file,
+                    created_by
                 FROM jobs
                 ORDER BY id DESC
                 LIMIT 1
@@ -838,7 +857,8 @@ def get_active_jobs(job_type=None):
                     started_at,
                     finished_at,
                     error_message,
-                    log_file
+                    log_file,
+                    created_by
                 FROM jobs
                 WHERE job_type = ?
                   AND status IN ('queued', 'running', 'stopping')
@@ -863,7 +883,8 @@ def get_active_jobs(job_type=None):
                     started_at,
                     finished_at,
                     error_message,
-                    log_file
+                    log_file,
+                    created_by
                 FROM jobs
                 WHERE status IN ('queued', 'running', 'stopping')
                 ORDER BY id DESC
@@ -894,7 +915,8 @@ def list_recent_jobs(job_types=None, limit=20):
             started_at,
             finished_at,
             error_message,
-            config_json
+            config_json,
+            created_by
         FROM jobs
     """
     params = []
