@@ -2555,7 +2555,8 @@
     }
 
     function loadRuns() {
-        api("/api/jobs/recent?types=" + RUN_TYPES + "&limit=8").then(function (d) {
+        api("/api/jobs/recent?types=" + RUN_TYPES + "&toolkit=" + toolkit() +
+            "&limit=8").then(function (d) {
             if (!d.ok) { return; }
             var box = $("gppRuns");
             if (!d.jobs.length) {

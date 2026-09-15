@@ -14,6 +14,7 @@ copy_pipe стримит данные без временных файлов: re
 COPY-вывод источника в os.pipe, приёмник читает его как COPY FROM STDIN.
 """
 
+import json
 import os
 import threading
 
@@ -293,6 +294,25 @@ def copy_table_pipe(src_conn, dst_conn, src_schema, src_table,
             pass
 
 
+def job_config(job):
+    """
+    Конфиг задачи словарём.
+
+    get_job отдаёт его строкой config_json, а раннер читал job["config"],
+    которого там никогда не было. Конфиг выходил пустым, и каждый перенос
+    через COPY падал на первой же строке с невнятным 'source_connection_id'.
+    """
+    raw = job.get("config")
+
+    if isinstance(raw, dict):
+        return raw
+
+    try:
+        return json.loads(job.get("config_json") or "{}")
+    except ValueError:
+        return {}
+
+
 def run_copy_pipe_job(job_id):
     """
     Раннер job_type='copy_pipe': полный перенос выбранных таблиц
@@ -302,15 +322,21 @@ def run_copy_pipe_job(job_id):
     if not job:
         return
 
-    config = job.get("config") or {}
+    config = job_config(job)
     mark_job_running(job_id)
 
     src_conn = None
     dst_conn = None
 
     try:
-        src_cfg = get_connection_by_id(int(config["source_connection_id"]))
-        dst_cfg = get_connection_by_id(int(config["dest_connection_id"]))
+        source_id = config.get("source_connection_id")
+        dest_id = config.get("dest_connection_id")
+
+        if not source_id or not dest_id:
+            raise Exception("В задаче не указан источник или назначение")
+
+        src_cfg = get_connection_by_id(int(source_id))
+        dst_cfg = get_connection_by_id(int(dest_id))
         if not src_cfg or not dst_cfg:
             raise Exception("Источник или назначение не найдены")
 
@@ -349,8 +375,12 @@ def run_copy_pipe_job(job_id):
                 continue
 
             if is_stop_requested(job_id):
-                for rest in items:
-                    if rest["status"] == "pending":
+                # статусы в items сняты до цикла: таблицы, готовые в этом
+                # запуске, там всё ещё queued — перечитываем, иначе они
+                # записались бы в пропущенные. И строки создаются queued, а
+                # не pending: прежняя проверка не находила ни одной
+                for rest in get_job_items(job_id):
+                    if rest["status"] in ("queued", "pending"):
                         mark_item_skipped(rest["id"], "остановлено пользователем")
                 refresh_job_progress(job_id)
                 mark_job_cancelled(job_id)

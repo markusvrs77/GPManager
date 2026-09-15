@@ -123,7 +123,9 @@ app.register_blueprint(kafka_bp)
 app.register_blueprint(auth_bp)
 app.register_blueprint(users_bp)
 
-from modules.web_auth import install_auth, scope_connections  # noqa: E402
+from modules.web_auth import (  # noqa: E402
+    in_scope, install_auth, job_in_scope, schedule_in_scope, scope_connections,
+)
 
 install_auth(app)
 
@@ -138,12 +140,34 @@ def list_connections():  # noqa: F811
     return scope_connections(_all_connections())
 
 
+def _skew_results_in_scope(results):
+    """Результаты анализа перекоса только по выданным кластерам."""
+    return [
+        r for r in results
+        if in_scope([r["connection_id"]] if r.get("connection_id") else [])
+    ]
+
+
+def _latest_skew_job_in_scope():
+    """Последний анализ перекоса, который пользователю можно видеть."""
+    job = get_latest_job("skew")
+
+    if job is None or job_in_scope(job):
+        return job
+
+    for candidate in list_recent_jobs(["skew"], 100):
+        if job_in_scope(candidate):
+            return get_job(candidate["id"])
+
+    return None
+
+
 @app.route("/")
 @app.route("/dashboard")
 def dashboard_page():
     connections = list_connections()
-    last_results = get_last_skew_results(limit=1000)
-    latest_skew_job = get_latest_job("skew")
+    last_results = _skew_results_in_scope(get_last_skew_results(limit=1000))
+    latest_skew_job = _latest_skew_job_in_scope()
 
     skew_summary = build_skew_dashboard_summary(last_results)
 
@@ -325,7 +349,7 @@ def api_skew_results():
     return jsonify(
         {
             "ok": True,
-            "results": get_last_skew_results(limit),
+            "results": _skew_results_in_scope(get_last_skew_results(limit)),
         }
     )
 
@@ -846,7 +870,7 @@ def api_get_job_skew_results(job_id):
 
 @app.route("/api/jobs/latest/skew")
 def api_get_latest_skew_job():
-    job = get_latest_job("skew")
+    job = _latest_skew_job_in_scope()
 
     if not job:
         return jsonify(
@@ -871,7 +895,7 @@ def api_get_active_jobs():
     return jsonify(
         {
             "ok": True,
-            "jobs": get_active_jobs(job_type),
+            "jobs": [j for j in get_active_jobs(job_type) if job_in_scope(j)],
         }
     )
 
@@ -882,7 +906,18 @@ def api_jobs_recent():
     job_types = [t.strip() for t in types_arg.split(",") if t.strip()] or None
     limit = request.args.get("limit", 20, type=int)
 
-    jobs = list_recent_jobs(job_types, limit)
+    # copy_pipe идёт и из Greenplum Toolkit (одна сторона — Postgres), и из
+    # Postgres Toolkit, поэтому по типу задачи ленты не разделить. Решают
+    # кластеры: есть Greenplum — это лента Greenplum, иначе — Postgres
+    toolkit = (request.args.get("toolkit") or "").strip().lower()
+    if toolkit not in ("gp", "pg"):
+        toolkit = None
+
+    jobs = list_recent_jobs(
+        job_types, min(limit * 5, 100) if toolkit else limit)
+
+    # задачи на невыданных кластерах в ленту не попадают
+    jobs = [j for j in jobs if job_in_scope(j)]
 
     # источник → назначение для ленты запусков; config_json наружу
     # не отдаём (там огромные списки таблиц)
@@ -890,6 +925,16 @@ def api_jobs_recent():
         conn_names = {c["id"]: c["name"] for c in list_connections()}
     except Exception:
         conn_names = {}
+
+    # тип кластера не секрет, а без полного списка задача на недоступном
+    # пользователю кластере попадала бы не в свою ленту
+    try:
+        conn_types = {
+            c["id"]: (c.get("db_type") or "greenplum")
+            for c in _all_connections()
+        }
+    except Exception:
+        conn_types = {}
 
     for j in jobs:
         try:
@@ -911,6 +956,19 @@ def api_jobs_recent():
 
         # операция задачи (VACUUM / ANALYZE / …) — для ленты запусков
         j["action"] = cfg.get("action")
+
+        sides = []
+        for side in (src, dst):
+            try:
+                if side:
+                    sides.append(conn_types.get(int(side), "greenplum"))
+            except (TypeError, ValueError):
+                pass
+
+        j["toolkit"] = "gp" if (not sides or "greenplum" in sides) else "pg"
+
+    if toolkit:
+        jobs = [j for j in jobs if j["toolkit"] == toolkit][:limit]
 
     return jsonify({
         "ok": True,
@@ -2612,7 +2670,9 @@ def schedules_page():
 @app.route("/api/schedules", methods=["GET", "POST"])
 def api_schedules():
     if request.method == "GET":
-        return jsonify({"ok": True, "schedules": scheduler_store.list_schedules()})
+        return jsonify({"ok": True, "schedules": [
+            s for s in scheduler_store.list_schedules() if schedule_in_scope(s)
+        ]})
 
     data = request.get_json(silent=True) or {}
 
