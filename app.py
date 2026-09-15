@@ -882,7 +882,15 @@ def api_jobs_recent():
     job_types = [t.strip() for t in types_arg.split(",") if t.strip()] or None
     limit = request.args.get("limit", 20, type=int)
 
-    jobs = list_recent_jobs(job_types, limit)
+    # copy_pipe идёт и из Greenplum Toolkit (одна сторона — Postgres), и из
+    # Postgres Toolkit, поэтому по типу задачи ленты не разделить. Решают
+    # кластеры: есть Greenplum — это лента Greenplum, иначе — Postgres
+    toolkit = (request.args.get("toolkit") or "").strip().lower()
+    if toolkit not in ("gp", "pg"):
+        toolkit = None
+
+    jobs = list_recent_jobs(
+        job_types, min(limit * 5, 100) if toolkit else limit)
 
     # источник → назначение для ленты запусков; config_json наружу
     # не отдаём (там огромные списки таблиц)
@@ -890,6 +898,16 @@ def api_jobs_recent():
         conn_names = {c["id"]: c["name"] for c in list_connections()}
     except Exception:
         conn_names = {}
+
+    # тип кластера не секрет, а без полного списка задача на недоступном
+    # пользователю кластере попадала бы не в свою ленту
+    try:
+        conn_types = {
+            c["id"]: (c.get("db_type") or "greenplum")
+            for c in _all_connections()
+        }
+    except Exception:
+        conn_types = {}
 
     for j in jobs:
         try:
@@ -911,6 +929,19 @@ def api_jobs_recent():
 
         # операция задачи (VACUUM / ANALYZE / …) — для ленты запусков
         j["action"] = cfg.get("action")
+
+        sides = []
+        for side in (src, dst):
+            try:
+                if side:
+                    sides.append(conn_types.get(int(side), "greenplum"))
+            except (TypeError, ValueError):
+                pass
+
+        j["toolkit"] = "gp" if (not sides or "greenplum" in sides) else "pg"
+
+    if toolkit:
+        jobs = [j for j in jobs if j["toolkit"] == toolkit][:limit]
 
     return jsonify({
         "ok": True,
