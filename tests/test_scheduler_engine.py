@@ -91,14 +91,23 @@ def test_tick_fires_due_schedule():
 
 
 def test_overlap_skip_records_skipped_run():
+    from job_manager import create_job, mark_job_running
+
     scheduler.JOB_RUNNERS["mocktype"] = lambda job_id: None
     sid = _mk_schedule()
     _due(sid)
+
+    # запуск с настоящей идущей задачей: без job_id его закрывает
+    # reconcile_runs, и пересекаться будет уже не с чем
+    job_id = create_job("mocktype", 1, {"tables": []})
+    mark_job_running(job_id)
+
     store.record_run(
         sid,
         fired_at=NOW.strftime(TS),
         run_date=NOW.strftime(TS),
         status="running",
+        job_id=job_id,
     )
 
     scheduler.tick(now=NOW)

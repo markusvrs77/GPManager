@@ -212,6 +212,33 @@ def update_run(run_id, status=None, error=None, job_id=None):
         )
 
 
+def list_running_runs():
+    """Запуски, числящиеся идущими, вместе со статусом своей задачи."""
+    with sqlite_cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.id, r.schedule_id, r.job_id,
+                   j.status AS job_status, j.error_message AS job_error
+            FROM schedule_runs r
+            LEFT JOIN jobs j ON j.id = r.job_id
+            WHERE r.status = 'running'
+            ORDER BY r.id
+            """
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def is_last_run(schedule_id, run_id):
+    with sqlite_cursor() as cur:
+        cur.execute(
+            "SELECT MAX(id) AS last_id FROM schedule_runs WHERE schedule_id = ?",
+            (schedule_id,),
+        )
+        row = cur.fetchone()
+
+    return bool(row) and row["last_id"] == run_id
+
+
 def get_run(run_id):
     with sqlite_cursor() as cur:
         cur.execute("SELECT * FROM schedule_runs WHERE id = ?", (run_id,))
