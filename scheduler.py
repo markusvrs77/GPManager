@@ -214,6 +214,56 @@ def _launch(schedule, run_date_str, attempt_no, now, existing_run_id=None):
         thread.start()
 
 
+# Задача кончилась — «interrupted» значит, что её прервал перезапуск.
+_TERMINAL_JOB_STATUS = {
+    "done": "done",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "interrupted": "failed",
+}
+
+
+def reconcile_runs():
+    """
+    Закрывает запуски, чья задача давно завершилась. Возвращает их число.
+
+    Запись о запуске обновляет поток _execute, а он живёт ровно столько,
+    сколько идёт gpcopy. Перезапуск приложения убивает поток: задача
+    доживает сама, а запуск навсегда остаётся running. Дальше политика
+    skip не пускает ни один новый — расписание молча перестаёт работать,
+    и в истории висит один и тот же запуск.
+    """
+    closed = 0
+
+    for run in store.list_running_runs():
+        if run.get("job_id") is None:
+            status, error = "failed", "Задача не найдена"
+        else:
+            status = _TERMINAL_JOB_STATUS.get(run.get("job_status"))
+
+            if status is None:
+                continue        # задача и правда ещё идёт
+
+            error = run.get("job_error")
+
+            if not error and run.get("job_status") == "interrupted":
+                error = "Задача прервана перезапуском приложения"
+
+        store.update_run(run["id"], status=status, error=error)
+
+        # последний статус расписания правим только по последнему запуску,
+        # иначе старый подвисший затрёт свежий
+        if store.is_last_run(run["schedule_id"], run["id"]):
+            store.update_schedule_last(
+                run["schedule_id"], status=status,
+                job_id=run.get("job_id"), error=error,
+            )
+
+        closed += 1
+
+    return closed
+
+
 def _process_due(schedule, now):
     schedule_id = schedule["id"]
     next_at = store.parse_ts(schedule["next_run_at"])
@@ -252,6 +302,8 @@ def tick(now=None):
     if not store.acquire_leader_lock(HOLDER_ID, now):
         return "not-leader"
 
+    reconcile_runs()
+
     for schedule in store.list_due_schedules(store.fmt(now)):
         try:
             _process_due(schedule, now)
@@ -289,10 +341,16 @@ def run_now(schedule_id, now=None):
     if not schedule:
         raise ValueError("Schedule not found: {}".format(schedule_id))
 
-    policy = schedule.get("overlap_policy") or "skip"
+    # кнопку жмут как раз тогда, когда расписание встало: сначала
+    # закрываем запуски, чьи задачи давно кончились
+    reconcile_runs()
 
-    if policy != "parallel" and store.get_active_run(schedule_id):
-        return {"started": False, "reason": "previous run still active"}
+    policy = schedule.get("overlap_policy") or "skip"
+    active = store.get_active_run(schedule_id)
+
+    if policy != "parallel" and active:
+        return {"started": False, "reason": "overlap",
+                "job_id": active.get("job_id")}
 
     _launch(schedule, store.fmt(now), 0, now)
     return {"started": True}
