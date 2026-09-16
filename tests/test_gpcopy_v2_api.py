@@ -472,8 +472,11 @@ def test_retry_config_from_partition_job():
     assert retry["expanded_tables"] == retry["selected_tables"]
     assert retry["truncate"] is True
 
-    # партиционная специфика в обычную gpcopy-задачу не тащится
-    for key in ("partitions", "recompute", "count_mode", "failed_leaves"):
+    # партиционная специфика в обычную gpcopy-задачу не тащится.
+    # tables здесь важнее прочего: из него create_job делает строки
+    # задачи, и корневые таблицы вернулись бы в дозагрузку целиком
+    for key in ("tables", "partitions", "recompute", "count_mode",
+                "failed_leaves"):
         assert key not in retry
 
     # подключения сохраняются
@@ -522,3 +525,38 @@ def test_retry_config_skips_already_copied():
 
     with pytest.raises(ValueError):
         g.build_retry_config(config, [("s", "t_1_prt_1")])
+
+
+def test_retry_route_reloads_only_the_failed_partitions(client, monkeypatch):
+    """
+    Дозагрузка партиционной задачи не должна переливать таблицы целиком.
+
+    Строки новой задачи создавались дважды: create_job брал их из
+    config["tables"], где у партиционной задачи лежат корневые таблицы, а
+    маршрут добавлял упавшие партиции. В итоге «догрузить» начинало всё
+    заново.
+    """
+    import app as app_module
+    from job_manager import create_job, get_job_items
+
+    monkeypatch.setattr(app_module, "run_gpcopy_job", lambda job_id: None)
+
+    job_id = create_job("gpcopy_partition_diff", 1, {
+        "source_connection_id": 1,
+        "dest_connection_id": 2,
+        "tables": [{"schema": "dwh_stage", "table": "s01_t_trndtl"},
+                   {"schema": "dwh_stage", "table": "s01_t_bal"}],
+        "count_mode": "stats",
+        "recompute": True,
+        "failed_leaves": [["dwh_stage", "s01_t_trndtl_1_prt_1618"]],
+    })
+
+    response = client.post("/api/gpcopy/retry-failed", json={"job_id": job_id})
+    body = response.get_json()
+
+    assert response.status_code == 200
+
+    names = sorted(i["table_name"] for i in get_job_items(body["job_id"]))
+
+    assert names == ["s01_t_trndtl_1_prt_1618"]
+    assert body["total_items"] == 1

@@ -23,6 +23,9 @@
   --warn: #a05a08;
   --crit: #c22a20;
   --idle: #6a6961;
+  /* «идёт» синим: акцент #cc3a0d и --crit #c22a20 — почти один оттенок,
+     и запущенная задача читалась как упавшая */
+  --run: #1668c4;
 
   /* radius / spacing / elevation */
   --radius: 22px;
@@ -85,6 +88,7 @@
     --warn: #e8b45c;
     --crit: #ff8a7a;
     --idle: #aba9a1;
+    --run: #7ab3ff;
   }
 }
 :root[data-theme="dark"] {
@@ -107,6 +111,7 @@
   --warn: #e8b45c;
   --crit: #ff8a7a;
   --idle: #aba9a1;
+  --run: #7ab3ff;
 }
 
 /* Surfaces here are already opaque, so reduced transparency only has

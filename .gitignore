@@ -8,3 +8,11 @@ __pycache__/
 
 # Local Claude Code worktree / preview config (machine-specific paths)
 .claude/
+
+# Виртуальная среда и логи живут на сервере рядом с кодом. venv однажды
+# уже уехал в первый коммит, и из-за него git отказывался переключать
+# там ветку.
+venv/
+.venv/
+logs/
+*.log

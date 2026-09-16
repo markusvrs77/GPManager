@@ -659,6 +659,10 @@ def build_retry_config(config, failed_leaves, existing_mode="truncate"):
     retry.pop("partitions", None)
     retry.pop("recompute", None)
     retry.pop("count_mode", None)
+    # Из tables строки задачи создаёт create_job. У партиционной задачи там
+    # лежат корневые таблицы, и дозагрузка получала их вдобавок к упавшим
+    # партициям — то есть переливала все таблицы целиком вместо разницы.
+    retry.pop("tables", None)
 
     retry["selected_tables"] = tables
     retry["expanded_tables"] = tables

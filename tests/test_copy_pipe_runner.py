@@ -156,3 +156,46 @@ def test_feed_without_toolkit_keeps_everything(client, two_kinds_of_runs):
         "/api/jobs/recent?types=copy_pipe").get_json()["jobs"]]
 
     assert set(ids) == {pg_only, mixed}
+
+
+# ------------------------------------------------------------ путь целиком
+
+def test_start_route_runs_a_postgres_transfer_to_the_end(client, pipe,
+                                                         monkeypatch):
+    """
+    Тот самый запуск, что падал на сервере: Postgres → Postgres через
+    /api/gpcopy/start. Маршрут кладёт кластеры в конфиг, а строки задачи
+    создаёт отдельно — не так, как тесты выше, поэтому проверяется
+    отдельно.
+    """
+    import threading
+
+    import modules.connections as connections
+
+    kinds = {21: dict(PG, name="cashprod"), 22: dict(PG, name="cashbdb_test")}
+    monkeypatch.setattr(connections, "get_connection_by_id",
+                        lambda cid: kinds.get(int(cid)))
+
+    class InlineThread(object):
+        """Раннер выполняется сразу, чтобы дождаться его в тесте."""
+
+        def __init__(self, target=None, args=(), daemon=None, **_kw):
+            self.target, self.args = target, args
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(threading, "Thread", InlineThread)
+
+    response = client.post("/api/gpcopy/start", json={
+        "source_connection_id": 21, "dest_connection_id": 22,
+        "tables": [{"schema": "stage", "table": "s01_g_clihst"}],
+        "truncate": True,
+    })
+
+    body = response.get_json()
+    job = get_job(body["job_id"])
+
+    assert body["transport"] == "copy_pipe"
+    assert job["status"] == "done", job["error_message"]
+    assert pipe == [("stage", "s01_g_clihst")]
