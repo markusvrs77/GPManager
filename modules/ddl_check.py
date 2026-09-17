@@ -232,13 +232,30 @@ def _column_def(col):
     return part
 
 
+def _access_method(amname):
+    """
+    Способ хранения для USING, или None для обычной heap-таблицы.
+
+    В Greenplum 7 append-optimized — это метод доступа (pg_class.relam), а
+    в reloptions остаются только compresstype и прочие его параметры. Без
+    USING таблица создавалась как heap, и heap отвергал compresstype:
+    unrecognized parameter "compresstype". В GP6 relam у таблиц нулевой,
+    и признак append-optimized лежит в самих reloptions — там USING не
+    нужен.
+    """
+    name = (amname or "").strip()
+
+    return None if name in ("", "heap") else name
+
+
 def build_create_table_sql(schema, table, columns, options=None,
-                           partition_by=None, distributed_by=None):
+                           partition_by=None, distributed_by=None,
+                           access_method=None):
     """
     CREATE TABLE по описанию из каталога источника. Чистая функция.
 
     Порядок частей — как в грамматике Greenplum 7:
-    (колонки) PARTITION BY ... WITH (...) DISTRIBUTED BY (...).
+    (колонки) PARTITION BY ... USING ... WITH (...) DISTRIBUTED BY (...).
     """
     if not columns:
         raise ValueError("Нет колонок для {}.{}".format(schema, table))
@@ -251,6 +268,9 @@ def build_create_table_sql(schema, table, columns, options=None,
     if partition_by:
         sql += "\n" + partition_by
 
+    if _access_method(access_method):
+        sql += "\nUSING {}".format(quote_ident(_access_method(access_method)))
+
     if options:
         sql += "\nWITH ({})".format(", ".join(options))
 
@@ -261,8 +281,12 @@ def build_create_table_sql(schema, table, columns, options=None,
 
 
 def build_create_partition_sql(schema, table, parent_schema, parent_table,
-                               bound, options=None):
-    """CREATE TABLE ... PARTITION OF ... FOR VALUES ... Чистая функция."""
+                               bound, options=None, access_method=None):
+    """CREATE TABLE ... PARTITION OF ... FOR VALUES ... Чистая функция.
+
+    Способ хранения указывается у каждой партиции свой: Greenplum
+    допускает, что старые партиции лежат в ao_column, а свежие — в heap.
+    """
     if not bound:
         raise ValueError("Нет границ партиции {}.{}".format(schema, table))
 
@@ -270,6 +294,9 @@ def build_create_partition_sql(schema, table, parent_schema, parent_table,
         quote_ident(schema), quote_ident(table),
         quote_ident(parent_schema), quote_ident(parent_table), bound,
     )
+
+    if _access_method(access_method):
+        sql += "\nUSING {}".format(quote_ident(_access_method(access_method)))
 
     if options:
         sql += "\nWITH ({})".format(", ".join(options))
@@ -310,9 +337,10 @@ def _table_meta(cur, schema, table):
     """relkind / reloptions / определение вьюхи / partition key / политика."""
     cur.execute(
         """
-        SELECT c.oid, c.relkind, c.reloptions
+        SELECT c.oid, c.relkind, c.reloptions, am.amname
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
+        LEFT JOIN pg_am am ON am.oid = c.relam
         WHERE n.nspname = %s AND c.relname = %s
         """,
         (schema, table),
@@ -325,7 +353,8 @@ def _table_meta(cur, schema, table):
     oid, relkind, reloptions = row[0], row[1], row[2]
     meta = {"oid": oid, "relkind": relkind,
             "options": list(reloptions or []), "partition_by": None,
-            "distributed_by": None, "definition": None}
+            "distributed_by": None, "definition": None,
+            "access_method": _access_method(row[3])}
 
     if relkind in ("v", "m"):
         cur.execute("SELECT pg_get_viewdef(%s, true)", (oid,))
@@ -375,10 +404,11 @@ def _partition_children(cur, oid):
         """
         SELECT n.nspname, c.relname,
                pg_get_expr(c.relpartbound, c.oid),
-               c.reloptions
+               c.reloptions, am.amname
         FROM pg_inherits i
         JOIN pg_class c ON c.oid = i.inhrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace
+        LEFT JOIN pg_am am ON am.oid = c.relam
         WHERE i.inhparent = %s
         ORDER BY n.nspname, c.relname
         """,
@@ -386,7 +416,51 @@ def _partition_children(cur, oid):
     )
 
     return [{"schema": r[0], "table": r[1], "bound": r[2],
-             "options": list(r[3] or [])} for r in cur.fetchall()]
+             "options": list(r[3] or []),
+             "access_method": _access_method(r[4])} for r in cur.fetchall()]
+
+
+def _partition_parent(cur, oid):
+    """
+    Родитель и границы, если таблица — партиция; иначе None.
+
+    Партицию нельзя создавать отдельной таблицей с её именем: gpcopy лил
+    бы потом в самостоятельную таблицу, никак не связанную с родителем.
+    Наследник без границ — обычное наследование Postgres, не партиция.
+    """
+    # relpartbound есть только с Postgres 10 и в Greenplum 7. Без проверки
+    # на GP6 и старом Postgres падал бы запрос для любой таблицы, а
+    # декларативных партиций там всё равно нет
+    cur.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM pg_attribute
+            WHERE attrelid = 'pg_catalog.pg_class'::regclass
+              AND attname = 'relpartbound' AND NOT attisdropped
+        )
+        """
+    )
+
+    if not cur.fetchone()[0]:
+        return None
+
+    cur.execute(
+        """
+        SELECT pn.nspname, pc.relname, pg_get_expr(c.relpartbound, c.oid)
+        FROM pg_inherits i
+        JOIN pg_class pc ON pc.oid = i.inhparent
+        JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+        JOIN pg_class c ON c.oid = i.inhrelid
+        WHERE i.inhrelid = %s
+        """,
+        (oid,),
+    )
+    row = cur.fetchone()
+
+    if not row or not row[2]:
+        return None
+
+    return {"schema": row[0], "table": row[1], "bound": row[2]}
 
 
 def fetch_object_ddl(src_conn, schema, table, with_partitions=True):
@@ -408,12 +482,26 @@ def fetch_object_ddl(src_conn, schema, table, with_partitions=True):
                     materialized=meta["relkind"] == "m")],
             }
 
+        parent = _partition_parent(cur, meta["oid"])
+
+        if parent:
+            return {
+                "kind": "partition",
+                "parent": (parent["schema"], parent["table"]),
+                "statements": [build_create_partition_sql(
+                    schema, table, parent["schema"], parent["table"],
+                    parent["bound"], options=meta["options"],
+                    access_method=meta["access_method"],
+                )],
+            }
+
         columns = _table_columns(cur, meta["oid"])
         statements = [build_create_table_sql(
             schema, table, columns,
             options=meta["options"],
             partition_by=meta["partition_by"],
             distributed_by=meta["distributed_by"],
+            access_method=meta["access_method"],
         )]
 
         kind = "partitioned" if meta["relkind"] == "p" else "table"
@@ -423,6 +511,7 @@ def fetch_object_ddl(src_conn, schema, table, with_partitions=True):
                 statements.append(build_create_partition_sql(
                     child["schema"], child["table"], schema, table,
                     child["bound"], options=child["options"],
+                    access_method=child["access_method"],
                 ))
 
     return {"kind": kind, "statements": statements}
@@ -446,10 +535,36 @@ def create_missing_objects(source_connection_id, dest_connection_id, tables):
     out = []
     made_schemas = set()
 
+    # Маска dwh_bi.* приносит и корень, и его партиции. Корень создаётся
+    # со всеми партициями сразу, поэтому партиции, чей предок тоже в
+    # запросе, отдельно не создаём — иначе, окажись они в списке раньше
+    # корня, корень потом не смог бы их к себе прикрепить.
+    from modules.table_catalog import drop_covered_partitions
+
+    keys = [(t.get("schema"), t.get("table")) for t in tables]
+
     try:
-        for t in tables:
-            schema = t.get("schema")
-            table = t.get("table")
+        from modules.table_catalog import fetch_partition_pairs
+
+        child_parent = fetch_partition_pairs(int(source_connection_id))
+    except Exception:
+        # без иерархии не страшно: партиция создаётся как PARTITION OF
+        # и отдельной таблицей всё равно не станет
+        child_parent = {}
+
+    kept, covered = drop_covered_partitions(keys, child_parent)
+
+    for key in keys:
+        if key in covered:
+            out.append({
+                "schema": key[0], "table": key[1], "kind": "partition",
+                "ok": True, "skipped": True, "statements": 0,
+                "error": "",
+                "note": "создаётся вместе с {}.{}".format(*covered[key]),
+            })
+
+    try:
+        for schema, table in kept:
             row = {"schema": schema, "table": table, "kind": "table",
                    "ok": True, "error": "", "statements": 0}
 

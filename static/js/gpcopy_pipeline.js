@@ -3200,6 +3200,8 @@
 
                     toast("Создано объектов: " + fmtN(d.created) +
                         " (" + fmtN(d.statements) + " DDL)" +
+                        (d.covered ? ", партиций вместе с корнем: " +
+                            fmtN(d.covered) : "") +
                         (d.failed ? ", ошибок: " + fmtN(d.failed) : "") +
                         (d.deps ? ", зависимостей: " + fmtN(d.deps) : ""),
                         d.failed ? "warning" : "success");
