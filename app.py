@@ -505,7 +505,10 @@ def api_gpcopy_create_tables():
         return jsonify({
             "ok": True,
             "results": results,
-            "created": sum(1 for r in results if r["ok"]),
+            "created": sum(1 for r in results
+                           if r["ok"] and not r.get("skipped")),
+            # партиции, которые создал их корень, — не отдельные объекты
+            "covered": sum(1 for r in results if r.get("skipped")),
             "statements": sum(r["statements"] for r in results),
             "failed": sum(1 for r in results if not r["ok"]),
         })
