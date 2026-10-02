@@ -21,7 +21,7 @@ SAME = {"status": "same", "src_rows": 5, "dst_rows": 5, "to_insert": 0,
 def world(monkeypatch):
     """Две фейковые базы; compare_table запоминает, с каким ключом звали."""
     state = {"opened": [], "calls": [], "stop": False, "outcome": {},
-             "columns": {}, "dst_used": [],
+             "columns": {}, "dst_used": [], "key_sources": {},
              # годные уникальные индексы: NOT NULL, не частичные, без выражений
              "valid_uk": {"with_uk": [["code"]]}}
 
@@ -38,8 +38,9 @@ def world(monkeypatch):
         side = "src" if conn.readonly else "dst"
         return state["columns"].get((side, table), ["id", "name", "code"])
 
-    def fake_compare(src, dst, schema, table, key_columns):
+    def fake_compare(src, dst, schema, table, key_columns, key_source=None):
         state["calls"].append((table, list(key_columns)))
+        state["key_sources"][table] = key_source
         state["dst_used"].append(dst)
         outcome = state["outcome"].get(table, SAME)
         if callable(outcome):
@@ -113,6 +114,9 @@ def test_key_chain_unique_index_then_saved_key(world):
             results["saved"]["key_source"]) == (["name"], "sync_keys")
     assert (results["bare"]["key_columns"],
             results["bare"]["key_source"]) == ([], None)
+    # происхождение ключа доходит до сравнения: от него зависят проверки дублей
+    assert world["key_sources"] == {"with_uk": "unique_index",
+                                    "saved": "sync_keys", "bare": None}
 
 
 def test_key_missing_in_dest_is_not_used(world):

@@ -7,7 +7,7 @@
 import pytest
 
 import modules.pg_compare as cmp
-from tests.pg_fakes import FakeConn
+from tests.pg_fakes import FakeConn, render
 
 
 def _catalog(namespaces, relations, inherits=()):
@@ -110,10 +110,13 @@ COLS = [("id", "integer"), ("name", "text"), ("amount", "numeric")]
 
 
 def _sides(src_cols=COLS, dst_cols=COLS, dup=0, counts=(3, 0, 0, 0),
-           copy_out=b"1\ta\n2\tb\n3\tc\n", dst_dup=0):
+           copy_out=b"1\ta\n2\tb\n3\tc\n", dst_dup=0,
+           dst_unique=None):
     src = FakeConn(responses=[("a.attname", list(src_cols))],
                    copy_out=copy_out)
     dst = FakeConn(responses=[
+        # каталог приёмника: есть ли PK / уникальный NOT NULL индекс на ключе
+        ("indisunique", [] if dst_unique is None else [(dst_unique,)]),
         ("a.attname", list(dst_cols)),
         ('FROM "pgcmp_src" GROUP BY', [(dup,)]),
         ("HAVING count(*) > 1", [(dst_dup,)]),
@@ -164,7 +167,7 @@ def test_duplicate_source_keys_are_reported():
     assert "2" in result["message"]
 
 
-def test_keyless_compare_uses_except_all_on_hashes():
+def test_keyless_compare_counts_hash_multiplicities_in_one_pass():
     src, dst = _sides(counts=(3, 1, 0, 1))
 
     result = cmp.compare_table(src, dst, "s", "t", [])
@@ -173,8 +176,47 @@ def test_keyless_compare_uses_except_all_on_hashes():
     assert (result["to_insert"], result["to_update"],
             result["to_delete"]) == (1, 0, 1)
     assert 'CREATE TEMP TABLE "pgcmp_src" ("h" text)' in dst.sql_text()
-    assert "EXCEPT ALL" in dst.sql_text()
+    assert "EXCEPT ALL" not in dst.sql_text()
     assert "HAVING" not in dst.sql_text()
+
+
+HASH = 'md5(ROW("t"."amount", "t"."id", "t"."name")::text)'
+
+
+def test_keyed_count_is_one_full_outer_join_with_filtered_counts():
+    text = render(cmp.build_count_sql("s", "t", ["id", "name"],
+                                      ["id", "name", "amount"]))
+
+    # строка без пары в d — вставка, без пары в s — удаление,
+    # пара с другим хешем — изменение; d.h (md5) не бывает NULL
+    assert text == (
+        'SELECT count("d"."h") AS dst_rows, '
+        'count(*) FILTER (WHERE "d"."h" IS NULL) AS to_insert, '
+        'count(*) FILTER (WHERE "s"."h" <> "d"."h") AS to_update, '
+        'count(*) FILTER (WHERE "s"."h" IS NULL) AS to_delete '
+        'FROM "pgcmp_src" AS "s" FULL OUTER JOIN '
+        '(SELECT "t"."id"::text AS "k0", "t"."name"::text AS "k1", '
+        + HASH + ' AS "h" FROM "s"."t" AS "t") AS "d" '
+        'ON "s"."k0" = "d"."k0" AND "s"."k1" = "d"."k1"'
+    )
+
+
+def test_keyless_count_aggregates_both_sides_by_hash_once():
+    text = render(cmp.build_count_sql("s", "t", [],
+                                      ["id", "name", "amount"]))
+
+    # лишние копии хеша в источнике — вставка, в приёмнике — удаление
+    assert text == (
+        'SELECT sum("dc") AS dst_rows, '
+        'sum(greatest("sc" - "dc", 0)) AS to_insert, 0 AS to_update, '
+        'sum(greatest("dc" - "sc", 0)) AS to_delete '
+        'FROM (SELECT "h", '
+        'count(*) FILTER (WHERE "side" = 1) AS "sc", '
+        'count(*) FILTER (WHERE "side" = 2) AS "dc" '
+        'FROM (SELECT "h", 1 AS "side" FROM "pgcmp_src" '
+        'UNION ALL SELECT ' + HASH + ', 2 FROM "s"."t" AS "t") AS "u" '
+        'GROUP BY "h") AS "x"'
+    )
 
 
 def test_different_column_sets_are_structure_diff_without_reading_data():
@@ -226,3 +268,78 @@ def test_temp_table_is_recreated_safely():
     assert 'DROP TABLE IF EXISTS "pg_temp"."pgcmp_src"' in text
     assert text.index("DROP TABLE IF EXISTS") < text.index("CREATE TEMP")
     assert "ON COMMIT DROP" in text
+
+
+def test_temp_table_is_analyzed_before_counting():
+    src, dst = _sides()
+
+    cmp.compare_table(src, dst, "s", "t", ["id"])
+
+    text = dst.sql_text()
+    assert 'ANALYZE "pg_temp"."pgcmp_src"' in text
+    assert (text.index("CREATE TEMP") < text.index("ANALYZE")
+            < text.index("AS to_insert"))
+
+
+def test_work_mem_is_raised_only_for_the_dest_transaction():
+    src, dst = _sides()
+
+    cmp.compare_table(src, dst, "s", "t", [])
+
+    text = dst.sql_text()
+    assert cmp.WORK_MEM == "256MB"
+    assert "SET LOCAL work_mem = '256MB'" in text
+    assert text.index("SET LOCAL work_mem") < text.index("AS to_insert")
+    # SET LOCAL уходит вместе с откатом; источник не трогаем
+    assert dst.commits == 0 and dst.rollbacks >= 1
+    assert "work_mem" not in src.sql_text()
+
+
+SRC_DUP_SQL = 'FROM "pgcmp_src" GROUP BY'
+DST_DUP_SQL = 'FROM "s"."t" AS "t" GROUP BY'
+
+
+@pytest.mark.parametrize("key_source", ["pk", "unique_index"])
+def test_source_duplicate_check_is_skipped_for_a_source_unique_key(key_source):
+    # ответ «2 дубля» был бы, если бы проверку запустили
+    src, dst = _sides(dup=2, counts=(3, 0, 0, 0))
+
+    result = cmp.compare_table(src, dst, "s", "t", ["id"],
+                               key_source=key_source)
+
+    assert result["status"] == "same"
+    assert SRC_DUP_SQL not in dst.sql_text()
+
+
+@pytest.mark.parametrize("key_source", ["sync_keys", None])
+def test_source_duplicate_check_stays_for_other_keys(key_source):
+    src, dst = _sides(dup=2)
+
+    result = cmp.compare_table(src, dst, "s", "t", ["id"],
+                               key_source=key_source)
+
+    assert result["status"] == "duplicate_keys"
+    assert "источник" in result["message"]
+
+
+def test_dest_duplicate_check_is_skipped_when_dest_key_is_unique():
+    src, dst = _sides(dst_dup=3, dst_unique=True, counts=(3, 0, 0, 0))
+
+    result = cmp.compare_table(src, dst, "s", "t", ["id"],
+                               key_source="sync_keys")
+
+    assert result["status"] == "same"
+    assert DST_DUP_SQL not in dst.sql_text()
+    params = [p for text, p in dst.executed if "indisunique" in text]
+    assert len(params) == 1
+    assert "s" in params[0] and "t" in params[0] and ["id"] in params[0]
+
+
+def test_dest_duplicate_check_stays_when_dest_key_is_not_unique():
+    src, dst = _sides(dst_dup=3, dst_unique=False)
+
+    result = cmp.compare_table(src, dst, "s", "t", ["id"], key_source="pk")
+
+    assert result["status"] == "duplicate_keys"
+    assert "приёмник" in result["message"]
+    assert SRC_DUP_SQL not in dst.sql_text()

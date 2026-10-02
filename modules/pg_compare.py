@@ -7,9 +7,12 @@
 
   * источник отдаёт COPY (SELECT ключ::text..., md5(ROW(колонки)::text))
     TO STDOUT — по сети идут только ключи и хеши, источник только читается;
-  * поток заливается во временную таблицу сессии приёмника, подсчёт идёт
-    в приёмнике соединением с его таблицей;
-  * без ключа сравниваются мультимножества хешей (EXCEPT ALL);
+  * поток заливается во временную таблицу сессии приёмника (ANALYZE),
+    подсчёт идёт в приёмнике за один проход его таблицы: FULL OUTER JOIN
+    по ключу, без ключа — одна агрегация хешей обеих сторон;
+  * work_mem поднимается SET LOCAL только в транзакции приёмника;
+  * проверки дублей ключа пропускаются, где уникальность гарантирована
+    каталогом (PK / годный уникальный индекс);
   * разные наборы колонок — structure_diff, данные не читаются.
 
 Ключ: PK → уникальный индекс → сохранённый ключ (sync_keys), через
@@ -54,6 +57,10 @@ STATUSES = ("same", "differs", "no_dest", "no_source", "structure_diff",
 
 TEMP_TABLE = "pgcmp_src"
 HASH_COLUMN = "h"
+
+# work_mem транзакции приёмника на время сравнения (SET LOCAL — уходит
+# с откатом): хеш-соединению и агрегации хешей хватает памяти без диска
+WORK_MEM = "256MB"
 
 
 # ------------------------------------------------------------------
@@ -220,6 +227,15 @@ def build_drop_temp_sql():
     )
 
 
+def build_analyze_temp_sql():
+    """Статистика временной таблицы: без неё планировщик слеп к её размеру."""
+    return sql.SQL("ANALYZE {}").format(sql.Identifier("pg_temp", TEMP_TABLE))
+
+
+def build_work_mem_sql():
+    return sql.SQL("SET LOCAL work_mem = {}").format(sql.Literal(WORK_MEM))
+
+
 def build_dest_duplicate_sql(schema, table, key_columns):
     """Сколько значений ключа повторяется в таблице приёмника."""
     return sql.SQL(
@@ -230,6 +246,43 @@ def build_dest_duplicate_sql(schema, table, key_columns):
         sql.Identifier("t"),
         sql.SQL(", ").join(sql.Identifier("t", k) for k in key_columns),
     )
+
+
+# PK или уникальный индекс приёмника ровно на ключевые колонки: не
+# частичный, без выражений, валидный, все колонки NOT NULL — тогда
+# дублей ключа в приёмнике быть не может и проверять их незачем
+DEST_KEY_UNIQUE_SQL = """
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = %s AND c.relname = %s
+          AND i.indisunique AND i.indisvalid
+          AND i.indpred IS NULL AND i.indexprs IS NULL
+          AND i.indnkeyatts = cardinality(%s::text[])
+          AND ARRAY(
+                SELECT col.attname::text
+                FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
+                JOIN pg_attribute col
+                  ON col.attrelid = c.oid AND col.attnum = k.attnum
+                WHERE k.ord <= i.indnkeyatts AND col.attnotnull
+                ORDER BY 1
+              ) = ARRAY(SELECT unnest(%s::text[]) ORDER BY 1)
+    )
+"""
+
+# ключ из этих источников уже уникален и NOT NULL в источнике
+UNIQUE_KEY_SOURCES = ("pk", "unique_index")
+
+
+def dest_key_is_unique(conn, schema, table, key_columns):
+    """Есть ли в приёмнике PK / годный уникальный индекс ровно на ключе."""
+    cur = conn.cursor()
+    cur.execute(DEST_KEY_UNIQUE_SQL,
+                (schema, table, list(key_columns), list(key_columns)))
+    row = cur.fetchone()
+    return bool(row and row[0])
 
 
 def build_duplicate_sql(key_columns):
@@ -246,25 +299,36 @@ def build_duplicate_sql(key_columns):
 def build_count_sql(schema, table, key_columns, columns):
     """
     Одна строка (dst_rows, to_insert, to_update, to_delete) по временной
-    таблице источника и таблице приёмника.
+    таблице источника и таблице приёмника, за один проход приёмника.
+
+    С ключом — FULL OUTER JOIN по ключу (сравнение «=», NULL-ключ пары
+    не находит): нет пары в d — вставка, нет пары в s — удаление, пара с
+    другим хешем — изменение. Хеш (md5) не бывает NULL, поэтому NULL
+    в h означает отсутствие стороны.
+    Без ключа — одна агрегация хешей обеих сторон: лишние копии хеша
+    в источнике — вставка, в приёмнике — удаление (как EXCEPT ALL).
     """
     hash_expr = row_hash_sql("t", columns)
     src = sql.Identifier(TEMP_TABLE)
-    s_alias = sql.Identifier("s")
-    d_alias = sql.Identifier("d")
     h = sql.Identifier(HASH_COLUMN)
+    t_alias = sql.Identifier("t")
 
     if not key_columns:
+        sc, dc = sql.Identifier("sc"), sql.Identifier("dc")
+        side = sql.Identifier("side")
         return sql.SQL(
-            "WITH d AS (SELECT {hash} AS {h} FROM {tbl} AS {t}) "
-            "SELECT (SELECT count(*) FROM d) AS dst_rows, "
-            "(SELECT count(*) FROM (SELECT {h} FROM {src} "
-            "EXCEPT ALL SELECT {h} FROM d) AS x) AS to_insert, "
-            "0 AS to_update, "
-            "(SELECT count(*) FROM (SELECT {h} FROM d "
-            "EXCEPT ALL SELECT {h} FROM {src}) AS x) AS to_delete"
-        ).format(hash=hash_expr, h=h, tbl=_table_ident(schema, table),
-                 t=sql.Identifier("t"), src=src)
+            "SELECT sum({dc}) AS dst_rows, "
+            "sum(greatest({sc} - {dc}, 0)) AS to_insert, 0 AS to_update, "
+            "sum(greatest({dc} - {sc}, 0)) AS to_delete "
+            "FROM (SELECT {h}, "
+            "count(*) FILTER (WHERE {side} = 1) AS {sc}, "
+            "count(*) FILTER (WHERE {side} = 2) AS {dc} "
+            "FROM (SELECT {h}, 1 AS {side} FROM {src} "
+            "UNION ALL SELECT {hash}, 2 FROM {tbl} AS {t}) AS {u} "
+            "GROUP BY {h}) AS {x}"
+        ).format(sc=sc, dc=dc, side=side, h=h, src=src, hash=hash_expr,
+                 tbl=_table_ident(schema, table), t=t_alias,
+                 u=sql.Identifier("u"), x=sql.Identifier("x"))
 
     names = _key_names(key_columns)
     casts = sql.SQL(", ").join(
@@ -277,20 +341,21 @@ def build_count_sql(schema, table, key_columns, columns):
                                   sql.Identifier("d", n))
         for n in names
     )
+    sh = sql.Identifier("s", HASH_COLUMN)
+    dh = sql.Identifier("d", HASH_COLUMN)
 
     return sql.SQL(
-        "WITH d AS (SELECT {casts}, {hash} AS {h} FROM {tbl} AS {t}) "
-        "SELECT (SELECT count(*) FROM d) AS dst_rows, "
-        "(SELECT count(*) FROM {src} AS {s} WHERE NOT EXISTS "
-        "(SELECT 1 FROM d WHERE {join})) AS to_insert, "
-        "(SELECT count(*) FROM {src} AS {s} JOIN d AS {d} ON {join} "
-        "WHERE {sh} <> {dh}) AS to_update, "
-        "(SELECT count(*) FROM d AS {d} WHERE NOT EXISTS "
-        "(SELECT 1 FROM {src} AS {s} WHERE {join})) AS to_delete"
+        "SELECT count({dh}) AS dst_rows, "
+        "count(*) FILTER (WHERE {dh} IS NULL) AS to_insert, "
+        "count(*) FILTER (WHERE {sh} <> {dh}) AS to_update, "
+        "count(*) FILTER (WHERE {sh} IS NULL) AS to_delete "
+        "FROM {src} AS {s} FULL OUTER JOIN "
+        "(SELECT {casts}, {hash} AS {h} FROM {tbl} AS {t}) AS {d} "
+        "ON {join}"
     ).format(
-        casts=casts, hash=hash_expr, h=h, tbl=_table_ident(schema, table),
-        t=sql.Identifier("t"), src=src, s=s_alias, d=d_alias, join=join,
-        sh=sql.Identifier("s", HASH_COLUMN), dh=sql.Identifier("d", HASH_COLUMN),
+        dh=dh, sh=sh, src=src, s=sql.Identifier("s"), casts=casts,
+        hash=hash_expr, h=h, tbl=_table_ident(schema, table), t=t_alias,
+        d=sql.Identifier("d"), join=join,
     )
 
 
@@ -306,10 +371,15 @@ def _result(status, **values):
     return row
 
 
-def compare_table(src_conn, dst_conn, schema, table, key_columns):
+def compare_table(src_conn, dst_conn, schema, table, key_columns,
+                  key_source=None):
     """
     Сравнение таблицы, которая есть в обеих базах.
     key_columns — [] для сравнения без ключа (мультимножество строк).
+    key_source — откуда ключ ('pk' | 'unique_index' | 'sync_keys' | None):
+    для 'pk' и 'unique_index' (годного по valid_unique_keys) дубли ключа
+    в источнике не проверяются. Дубли в приёмнике не проверяются, если
+    там есть PK / уникальный NOT NULL индекс ровно на ключе.
     -> {status, src_rows, dst_rows, to_insert, to_update, to_delete, message}
     Приёмник не меняется: временная таблица уходит вместе с откатом.
     """
@@ -349,6 +419,7 @@ def compare_table(src_conn, dst_conn, schema, table, key_columns):
                              % ", ".join(absent))
 
         cur = dst_conn.cursor()
+        cur.execute(build_work_mem_sql())
         # остаток от прошлой таблицы, если её откат не прошёл
         cur.execute(build_drop_temp_sql())
         cur.execute(build_temp_table_sql(key_columns))
@@ -359,8 +430,9 @@ def compare_table(src_conn, dst_conn, schema, table, key_columns):
             sql.Identifier(TEMP_TABLE),
             _key_names(key_columns) + [HASH_COLUMN],
         )
+        cur.execute(build_analyze_temp_sql())
 
-        if key_columns:
+        if key_columns and key_source not in UNIQUE_KEY_SOURCES:
             cur.execute(build_duplicate_sql(key_columns))
             duplicates = int(cur.fetchone()[0] or 0)
 
@@ -372,6 +444,8 @@ def compare_table(src_conn, dst_conn, schema, table, key_columns):
                             % (", ".join(key_columns), duplicates),
                 )
 
+        if key_columns and not dest_key_is_unique(dst_conn, schema, table,
+                                                  key_columns):
             cur.execute(build_dest_duplicate_sql(schema, table, key_columns))
             duplicates = int(cur.fetchone()[0] or 0)
 
@@ -464,7 +538,7 @@ def valid_unique_keys(conn, schema, table):
             JOIN pg_attribute a
               ON a.attrelid = c.oid AND a.attnum = k.attnum
             WHERE n.nspname = %s AND c.relname = %s
-              AND i.indisunique AND NOT i.indisprimary
+              AND i.indisunique AND NOT i.indisprimary AND i.indisvalid
               AND i.indpred IS NULL AND i.indexprs IS NULL
               AND k.ord <= i.indnkeyatts
             GROUP BY i.indexrelid
@@ -615,7 +689,8 @@ def _compare_one(src_conn, dst_conn, schema, table, info, candidates):
     key = pick_key(candidates, src_cols, dst_cols, valid_unique)
 
     row = compare_table(src_conn, dst_conn, schema, table,
-                        key["columns"] if key else [])
+                        key["columns"] if key else [],
+                        key_source=key["source"] if key else None)
     row["key_columns"] = list(key["columns"]) if key else []
     row["key_source"] = key["source"] if key else None
     return row
