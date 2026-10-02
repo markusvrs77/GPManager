@@ -21,6 +21,8 @@
 """
 
 import json
+import queue
+import threading
 
 from psycopg2 import sql
 
@@ -56,11 +58,27 @@ STATUSES = ("same", "differs", "no_dest", "no_source", "structure_diff",
             "duplicate_keys", "error", "cancelled")
 
 TEMP_TABLE = "pgcmp_src"
+
+# сколько таблиц сравнивается одновременно: по паре соединений на воркер
+PARALLEL_DEFAULT = 4
+PARALLEL_MIN = 1
+PARALLEL_MAX = 8
 HASH_COLUMN = "h"
 
 # work_mem транзакции приёмника на время сравнения (SET LOCAL — уходит
 # с откатом): хеш-соединению и агрегации хешей хватает памяти без диска
 WORK_MEM = "256MB"
+
+# общий бюджет work_mem на всё сравнение: делится между воркерами, чтобы
+# параллельность не умножала память приёмника; меньше минимума не даём
+WORK_MEM_TOTAL_MB = 512
+WORK_MEM_MIN_MB = 32
+
+
+def worker_work_mem(workers):
+    """work_mem одного воркера: бюджет / число воркеров, не меньше минимума."""
+    per = WORK_MEM_TOTAL_MB // max(1, int(workers))
+    return "%dMB" % max(WORK_MEM_MIN_MB, per)
 
 
 # ------------------------------------------------------------------
@@ -232,8 +250,8 @@ def build_analyze_temp_sql():
     return sql.SQL("ANALYZE {}").format(sql.Identifier("pg_temp", TEMP_TABLE))
 
 
-def build_work_mem_sql():
-    return sql.SQL("SET LOCAL work_mem = {}").format(sql.Literal(WORK_MEM))
+def build_work_mem_sql(work_mem=WORK_MEM):
+    return sql.SQL("SET LOCAL work_mem = {}").format(sql.Literal(work_mem))
 
 
 def build_dest_duplicate_sql(schema, table, key_columns):
@@ -372,7 +390,7 @@ def _result(status, **values):
 
 
 def compare_table(src_conn, dst_conn, schema, table, key_columns,
-                  key_source=None):
+                  key_source=None, work_mem=WORK_MEM):
     """
     Сравнение таблицы, которая есть в обеих базах.
     key_columns — [] для сравнения без ключа (мультимножество строк).
@@ -380,6 +398,8 @@ def compare_table(src_conn, dst_conn, schema, table, key_columns,
     для 'pk' и 'unique_index' (годного по valid_unique_keys) дубли ключа
     в источнике не проверяются. Дубли в приёмнике не проверяются, если
     там есть PK / уникальный NOT NULL индекс ровно на ключе.
+    work_mem — SET LOCAL для транзакции приёмника (раннер делит бюджет
+    WORK_MEM_TOTAL_MB между воркерами).
     -> {status, src_rows, dst_rows, to_insert, to_update, to_delete, message}
     Приёмник не меняется: временная таблица уходит вместе с откатом.
     """
@@ -419,7 +439,7 @@ def compare_table(src_conn, dst_conn, schema, table, key_columns,
                              % ", ".join(absent))
 
         cur = dst_conn.cursor()
-        cur.execute(build_work_mem_sql())
+        cur.execute(build_work_mem_sql(work_mem))
         # остаток от прошлой таблицы, если её откат не прошёл
         cur.execute(build_drop_temp_sql())
         cur.execute(build_temp_table_sql(key_columns))
@@ -671,7 +691,8 @@ def latest_compare_job(src_id, dst_id):
 # Раннер
 # ------------------------------------------------------------------
 
-def _compare_one(src_conn, dst_conn, schema, table, info, candidates):
+def _compare_one(src_conn, dst_conn, schema, table, info, candidates,
+                 work_mem=WORK_MEM):
     if not info.get("in_src", True):
         return _result("no_source",
                        message="Таблицы нет в источнике — не изменяется")
@@ -690,7 +711,8 @@ def _compare_one(src_conn, dst_conn, schema, table, info, candidates):
 
     row = compare_table(src_conn, dst_conn, schema, table,
                         key["columns"] if key else [],
-                        key_source=key["source"] if key else None)
+                        key_source=key["source"] if key else None,
+                        work_mem=work_mem)
     row["key_columns"] = list(key["columns"]) if key else []
     row["key_source"] = key["source"] if key else None
     return row
@@ -709,18 +731,21 @@ def _rollback(conns):
     return broken
 
 
-def _reopen_broken(conns, broken, connection_ids):
+def _reopen_broken(conns, broken, connection_ids, base=0):
     """
     Соединение, которое не откатилось, дальше не годится: закрываем и
-    открываем заново на том же месте списка (его видит StopWatch).
-    Индекс 0 — источник, он снова read-only.
+    открываем заново на том же месте списка conns[base + index] (его видят
+    StopWatch и finally раннера). Новое соединение кладётся в список сразу
+    после открытия — до следующего open_pg, чтобы его падение не оставило
+    открытое соединение вне списка. Индекс 0 — источник, он снова read-only.
     """
     for index in broken:
         try:
-            conns[index].close()
+            conns[base + index].close()
         except Exception:
             pass
-        conns[index] = open_pg(connection_ids[index], readonly=(index == 0))
+        conns[base + index] = open_pg(connection_ids[index],
+                                      readonly=(index == 0))
 
 
 def _cancel_rest(job_id):
@@ -733,11 +758,115 @@ def _cancel_rest(job_id):
     mark_job_cancelled(job_id)
 
 
+def parse_parallel(value):
+    """
+    Число воркеров из запроса: None/пусто -> PARALLEL_DEFAULT.
+    Не целое или вне PARALLEL_MIN..PARALLEL_MAX -> ValueError по-русски.
+    """
+    if value is None or value == "":
+        return PARALLEL_DEFAULT
+
+    if isinstance(value, bool) or isinstance(value, float):
+        number = None
+    else:
+        try:
+            number = int(str(value).strip())
+        except (TypeError, ValueError):
+            number = None
+
+    if number is None or not PARALLEL_MIN <= number <= PARALLEL_MAX:
+        raise ValueError(
+            "Параллельность — целое число от %d до %d"
+            % (PARALLEL_MIN, PARALLEL_MAX))
+
+    return number
+
+
+def _parallel_of(config):
+    """parallel из config задачи; испорченное значение -> по умолчанию."""
+    try:
+        return parse_parallel(config.get("parallel"))
+    except ValueError:
+        return PARALLEL_DEFAULT
+
+
+def _compare_worker(job_id, slot, conns, ids, work, info, candidates,
+                    watch, shared, work_mem=WORK_MEM):
+    """
+    Воркер: берёт таблицы из общей очереди, пока она не опустеет или не
+    придёт стоп. Его пара соединений — conns[slot:slot + 2] (их же видит
+    StopWatch); сломанные при откате переоткрываются на том же месте.
+    """
+    while True:
+        try:
+            item = work.get_nowait()
+        except queue.Empty:
+            return
+
+        if watch.check():
+            # таблица не начата: _cancel_rest пометит её skipped
+            shared["cancelled"] = True
+            return
+
+        schema, table = item["schema_name"], item["table_name"]
+        mark_item_running(item["id"])
+        refresh_job_progress(job_id)
+
+        base = {"schema": schema, "table": table}
+        src_conn, dst_conn = conns[slot], conns[slot + 1]
+
+        try:
+            row = _compare_one(
+                src_conn, dst_conn, schema, table,
+                info.get((schema, table), {}),
+                candidates.get((schema, table)),
+                work_mem=work_mem,
+            )
+            save_result(job_id, dict(base, **row))
+            mark_item_done(item["id"])
+        except Exception as e:
+            broken = _rollback([src_conn, dst_conn])
+
+            # QueryCanceledError от conn.cancel() сторожа — это стоп;
+            # строку закроет mark_job_cancelled в _cancel_rest
+            if watch.stopped or watch.check():
+                save_result(job_id, dict(
+                    base, status="cancelled",
+                    message="Сравнение остановлено пользователем",
+                ))
+                shared["cancelled"] = True
+                return
+
+            with shared["lock"]:
+                shared["failed"] += 1
+
+            save_result(job_id, dict(base, status="error",
+                                     message=str(e)[:500]))
+            mark_item_failed(item["id"], str(e)[:500])
+
+            if broken:
+                # без живой пары воркер дальше не может; таблицы
+                # доберут остальные
+                _reopen_broken(conns, broken, ids, base=slot)
+
+        refresh_job_progress(job_id)
+
+
+def _run_worker(shared, *args):
+    try:
+        _compare_worker(*args)
+    except Exception as e:
+        with shared["lock"]:
+            shared["fatal"].append(e)
+
+
 def run_pg_compare_job(job_id):
     """
     Раннер job_type='pg_compare'. Config: source_connection_id,
-    dest_connection_id, tables=[{schema, table, in_src, in_dst}].
-    Item на таблицу; результат пишется сразу после таблицы.
+    dest_connection_id, parallel (1..8, по умолчанию 4),
+    tables=[{schema, table, in_src, in_dst}].
+    Item на таблицу; таблицы разбирают min(parallel, таблиц) воркеров,
+    у каждого своя пара соединений; результат пишется сразу после таблицы.
     """
     job = get_job(job_id)
     if not job:
@@ -745,6 +874,8 @@ def run_pg_compare_job(job_id):
 
     config = job_config(job)
     mark_job_running(job_id)
+    # все соединения всех воркеров: воркер slot держит conns[slot:slot+2];
+    # этот же список отменяет StopWatch
     conns = []
 
     try:
@@ -753,11 +884,6 @@ def run_pg_compare_job(job_id):
 
         if not source_id or not dest_id:
             raise Exception("В задаче не указан источник или назначение")
-
-        src_conn = open_pg(source_id, readonly=True)
-        conns.append(src_conn)
-        dst_conn = open_pg(dest_id)
-        conns.append(dst_conn)
 
         info = {(t.get("schema"), t.get("table")): t
                 for t in config.get("tables") or []}
@@ -772,58 +898,49 @@ def run_pg_compare_job(job_id):
         ]
         candidates = resolve_key_candidates(source_id, both)
 
+        work = queue.Queue()
+        pending = [it for it in items
+                   if it.get("status") not in ("done", "failed", "skipped")]
+        for item in pending:
+            work.put(item)
+
+        workers = max(1, min(_parallel_of(config), len(pending)))
+
+        for _ in range(workers):
+            conns.append(open_pg(source_id, readonly=True))
+            conns.append(open_pg(dest_id))
+
         refresh_job_progress(job_id)
-        failed = 0
+        shared = {"lock": threading.Lock(), "failed": 0, "fatal": [],
+                  "cancelled": False}
 
         with StopWatch(job_id, conns) as watch:
-            for item in items:
-                if item.get("status") in ("done", "failed", "skipped"):
-                    continue
+            threads = [
+                threading.Thread(
+                    target=_run_worker,
+                    args=(shared, job_id, slot * 2, conns, [source_id, dest_id],
+                          work, info, candidates, watch, shared,
+                          worker_work_mem(workers)),
+                    name="pg_compare-%s-%d" % (job_id, slot),
+                    daemon=True,
+                )
+                for slot in range(workers)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
 
-                if watch.check():
-                    _cancel_rest(job_id)
-                    return
+            if shared["cancelled"] or (watch.stopped and not work.empty()):
+                _cancel_rest(job_id)
+                return
 
-                schema, table = item["schema_name"], item["table_name"]
-                mark_item_running(item["id"])
-                refresh_job_progress(job_id)
+        if shared["fatal"]:
+            raise shared["fatal"][0]
 
-                base = {"schema": schema, "table": table}
-
-                try:
-                    row = _compare_one(
-                        src_conn, dst_conn, schema, table,
-                        info.get((schema, table), {}),
-                        candidates.get((schema, table)),
-                    )
-                    save_result(job_id, dict(base, **row))
-                    mark_item_done(item["id"])
-                except Exception as e:
-                    broken = _rollback(conns)
-
-                    # QueryCanceledError от conn.cancel() сторожа — это стоп
-                    if watch.stopped or watch.check():
-                        save_result(job_id, dict(
-                            base, status="cancelled",
-                            message="Сравнение остановлено пользователем",
-                        ))
-                        _cancel_rest(job_id)
-                        return
-
-                    if broken:
-                        _reopen_broken(conns, broken, [source_id, dest_id])
-                        src_conn, dst_conn = conns
-
-                    failed += 1
-                    save_result(job_id, dict(base, status="error",
-                                             message=str(e)[:500]))
-                    mark_item_failed(item["id"], str(e)[:500])
-
-                refresh_job_progress(job_id)
-
-        if failed:
-            mark_job_failed(job_id,
-                            "%s таблиц(ы) не удалось сравнить" % failed)
+        if shared["failed"]:
+            mark_job_failed(job_id, "%s таблиц(ы) не удалось сравнить"
+                            % shared["failed"])
         else:
             mark_job_done(job_id)
 

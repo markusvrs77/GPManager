@@ -132,3 +132,53 @@ def test_policy_start_runs_reads_view():
     assert web_auth.POLICY["api_pg_compare_start"] == "sync.run"
     assert web_auth.POLICY["api_pg_compare_results"] == "sync.view"
     assert web_auth.POLICY["api_pg_compare_latest"] == "sync.view"
+
+
+def _config(job_id):
+    import json
+    return json.loads(get_job(job_id)["config_json"])
+
+
+@pytest.mark.parametrize("body, expected", [
+    ({}, 4), ({"parallel": 1}, 1), ({"parallel": 8}, 8), ({"parallel": "3"}, 3),
+])
+def test_start_stores_parallel_in_the_job(client, pg_pair, body, expected):
+    response = _start(client, **body)
+
+    assert response.status_code == 200, response.get_json()
+    assert _config(response.get_json()["job_id"])["parallel"] == expected
+
+
+@pytest.mark.parametrize("value", [0, 9, -1, 2.5, "abc", True, [2]])
+def test_start_refuses_bad_parallel_in_russian(client, pg_pair, value):
+    response = _start(client, parallel=value)
+
+    assert response.status_code == 400
+    assert "от 1 до 8" in response.get_json()["message"]
+    assert pg_pair == []
+
+
+def test_results_list_every_running_table(client):
+    from job_manager import mark_item_running
+    job_id = create_job("pg_compare", 61, {
+        "source_connection_id": 61, "dest_connection_id": 62,
+        "tables": [{"schema": "s", "table": t} for t in ("a", "b", "c")],
+        "item_action": "COMPARE"})
+    items = get_job_items(job_id)
+    mark_item_running(items[0]["id"])
+    mark_item_running(items[2]["id"])
+
+    for url in ("/api/pg/compare/results?job_id=%d" % job_id,
+                "/api/pg/compare/latest?source_connection_id=61"
+                "&dest_connection_id=62"):
+        body = client.get(url).get_json()
+        assert body["running"] == [{"schema": "s", "table": "a"},
+                                   {"schema": "s", "table": "c"}]
+        assert body["current"] == {"schema": "s", "table": "a"}
+
+
+def test_latest_without_compares_has_empty_running(client):
+    body = client.get("/api/pg/compare/latest?source_connection_id=71"
+                      "&dest_connection_id=72").get_json()
+
+    assert body["running"] == [] and body["current"] is None

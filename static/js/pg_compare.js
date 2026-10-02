@@ -52,7 +52,7 @@
         searchTimer: null,
         pair: null,         // {src, dst} показанного сравнения
         cmpJob: null,
-        cmpCurrent: null,
+        cmpRunning: [],
         cmpResults: [],
         cmpTimer: null,
         cmpSeq: 0,
@@ -439,8 +439,22 @@
 
     /* ---------------- сравнение ---------------- */
 
+    // «Параллельно»: целое 1..8; иначе null и текст ошибки у кнопки
+    function pgcmpParallel() {
+        var el = $("pgcmpParallel");
+        var raw = el ? String(el.value).trim() : "";
+        if (raw === "") { return 4; }
+        if (!/^\d+$/.test(raw)) { return null; }
+        var n = parseInt(raw, 10);
+        return n >= 1 && n <= 8 ? n : null;
+    }
+
     function pgcmpStartCompare() {
         var err = pgcmpPairError();
+        var parallel = pgcmpParallel();
+        if (!err && parallel === null) {
+            err = "«Параллельно» — целое число от 1 до 8.";
+        }
         var sel = pgcmpSelection();
         if (!err && !sel.schemas.length && !sel.tables.length) {
             err = "Отметьте схемы целиком и/или отдельные таблицы.";
@@ -458,7 +472,8 @@
             source_connection_id: src,
             dest_connection_id: dst,
             schemas: sel.schemas,
-            tables: sel.tables
+            tables: sel.tables,
+            parallel: parallel
         }).then(function (d) {
             btn.disabled = false;
             if (ctx !== st.ctxSeq) {
@@ -477,7 +492,7 @@
                 ". Базы при этом не меняются.", "ok");
             st.pair = { src: src, dst: dst };
             st.cmpJob = { id: d.job_id, status: "running", total_items: d.total_items };
-            st.cmpCurrent = null;
+            st.cmpRunning = [];
             st.cmpResults = [];
             st.actions = {};
             pgcmpRenderResults();
@@ -493,7 +508,7 @@
 
         st.cmpJob = null;
         st.cmpResults = [];
-        st.cmpCurrent = null;
+        st.cmpRunning = [];
         st.actions = {};
         st.pair = null;
         st.cmpDirty = false;
@@ -553,7 +568,9 @@
 
     function pgcmpApplyCompare(d, soft) {
         st.cmpJob = d.job;
-        st.cmpCurrent = d.current || null;
+        // running — все таблицы, которые сейчас сравнивают воркеры;
+        // current — прежнее поле на случай старого сервера
+        st.cmpRunning = Array.isArray(d.running) ? d.running : (d.current ? [d.current] : []);
         st.cmpResults = d.results || [];
 
         // действие по умолчанию: разница для отличающихся, остальное пропускаем;
@@ -654,8 +671,10 @@
         var total = Number(job.total_items || 0);
         var doneN = st.cmpResults.length;
         var pct = total ? Math.min(100, Math.round(doneN * 100 / total)) : 0;
-        var cur = st.cmpCurrent
-            ? "Сравнивается <b>" + pgcmpEsc(st.cmpCurrent.schema + "." + st.cmpCurrent.table) + "</b>"
+        var cur = st.cmpRunning.length
+            ? "Сейчас: <b>" + st.cmpRunning.map(function (t) {
+                return pgcmpEsc(t.schema + "." + t.table);
+            }).join(", ") + "</b>"
             : (job.status === "stopping" ? "Останавливаю…" : "Готовлю сравнение…");
 
         box.innerHTML = '<div class="gpp-active">' +
@@ -722,10 +741,12 @@
                     '<td class="num">' + pgcmpN(r.to_delete) + "</td>" +
                     "<td>" + pgcmpActionCell(r, i) + "</td></tr>";
             });
-            if (st.cmpCurrent && job && ACTIVE[job.status]) {
-                rows.push('<tr class="cur"><td class="name">' + pgcmpEsc(st.cmpCurrent.schema) + "." +
-                    pgcmpEsc(st.cmpCurrent.table) + '</td><td><span class="pgcmp-st run">сравнивается…</span></td>' +
-                    '<td colspan="7"></td></tr>');
+            if (job && ACTIVE[job.status]) {
+                st.cmpRunning.forEach(function (t) {
+                    rows.push('<tr class="cur"><td class="name">' + pgcmpEsc(t.schema) + "." +
+                        pgcmpEsc(t.table) + '</td><td><span class="pgcmp-st run">сравнивается…</span></td>' +
+                        '<td colspan="7"></td></tr>');
+                });
             }
             var html = '<div class="pgcmp-tablewrap"><table class="pgcmp-table"><thead><tr>' +
                 "<th>Таблица</th><th>Статус</th><th>Ключ</th><th>Источник</th><th>Приёмник</th>" +

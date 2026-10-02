@@ -1761,15 +1761,14 @@ def _pg_compare_pair(data):
 
 
 def _pg_compare_payload(job):
-    current = None
+    # все таблицы, которые сейчас сравнивают воркеры; current — первая из
+    # них (поле для прежних клиентов)
+    running = [{"schema": item["schema_name"], "table": item["table_name"]}
+               for item in get_job_items(job["id"])
+               if item["status"] == "running"]
 
-    for item in get_job_items(job["id"]):
-        if item["status"] == "running":
-            current = {"schema": item["schema_name"],
-                       "table": item["table_name"]}
-            break
-
-    return {"ok": True, "job": job, "current": current,
+    return {"ok": True, "job": job, "running": running,
+            "current": running[0] if running else None,
             "results": pg_compare.get_results(job["id"])}
 
 
@@ -1791,6 +1790,11 @@ def api_pg_compare_start():
     if not schemas and not tables:
         return jsonify({"ok": False,
                         "message": "Не выбраны ни схемы, ни таблицы"}), 400
+
+    try:
+        parallel = pg_compare.parse_parallel(data.get("parallel"))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
 
     # схема раскрывается в момент старта: состав сверяется с каталогом
     conns = []
@@ -1825,6 +1829,7 @@ def api_pg_compare_start():
             "schemas": schemas,
             "selected_tables": tables,
             "tables": expanded,
+            "parallel": parallel,
             "item_action": "COMPARE",
         },
     )
@@ -1864,7 +1869,7 @@ def api_pg_compare_latest():
     job = pg_compare.latest_compare_job(source_id, dest_id)
     if not job:
         return jsonify({"ok": True, "job": None, "current": None,
-                        "results": []})
+                        "running": [], "results": []})
 
     return jsonify(_pg_compare_payload(job))
 

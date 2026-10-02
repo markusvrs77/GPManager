@@ -419,6 +419,13 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
         <div class="pgcmp-tree" id="pgcmpTree"><div class="pgcmp-empty">Каталог не загружен.</div></div>
         <div class="gpp-actions" style="margin-top: 12px;">
             <button type="button" class="gpp-btn primary" id="pgcmpCompareBtn">Сравнить</button>
+            <label for="pgcmpParallel" class="gpp-hint" style="display: inline-flex; align-items: center; gap: 6px; margin: 0;"
+                   title="сколько таблиц сравнивать одновременно; каждая — отдельный запрос к источнику">
+                Параллельно
+                <input type="number" id="pgcmpParallel" min="1" max="8" step="1" value="4"
+                       class="gpp-sc-filter" style="width: 64px; margin: 0;"
+                       title="сколько таблиц сравнивать одновременно; каждая — отдельный запрос к источнику">
+            </label>
             <button type="button" class="gpp-btn" id="pgcmpFullBtn"
                     title="Без сравнения: TRUNCATE + INSERT всех выбранных таблиц">Полная загрузка (TRUNCATE + INSERT)</button>
             <button type="button" class="gpp-btn ghost" id="pgcmpClearBtn"
@@ -695,6 +702,6 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 <script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
 <script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=17"></script>
 {% if (toolkit or 'gp') == 'pg' %}
-<script src="{{ url_for('static', filename='js/pg_compare.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/pg_compare.js') }}?v=3"></script>
 {% endif %}
 {% endblock %}
