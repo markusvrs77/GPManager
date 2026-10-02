@@ -1869,6 +1869,205 @@ def api_pg_compare_latest():
     return jsonify(_pg_compare_payload(job))
 
 
+# ------------------------------------------------------------------
+# Postgres Toolkit: загрузка разницы / полная загрузка (задача pg_diff_load)
+# ------------------------------------------------------------------
+
+import modules.pg_diff_load as pg_diff_load  # noqa: E402
+
+# при каком статусе сравнения таблице доступно действие
+PG_DIFF_LOAD_STATUSES = {
+    "diff": ("differs", "same"),
+    "full": ("differs", "same", "duplicate_keys"),
+    "create": ("no_dest",),
+}
+
+# diff и create — только по законченному сравнению
+PG_DIFF_LOAD_COMPARE_FINISHED = ("done", "failed", "cancelled")
+
+
+class _PgDiffLoadError(ValueError):
+    """Ошибка валидации запроса загрузки — ответ 400."""
+
+
+def _pg_diff_load_tables(raw):
+    """[{schema, table, action}] без повторов или _PgDiffLoadError."""
+    if not isinstance(raw, list) or not raw:
+        raise _PgDiffLoadError("Не выбраны таблицы для загрузки")
+
+    out = []
+    seen = set()
+
+    for item in raw:
+        item = item if isinstance(item, dict) else {}
+        schema, table = item.get("schema"), item.get("table")
+
+        if not isinstance(schema, str) or not isinstance(table, str) \
+                or not schema.strip() or not table.strip():
+            raise _PgDiffLoadError("Таблица указана без схемы или имени")
+
+        schema, table = schema.strip(), table.strip()
+        action = item.get("action")
+
+        if action not in pg_diff_load.ACTIONS:
+            raise _PgDiffLoadError("Неизвестное действие «%s» для %s.%s"
+                                   % (action, schema, table))
+
+        if (schema, table) in seen:
+            raise _PgDiffLoadError("Таблица %s.%s указана дважды"
+                                   % (schema, table))
+
+        seen.add((schema, table))
+        out.append({"schema": schema, "table": table, "action": action})
+
+    return out
+
+
+def _pg_diff_load_from_compare(compare_job_id, source_id, dest_id, tables):
+    """
+    Ключи и ожидаемые числа — из результатов сравнения, не с клиента.
+    -> (tables для config, expected)
+    """
+    try:
+        compare_job_id = int(compare_job_id)
+    except (TypeError, ValueError):
+        raise _PgDiffLoadError("Неверный номер сравнения")
+
+    job = get_job(compare_job_id)
+    if not job or job.get("job_type") != "pg_compare" or not job_in_scope(job):
+        raise _PgDiffLoadError("Сравнение #%d не найдено" % compare_job_id)
+
+    try:
+        config = _json.loads(job.get("config_json") or "{}")
+        same_pair = (int(config.get("source_connection_id")) == source_id
+                     and int(config.get("dest_connection_id")) == dest_id)
+    except (TypeError, ValueError):
+        same_pair = False
+
+    if not same_pair:
+        raise _PgDiffLoadError("Сравнение #%d сделано для другой пары "
+                               "подключений" % compare_job_id)
+
+    # пока сравнение идёт, его результаты неполные
+    if any(t["action"] in ("diff", "create") for t in tables) \
+            and job.get("status") not in PG_DIFF_LOAD_COMPARE_FINISHED:
+        raise _PgDiffLoadError(
+            "Сравнение #%d ещё не завершено (статус «%s») — дождитесь его "
+            "окончания" % (compare_job_id, job.get("status")))
+
+    # последняя строка по таблице — актуальная
+    results = {(r["schema"], r["table"]): r
+               for r in pg_compare.get_results(compare_job_id)}
+    out, expected = [], []
+
+    for t in tables:
+        name = "%s.%s" % (t["schema"], t["table"])
+        row = results.get((t["schema"], t["table"]))
+
+        if not row:
+            raise _PgDiffLoadError("Таблицы %s нет в результатах сравнения "
+                                   "#%d" % (name, compare_job_id))
+
+        if row["status"] not in PG_DIFF_LOAD_STATUSES[t["action"]]:
+            raise _PgDiffLoadError(
+                "Таблица %s: статус сравнения «%s» — действие «%s» "
+                "недоступно" % (name, row["status"], t["action"]))
+
+        out.append(dict(
+            t,
+            key_columns=(list(row.get("key_columns") or [])
+                         if t["action"] == "diff" else []),
+            key_source=row.get("key_source") if t["action"] == "diff" else None,
+            in_dst=t["action"] != "create",
+        ))
+        expected.append({"schema": t["schema"], "table": t["table"],
+                         "to_insert": row.get("to_insert"),
+                         "to_update": row.get("to_update"),
+                         "to_delete": row.get("to_delete")})
+
+    return out, expected
+
+
+@app.route("/api/pg/diff-load/start", methods=["POST"])
+def api_pg_diff_load_start():
+    data = request.get_json(silent=True) or {}
+
+    source_id, dest_id, error = _pg_compare_pair(data)
+    if error:
+        return jsonify({"ok": False, "message": error}), 400
+
+    delete_missing = data.get("delete_missing", False)
+    if not isinstance(delete_missing, bool):
+        return jsonify({"ok": False, "message": "Флаг delete_missing должен "
+                                                "быть true или false"}), 400
+
+    compare_job_id = data.get("compare_job_id")
+    if compare_job_id in ("", 0):
+        compare_job_id = None
+
+    try:
+        tables = _pg_diff_load_tables(data.get("tables"))
+
+        if compare_job_id is not None:
+            tables, expected = _pg_diff_load_from_compare(
+                compare_job_id, source_id, dest_id, tables)
+            compare_job_id = int(compare_job_id)
+        elif any(t["action"] != "full" for t in tables):
+            raise _PgDiffLoadError(
+                "Без сравнения доступна только полная загрузка "
+                "(TRUNCATE + INSERT)")
+    except _PgDiffLoadError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    if compare_job_id is None:
+        # без сравнения имена сверяются с каталогом источника; таблицы,
+        # которых нет в приёмнике, раннер пропустит с сообщением
+        conns = []
+        try:
+            conns.append(pg_sync_common.open_pg(source_id, readonly=True))
+            conns.append(pg_sync_common.open_pg(dest_id))
+            expanded = pg_compare.expand_selection(conns[0], conns[1], [],
+                                                   tables)
+        except ValueError as e:
+            return jsonify({"ok": False, "message": str(e)}), 400
+        except Exception as e:
+            return jsonify({"ok": False, "message": "Не удалось прочитать "
+                                                    "каталог: %s" % e}), 502
+        finally:
+            for conn in conns:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        tables = [{"schema": t["schema"], "table": t["table"],
+                   "action": "full", "key_columns": [], "key_source": None,
+                   "in_dst": bool(t["in_dst"])} for t in expanded]
+        expected = []
+
+    # строки задачи create_job заводит сам по config["tables"] (action — свой)
+    job_id = create_job(
+        job_type="pg_diff_load",
+        connection_id=source_id,
+        config={
+            "source_connection_id": source_id,
+            "dest_connection_id": dest_id,
+            "compare_job_id": compare_job_id,
+            "delete_missing": delete_missing,
+            "tables": tables,
+            "expected": expected,
+        },
+    )
+
+    threading.Thread(
+        target=pg_diff_load.run_pg_diff_load_job,
+        args=(job_id,),
+        daemon=True,
+    ).start()
+
+    return jsonify({"ok": True, "job_id": job_id, "total_items": len(tables)})
+
+
 @app.route("/api/gpcopy/start-date", methods=["POST"])
 def api_gpcopy_start_date():
     data = request.get_json(silent=True) or {}

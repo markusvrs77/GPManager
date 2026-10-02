@@ -142,6 +142,7 @@ POLICY = {
     "api_pg_compare_start": "sync.run",
     "api_pg_compare_results": "sync.view",
     "api_pg_compare_latest": "sync.view",
+    "api_pg_diff_load_start": "sync.run",
 
     # -------------------------------------------------- резервные копии
     "backups_page": "backups.view",
