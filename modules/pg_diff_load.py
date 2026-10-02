@@ -16,6 +16,8 @@
 в двух базах может отличаться. Идентификаторы — только sql.Identifier.
 """
 
+import re
+
 from psycopg2 import sql
 
 from db import sqlite_cursor
@@ -33,7 +35,6 @@ from job_manager import (
     refresh_job_progress,
 )
 
-import modules.ddl_check as ddl_check
 from modules.pg_sync_common import (
     StopWatch,
     open_pg,
@@ -361,6 +362,103 @@ def build_truncate_sql(schema, table):
     return sql.SQL("TRUNCATE TABLE {}").format(_target(schema, table))
 
 
+# --- создание отсутствующей таблицы по каталогу PostgreSQL источника ---
+
+def build_source_columns_sql(server_version=None):
+    """
+    Колонки таблицы источника в порядке attnum (параметры: схема, таблица):
+    имя, format_type, attnotnull, attidentity, attgenerated, выражение
+    из pg_attrdef, relkind, схема и имя collation (только если она не та,
+    что у типа по умолчанию). Только обычные и партиционированные таблицы.
+    """
+    modern = server_version is None
+    identity = sql.SQL("a.attidentity::text") \
+        if modern or server_version >= 100000 else sql.SQL("''::text")
+    generated = sql.SQL("a.attgenerated::text") \
+        if modern or server_version >= 120000 else sql.SQL("''::text")
+
+    return sql.SQL(
+        "SELECT a.attname, format_type(a.atttypid, a.atttypmod), "
+        "a.attnotnull, {}, {}, pg_get_expr(d.adbin, d.adrelid), "
+        "c.relkind::text, cn.nspname, co.collname FROM pg_attribute a "
+        "JOIN pg_class c ON c.oid = a.attrelid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_type t ON t.oid = a.atttypid "
+        "LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid "
+        "AND d.adnum = a.attnum "
+        "LEFT JOIN pg_collation co ON co.oid = a.attcollation "
+        "AND a.attcollation <> t.typcollation "
+        "LEFT JOIN pg_namespace cn ON cn.oid = co.collnamespace "
+        "WHERE n.nspname = %s AND c.relname = %s AND c.relkind IN ('r', 'p') "
+        "AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum"
+    ).format(identity, generated)
+
+
+def build_source_pk_sql():
+    """Колонки первичного ключа источника по порядку (параметры: схема, таблица)."""
+    return sql.SQL(
+        "SELECT a.attname FROM pg_constraint con "
+        "JOIN pg_class c ON c.oid = con.conrelid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) "
+        "JOIN pg_attribute a ON a.attrelid = con.conrelid "
+        "AND a.attnum = k.attnum "
+        "WHERE con.contype = 'p' AND n.nspname = %s AND c.relname = %s "
+        "ORDER BY k.ord"
+    )
+
+
+def build_catalog_search_path_sql():
+    return sql.SQL("SET LOCAL search_path = pg_catalog")
+
+
+def build_schema_exists_sql():
+    """Есть ли схема (параметр: схема)."""
+    return sql.SQL("SELECT 1 FROM pg_namespace WHERE nspname = %s")
+
+
+def build_create_schema_sql(schema):
+    return sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+        sql.Identifier(schema))
+
+
+# VIRTUAL generated-колонки — с PostgreSQL 18
+VIRTUAL_GENERATED_VERSION = 180000
+
+
+def build_create_table_sql(schema, table, definition, virtual=False):
+    """
+    CREATE TABLE по определению из source_table_definition: колонки
+    с типом источника и NOT NULL, вычисляемые — GENERATED ... STORED,
+    первичный ключ источника. VIRTUAL (attgenerated = 'v') остаётся
+    VIRTUAL только при virtual=True (приёмник PG 18+), иначе STORED.
+    Ни default-ов, ни identity: значения,
+    в том числе serial / identity, приходят из источника. Тип и выражение
+    взяты из каталога источника (format_type, pg_get_expr), а не из ввода.
+    """
+    parts = []
+
+    for column in definition["columns"]:
+        piece = [sql.Identifier(column["name"]), sql.SQL(column["type"])]
+        if column.get("collation"):
+            piece.append(sql.SQL("COLLATE {}").format(
+                sql.Identifier(*column["collation"])))
+        if column.get("generated"):
+            kind = "VIRTUAL" if virtual and column.get("generated_kind") == "v"                 else "STORED"
+            piece.append(sql.SQL("GENERATED ALWAYS AS ({}) " + kind).format(
+                sql.SQL(column["generated"])))
+        if column.get("not_null"):
+            piece.append(sql.SQL("NOT NULL"))
+        parts.append(sql.SQL(" ").join(piece))
+
+    if definition.get("primary_key"):
+        parts.append(sql.SQL("PRIMARY KEY ({})").format(
+            _cols(None, definition["primary_key"])))
+
+    return sql.SQL("CREATE TABLE {} ({})").format(
+        _target(schema, table), sql.SQL(", ").join(parts))
+
+
 # ------------------------------------------------------------------
 # Применение
 # ------------------------------------------------------------------
@@ -428,6 +526,92 @@ def _writable_columns(dst_conn, schema, table, columns):
     always = [c for c in writable
               if flags.get(c, {}).get("identity_always")]
     return writable, always
+
+
+def build_stage_tables_sql():
+    """Таблицы stg_* схемы staging (параметр: схема staging)."""
+    return sql.SQL(
+        "SELECT c.relname FROM pg_class c JOIN pg_namespace n "
+        "ON n.oid = c.relnamespace WHERE n.nspname = %s "
+        "AND c.relkind = 'r' AND c.relname LIKE 'stg\\_%%'"
+    )
+
+
+STAGE_NAME_RE = re.compile(r"^stg_(\d+)_(\d+)$")
+
+
+# конечные статусы задачи (job_manager): staging таких задач брошен;
+# queued / pending / running / stopping — ещё живые
+FINISHED_JOB_STATUSES = ("done", "failed", "cancelled", "interrupted")
+
+STALE_DROP_LOCK_TIMEOUT = "2s"
+
+
+def _stale_load_jobs(job_ids, current_job_id):
+    """Из job_ids — завершённые задачи pg_diff_load, кроме текущей."""
+    ids = sorted(set(job_ids) - {int(current_job_id)})
+    if not ids:
+        return set()
+
+    with sqlite_cursor() as cur:
+        cur.execute("SELECT id FROM jobs WHERE job_type = 'pg_diff_load' "
+                    "AND status IN (%s) AND id IN (%s)"
+                    % (", ".join("?" * len(FINISHED_JOB_STATUSES)),
+                       ", ".join("?" * len(ids))),
+                    list(FINISHED_JOB_STATUSES) + ids)
+        return {int(row[0]) for row in cur.fetchall()}
+
+
+def build_lock_timeout_sql():
+    return sql.SQL("SET LOCAL lock_timeout = {}").format(
+        sql.Literal(STALE_DROP_LOCK_TIMEOUT))
+
+
+def _drop_stale_stage(conn, stage_name):
+    """
+    DROP с коротким lock_timeout: таблицу держит кто-то ещё — пропускаем
+    (без повтора), уборка не ждёт и не падает. -> удалось ли.
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute(build_lock_timeout_sql())
+        cur.execute(build_drop_stage_sql(stage_name))
+        conn.commit()
+        return True
+    except Exception:
+        _quiet(conn.rollback)
+        return False
+
+
+def cleanup_stale_stages(dst_conn, current_job_id):
+    """
+    Удаляет staging, оставшийся от упавших процессов: stg_<job>_<n> задач
+    pg_diff_load в конечном статусе, кроме текущей. Чужие объекты
+    схемы (другое имя, другой тип задачи, неизвестная задача) не трогаются.
+    -> [удалённые имена]
+    """
+    cur = dst_conn.cursor()
+    try:
+        cur.execute(build_stage_tables_sql(), (STAGE_SCHEMA,))
+        names = [row[0] for row in cur.fetchall()]
+    finally:
+        _quiet(dst_conn.rollback)
+
+    owners = {}
+    for name in names:
+        match = STAGE_NAME_RE.match(name)
+        if match:
+            owners[name] = int(match.group(1))
+
+    stale = _stale_load_jobs(owners.values(), current_job_id)
+    dropped = []
+
+    for name in sorted(owners, key=lambda n: tuple(
+            int(g) for g in STAGE_NAME_RE.match(n).groups())):
+        if owners[name] in stale and _drop_stale_stage(dst_conn, name):
+            dropped.append(name)
+
+    return dropped
 
 
 def drop_stage(conn, stage_name):
@@ -587,6 +771,83 @@ def load_full(src_conn, dst_conn, schema, table, truncate,
         _quiet(src_conn.rollback)
 
 
+def source_table_definition(src_conn, schema, table):
+    """
+    Определение таблицы по каталогу источника (только чтение):
+    {columns:[{name, type, collation, not_null, generated}],
+    primary_key:[...],
+    partitioned}. Таблицы нет — ValueError.
+    """
+    cur = src_conn.cursor()
+
+    try:
+        # format_type / pg_get_expr квалифицируют имена, не видимые через
+        # search_path: при pg_catalog — все пользовательские. SET LOCAL
+        # живёт до отката транзакции чтения в finally
+        cur.execute(build_catalog_search_path_sql())
+        cur.execute(build_source_columns_sql(
+            getattr(src_conn, "server_version", None)), (schema, table))
+        rows = cur.fetchall()
+        if not rows:
+            raise ValueError("Таблицы %s.%s нет в источнике" % (schema, table))
+
+        cur.execute(build_source_pk_sql(), (schema, table))
+        primary_key = [r[0] for r in cur.fetchall()]
+    finally:
+        _quiet(src_conn.rollback)
+
+    columns = []
+    for (name, type_name, not_null, _identity, generated, expr, _kind,
+         coll_schema, coll_name) in rows:
+        columns.append({
+            "name": name,
+            "type": type_name,
+            "collation": [coll_schema, coll_name] if coll_name else None,
+            "not_null": bool(not_null),
+            # pg_attrdef у обычной колонки — default (в т.ч. nextval):
+            # не переносится
+            "generated": expr if generated else None,
+            "generated_kind": generated or None,
+        })
+
+    return {"columns": columns, "primary_key": primary_key,
+            "partitioned": rows[0][6] == "p"}
+
+
+def create_table_from_source(src_conn, dst_conn, schema, table):
+    """
+    Создаёт в приёмнике таблицу по каталогу PostgreSQL источника
+    (вместо ddl_check.create_missing_objects: тот обращается к функциям
+    Greenplum). Схема — только если её нет; схема и таблица — в одной
+    транзакции приёмника. Партиционированный родитель создаётся обычной
+    таблицей. Ошибка — откат приёмника и исключение.
+    -> {partitioned, virtual_as_stored: [колонки VIRTUAL, созданные STORED]}
+    """
+    definition = source_table_definition(src_conn, schema, table)
+    version = getattr(dst_conn, "server_version", None)
+    virtual = bool(version) and version >= VIRTUAL_GENERATED_VERSION
+    as_stored = [] if virtual else [
+        c["name"] for c in definition["columns"]
+        if c.get("generated_kind") == "v"]
+    cur = dst_conn.cursor()
+
+    try:
+        # CREATE SCHEMA IF NOT EXISTS требует права CREATE на базу даже
+        # для существующей схемы — поэтому сначала проверка
+        cur.execute(build_schema_exists_sql(), (schema,))
+        if not cur.fetchall():
+            cur.execute(build_create_schema_sql(schema))
+        cur.execute(build_create_table_sql(schema, table, definition,
+                                           virtual=virtual))
+        dst_conn.commit()
+    except Exception:
+        _quiet(dst_conn.rollback)
+        raise
+
+    return {"partitioned": definition["partitioned"],
+            "virtual_as_stored": as_stored}
+
+
 def dest_table_exists(conn, schema, table):
     cur = conn.cursor()
     try:
@@ -673,38 +934,42 @@ def _cancel_rest(job_id):
     mark_job_cancelled(job_id)
 
 
-def _create_table(source_id, dest_id, schema, table):
-    """Создание по DDL источника; ошибка — исключение с её текстом."""
-    rows = ddl_check.create_missing_objects(
-        source_id, dest_id, [{"schema": schema, "table": table}])
-    row = next((r for r in rows or []
-                if (r.get("schema"), r.get("table")) == (schema, table)), None)
-
-    if not row:
-        raise RuntimeError("Таблица %s.%s не создана" % (schema, table))
-
-    if not row.get("ok"):
-        raise RuntimeError("Не удалось создать таблицу %s.%s: %s"
-                           % (schema, table, row.get("error") or "ошибка"))
+PARTITIONED_NOTE = ("пометка: партиционированная таблица источника создана "
+                    "в приёмнике обычной таблицей, строки всех партиций "
+                    "залиты в неё")
 
 
-def _create_and_fill(src_conn, dst_conn, ids, schema, table, note):
+VIRTUAL_AS_STORED_NOTE = ("пометка: приёмник не поддерживает VIRTUAL "
+                          "generated-колонки (нужен PostgreSQL 18), созданы "
+                          "как STORED: %s")
+
+
+def _create_and_fill(src_conn, dst_conn, schema, table, note):
     """
-    Таблицы нет — создаём; есть — только если пуста (проверка в load_full).
-    Если таблица уже создана, а заливка не прошла, это видно в item.
+    Таблицы нет — создаём по каталогу источника; есть — только если пуста
+    (проверка в load_full). Если таблица уже создана, а заливка не прошла,
+    это видно в item. -> ({rows}, пометка или None)
     """
     created = False
+    remark = None
 
     if not dest_table_exists(dst_conn, schema, table):
-        _create_table(ids[0], ids[1], schema, table)
+        out = create_table_from_source(src_conn, dst_conn, schema, table)
         created = True
+        remarks = []
+        if out.get("partitioned"):
+            remarks.append(PARTITIONED_NOTE)
+        if out.get("virtual_as_stored"):
+            remarks.append(VIRTUAL_AS_STORED_NOTE
+                           % ", ".join(out["virtual_as_stored"]))
+        remark = "; ".join(remarks) or None
         # останется в item, если заливку оборвёт стоп
         note("Таблица %s.%s создана в приёмнике; заливка не завершена"
              % (schema, table))
 
     try:
         return load_full(src_conn, dst_conn, schema, table, truncate=False,
-                         require_empty=True)
+                         require_empty=True), remark
     except Exception as e:
         if created:
             raise RuntimeError("Таблица %s.%s создана в приёмнике, но "
@@ -712,7 +977,7 @@ def _create_and_fill(src_conn, dst_conn, ids, schema, table, note):
         raise
 
 
-def _load_one(src_conn, dst_conn, ids, schema, table, entry, delete_missing,
+def _load_one(src_conn, dst_conn, schema, table, entry, delete_missing,
               stage_name, note):
     """
     -> ("done", сообщение, вставлено строк) или ("skipped", причина, 0).
@@ -733,8 +998,12 @@ def _load_one(src_conn, dst_conn, ids, schema, table, entry, delete_missing,
         return "done", "truncate+insert=%d" % out["rows"], out["rows"]
 
     if action == "create":
-        out = _create_and_fill(src_conn, dst_conn, ids, schema, table, note)
-        return "done", "create+insert=%d" % out["rows"], out["rows"]
+        out, remark = _create_and_fill(src_conn, dst_conn, schema, table,
+                                       note)
+        message = "create+insert=%d" % out["rows"]
+        if remark:
+            message += "; " + remark
+        return "done", message, out["rows"]
 
     raise ValueError("Неизвестное действие: %s" % action)
 
@@ -776,6 +1045,13 @@ def run_pg_diff_load_job(job_id):
         conns.append(open_pg(source_id, readonly=True))
         conns.append(open_pg(dest_id))
 
+        # staging, брошенный упавшими процессами прошлых задач; сбой уборки
+        # задачу не валит
+        try:
+            cleanup_stale_stages(conns[1], job_id)
+        except Exception:
+            _rollback(conns[1:])
+
         delete_missing = config.get("delete_missing") is True
         info = {(t.get("schema"), t.get("table")): t
                 for t in config.get("tables") or []}
@@ -808,8 +1084,8 @@ def run_pg_diff_load_job(job_id):
 
                 try:
                     status, message, inserted = _load_one(
-                        conns[0], conns[1], (source_id, dest_id), schema,
-                        table, entry, delete_missing, stage_name, note)
+                        conns[0], conns[1], schema, table, entry,
+                        delete_missing, stage_name, note)
                 except Exception as e:
                     broken = _rollback(conns)
 

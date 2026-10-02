@@ -10,7 +10,8 @@ from psycopg2.extensions import QueryCanceledError
 import modules.ddl_check as ddl_check
 import modules.pg_diff_load as pdl
 import modules.pg_sync_common as common
-from job_manager import create_job, get_job, get_job_items
+from job_manager import (create_job, get_job, get_job_items,
+                         update_job_status)
 from tests.pg_fakes import FakeConn
 
 
@@ -19,10 +20,11 @@ def world(monkeypatch):
     state = {"opened": [], "diff": [], "full": [], "created": [],
              "stop": False, "outcome": {}, "create_error": {},
              "require_empty": {}, "dst_tables": set(), "seq_calls": [],
-             "seq_warn": []}
+             "seq_warn": [], "partitioned": set(), "dst_responses": [],
+             "virtual": {}}
 
     def fake_open(cid, readonly=False):
-        conn = FakeConn()
+        conn = FakeConn(responses=[] if readonly else state["dst_responses"])
         conn.readonly = readonly
         state["opened"].append(conn)
         return conn
@@ -46,12 +48,18 @@ def world(monkeypatch):
         state["seq_calls"].append(table)
         return list(state["seq_warn"])
 
-    def fake_create(src_id, dst_id, tables):
-        state["created"].append((src_id, dst_id, tables))
-        error = state["create_error"].get(tables[0]["table"])
-        return [{"schema": t["schema"], "table": t["table"], "kind": "table",
-                 "ok": not error, "error": error or "", "statements": 1}
-                for t in tables]
+    def fake_create(src, dst, schema, table):
+        # создание идёт по соединениям задачи: источник read-only
+        state["created"].append((src.readonly, dst.readonly, schema, table))
+        error = state["create_error"].get(table)
+        if error:
+            raise RuntimeError(error)
+        return {"partitioned": table in state["partitioned"],
+                "virtual_as_stored": state["virtual"].get(table, [])}
+
+    def no_ddl_check(*args, **kwargs):
+        raise AssertionError("ddl_check.create_missing_objects на PostgreSQL "
+                             "падает и не должен вызываться")
 
     monkeypatch.setattr(pdl, "open_pg", fake_open)
     monkeypatch.setattr(pdl, "load_diff", fake_diff)
@@ -59,7 +67,8 @@ def world(monkeypatch):
     monkeypatch.setattr(pdl, "sync_sequences", fake_sequences)
     monkeypatch.setattr(pdl, "dest_table_exists",
                         lambda conn, s, t: t in state["dst_tables"])
-    monkeypatch.setattr(ddl_check, "create_missing_objects", fake_create)
+    monkeypatch.setattr(pdl, "create_table_from_source", fake_create)
+    monkeypatch.setattr(ddl_check, "create_missing_objects", no_ddl_check)
     monkeypatch.setattr(common, "is_stop_requested",
                         lambda job_id: state["stop"])
     return state
@@ -97,7 +106,7 @@ def test_each_action_writes_actual_numbers_into_its_item(world):
     assert world["diff"] == [("orders", ["id"], False, "stg_%d_1" % job_id)]
     # созданная таблица заливается без TRUNCATE
     assert world["full"] == [("log", True), ("fresh", False)]
-    assert world["created"] == [(11, 12, [{"schema": "s", "table": "fresh"}])]
+    assert world["created"] == [(True, False, "s", "fresh")]
 
 
 def test_source_is_read_only_and_both_connections_are_closed(world):
@@ -142,6 +151,29 @@ def test_create_error_fails_the_item_with_its_text(world):
     status, message = _items(job_id)["fresh"]
     assert status == "failed" and "permission denied" in message
     assert world["full"] == []
+
+
+def test_create_of_a_partitioned_parent_is_flat_and_noted(world):
+    world["partitioned"].add("fresh")
+    job_id = _job([("fresh", "create", [], False)])
+
+    pdl.run_pg_diff_load_job(job_id)
+
+    status, message = _items(job_id)["fresh"]
+    assert status == "done"
+    assert message.startswith("create+insert=5; ")
+    assert "партиционирован" in message
+
+
+def test_create_notes_virtual_columns_made_stored(world):
+    world["virtual"]["fresh"] = ["twice"]
+    job_id = _job([("fresh", "create", [], False)])
+
+    pdl.run_pg_diff_load_job(job_id)
+
+    status, message = _items(job_id)["fresh"]
+    assert status == "done" and message.startswith("create+insert=5; ")
+    assert "STORED: twice" in message
 
 
 def test_full_load_of_a_table_missing_in_dest_is_skipped(world):
@@ -293,3 +325,79 @@ def test_runner_loads_tables_with_identity_and_generated_columns(monkeypatch):
         'COPY "s"."log" ("id", "v") FROM STDIN']
     assert any(t.startswith('INSERT INTO "s"."orders" ("id", "v") OVERRIDING '
                             'SYSTEM VALUE') for t, _ in dst.executed)
+
+
+def _drops(conn):
+    return [t for t, _ in conn.executed if t.startswith(("DROP", "SET LOCAL"))]
+
+
+def test_start_drops_only_stale_stages_of_other_finished_load_jobs(world):
+    failed = _job([("a", "full", [], True)])
+    cancelled = _job([("a", "full", [], True)])
+    running = _job([("b", "full", [], True)])
+    stopping = _job([("b", "full", [], True)])
+    queued = _job([("b", "full", [], True)])
+    other_type = create_job("gpcopy_sync", 11, {"tables": []})
+    update_job_status(failed, "failed", "сбой")
+    update_job_status(cancelled, "cancelled")
+    update_job_status(running, "running")
+    update_job_status(stopping, "running")
+    update_job_status(stopping, "stopping")
+    update_job_status(other_type, "done")
+    job_id = _job([("log", "full", [], True)])
+    assert get_job(stopping)["status"] == "stopping"
+    assert get_job(queued)["status"] == "queued"
+
+    world["dst_responses"].append(("relname", [
+        ("stg_%d_1" % failed,), ("stg_%d_2" % failed,),
+        ("stg_%d_1" % cancelled,), ("stg_%d_1" % running,),
+        ("stg_%d_1" % stopping,), ("stg_%d_1" % queued,),
+        ("stg_%d_1" % job_id,), ("stg_%d_1" % other_type,),
+        ("stg_%d_1" % (job_id + 100),), ("stg_x_1",),
+        ("stg_%d_1_extra" % failed,), ("orders",)]))
+
+    pdl.run_pg_diff_load_job(job_id)
+
+    timeout = "SET LOCAL lock_timeout = '2s'"
+    drop = 'DROP TABLE IF EXISTS "opsentri_sync_stage"."stg_%d_%d"'
+    assert _drops(world["opened"][1]) == [
+        timeout, drop % (failed, 1), timeout, drop % (failed, 2),
+        timeout, drop % (cancelled, 1)]
+    assert get_job(job_id)["status"] == "done"
+
+
+def test_locked_stale_stage_is_skipped_without_failing_the_job(world):
+    from psycopg2.errors import LockNotAvailable
+
+    failed = _job([("a", "full", [], True)])
+    update_job_status(failed, "failed", "сбой")
+    job_id = _job([("log", "full", [], True)])
+
+    def locked(params):
+        raise LockNotAvailable("canceling statement due to lock timeout")
+
+    world["dst_responses"].extend([
+        ("relname", [("stg_%d_1" % failed,), ("stg_%d_2" % failed,)]),
+        ('"stg_%d_1"' % failed, locked)])
+
+    pdl.run_pg_diff_load_job(job_id)
+
+    drops = [t for t in _drops(world["opened"][1]) if t.startswith("DROP")]
+    # заблокированная пропущена (без повтора), следующая удалена
+    assert drops == [
+        'DROP TABLE IF EXISTS "opsentri_sync_stage"."stg_%d_1"' % failed,
+        'DROP TABLE IF EXISTS "opsentri_sync_stage"."stg_%d_2"' % failed]
+    assert get_job(job_id)["status"] == "done"
+
+
+def test_stage_cleanup_error_does_not_fail_the_job(world):
+    def broken(params):
+        raise RuntimeError("permission denied for schema opsentri_sync_stage")
+
+    world["dst_responses"].append(("relname", broken))
+    job_id = _job([("log", "full", [], True)])
+
+    pdl.run_pg_diff_load_job(job_id)
+
+    assert _items(job_id)["log"] == ("done", "truncate+insert=5")
+    assert get_job(job_id)["status"] == "done"
