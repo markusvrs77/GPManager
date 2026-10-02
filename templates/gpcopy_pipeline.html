@@ -349,6 +349,110 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
                 style="align-self: center;">⟳</button>
     </div>
 
+    {% if (toolkit or 'gp') == 'pg' %}
+    <!-- PG: РЕЖИМ «СРАВНЕНИЕ И РАЗНИЦА» (static/js/pg_compare.js) -->
+    <style>
+    .pgcmp-switch { display: flex; gap: 10px; margin-bottom: 14px; }
+    .pgcmp-switch button { flex: 1; text-align: center; padding: 10px; font-size: 14px;
+      border: 1.5px solid var(--hairline); border-radius: var(--radius-sm);
+      background: var(--surface-2); color: var(--text); cursor: pointer; }
+    .pgcmp-switch button[aria-pressed="true"] { border-color: var(--a1); font-weight: 650;
+      background: color-mix(in srgb, var(--a-bright) 10%, transparent); }
+    #pgcmpPanel[hidden], .pgcmp-hide { display: none !important; }
+    .pgcmp-tree { max-height: 320px; overflow-y: auto; }
+    .pgcmp-sc { display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+      border-radius: 8px; font-size: 13px; }
+    .pgcmp-sc:hover { background: var(--row-hover); }
+    .pgcmp-sc input, .pgcmp-tbl input, .pgcmp-table input { accent-color: var(--a1); }
+    .pgcmp-sc .chev { border: none; background: none; color: var(--text-muted);
+      cursor: pointer; padding: 0 4px; font-size: 12px; width: 20px; }
+    .pgcmp-sc code { font-family: var(--font-mono); color: var(--text); }
+    .pgcmp-sc .cnt { color: var(--text-muted); font-size: 12px; margin-left: auto; }
+    .pgcmp-tbls { padding: 2px 0 6px 38px; }
+    .pgcmp-tbl { display: flex; align-items: center; gap: 8px; padding: 2px 6px; margin: 0;
+      font-size: 12.5px; font-family: var(--font-mono); border-radius: 6px; cursor: pointer; }
+    .pgcmp-tbl:hover { background: var(--row-hover); }
+    .pgcmp-tbl.covered { color: var(--text-muted); }
+    .pgcmp-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .pgcmp-tablewrap { overflow-x: auto; margin-top: 10px; }
+    .pgcmp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .pgcmp-table th { text-align: left; font-weight: 600; color: var(--text-muted);
+      font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em;
+      padding: 6px 8px; border-bottom: 1px solid var(--hairline); white-space: nowrap; }
+    .pgcmp-table td { padding: 6px 8px; border-bottom: 1px solid var(--hairline);
+      vertical-align: top; }
+    .pgcmp-table td.num { text-align: right; font-family: var(--font-mono); white-space: nowrap; }
+    .pgcmp-table td.name { font-family: var(--font-mono); }
+    .pgcmp-table tr.cur td { background: color-mix(in srgb, var(--run) 10%, transparent); }
+    .pgcmp-table select { background: var(--solid); border: 1px solid var(--hairline);
+      color: var(--text); border-radius: 8px; padding: 3px 6px; font-size: 12.5px; }
+    .pgcmp-table .msg { color: var(--text-muted); font-size: 12px; margin-top: 2px;
+      white-space: pre-wrap; word-break: break-word; }
+    .pgcmp-table .msg.err { color: var(--crit); }
+    .pgcmp-table .msg.ok { color: var(--ok); }
+    .pgcmp-table .msg.warn { color: var(--warn); }
+    .pgcmp-table .pgcmp-fact { font-family: var(--font-mono); }
+    .pgcmp-st { font-size: 12px; border-radius: var(--radius-pill); padding: 1px 8px;
+      border: 1px solid var(--hairline); color: var(--text-muted); white-space: nowrap; }
+    .pgcmp-st.ok { color: var(--ok); border-color: var(--ok); }
+    .pgcmp-st.warn { color: var(--warn); border-color: var(--warn); }
+    .pgcmp-st.bad { color: var(--crit); border-color: var(--crit); }
+    .pgcmp-st.run { color: var(--run); border-color: var(--run); }
+    .pgcmp-empty { color: var(--text-muted); font-size: 13px; padding: 14px 4px; }
+    </style>
+
+    <div class="pgcmp-switch" id="pgcmpModeSwitch" role="group" aria-label="Режим синхронизации">
+        <button type="button" data-pgcmp-mode="transfer" aria-pressed="true">Перенос</button>
+        <button type="button" data-pgcmp-mode="compare" aria-pressed="false">Сравнение и разница</button>
+    </div>
+
+    <div class="gpp-step" id="pgcmpPanel" hidden>
+        <div class="n">СРАВНЕНИЕ И РАЗНИЦА</div>
+        <h3>Таблицы источника <span class="mut" id="pgcmpSelCount">— ничего не выбрано</span></h3>
+        <div class="gpp-hint" style="margin: -4px 0 10px;">
+            Галка на схеме — вся схема: её состав раскрывается на сервере в момент
+            запуска. Галки на отдельных таблицах можно сочетать со схемами.
+            Сравнение ничего не меняет ни в одной базе.
+        </div>
+        <input class="gpp-sc-filter" id="pgcmpSearch" type="search"
+               placeholder="Поиск по имени схемы или таблицы…" autocomplete="off">
+        <div class="pgcmp-tree" id="pgcmpTree"><div class="pgcmp-empty">Каталог не загружен.</div></div>
+        <div class="gpp-actions" style="margin-top: 12px;">
+            <button type="button" class="gpp-btn primary" id="pgcmpCompareBtn">Сравнить</button>
+            <button type="button" class="gpp-btn" id="pgcmpFullBtn"
+                    title="Без сравнения: TRUNCATE + INSERT всех выбранных таблиц">Полная загрузка (TRUNCATE + INSERT)</button>
+            <button type="button" class="gpp-btn ghost" id="pgcmpClearBtn"
+                    style="color: var(--text-muted);">Очистить выбор</button>
+        </div>
+        <div class="gpp-msg" id="pgcmpMsg" role="status"></div>
+
+        <h3 class="pgcmp-head" style="margin-top: 22px;">Результат сравнения
+            <span class="mut" id="pgcmpResMeta"></span></h3>
+        <div id="pgcmpProgress"></div>
+        <div class="gpp-summary pgcmp-hide" id="pgcmpSummary"></div>
+        <label class="gpp-auto pgcmp-hide" id="pgcmpAllMissingRow">
+            <input type="checkbox" id="pgcmpAllMissing" autocomplete="off"> Отметить все отсутствующие в приёмнике
+            («создать и залить»)
+        </label>
+        <div id="pgcmpResults"><div class="pgcmp-empty">Загрузка…</div></div>
+
+        <div id="pgcmpLoadBox" class="pgcmp-hide" style="margin-top: 14px;">
+            <label class="gpp-auto">
+                <input type="checkbox" id="pgcmpDeleteMissing" autocomplete="off"> Удалять строки, которых нет в источнике
+            </label>
+            <div class="gpp-hint"><span class="warn">⚠ Включённая галка удаляет из приёмника
+                строки с ключом, которого нет в источнике (у таблиц без ключа — лишние копии
+                строк). Без неё DELETE не выполняется.</span></div>
+            <div class="gpp-actions" style="margin-top: 12px;">
+                <button type="button" class="gpp-btn primary" id="pgcmpLoadBtn">Загрузить</button>
+                <span class="gpp-hint" id="pgcmpLoadHint" style="margin: 0;"></span>
+            </div>
+        </div>
+        <div class="gpp-msg" id="pgcmpLoadMsg" role="status"></div>
+        <div id="pgcmpLoad"></div>
+    </div>
+    {% endif %}
+
     <!-- STEP 1: WHAT -->
     <div class="gpp-step">
         <div class="n">1 · ЧТО</div>
@@ -589,5 +693,8 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=15"></script>
+<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=16"></script>
+{% if (toolkit or 'gp') == 'pg' %}
+<script src="{{ url_for('static', filename='js/pg_compare.js') }}?v=1"></script>
+{% endif %}
 {% endblock %}

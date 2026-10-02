@@ -2479,7 +2479,7 @@
         var tk = (modes && modes.dataset && modes.dataset.toolkit) || "gp";
 
         return tk === "pg"
-            ? "copy_pipe"
+            ? "copy_pipe,pg_compare,pg_diff_load"
             : "gpcopy,gpcopy_date,gpcopy_increment,gpcopy_partition_diff," +
               "gpcopy_sync,copy_pipe";
     })();
