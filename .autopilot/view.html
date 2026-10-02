@@ -1,0 +1,11 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Autopilot · документ</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<style>body{font:15px/1.55 system-ui,sans-serif;max-width:1100px;margin:24px auto;padding:0 16px;color:#1d2330;background:#fafbfc}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}th,td{border:1px solid #d5dae3;padding:6px 8px;vertical-align:top}th{background:#eef1f6}
+code{background:#eef1f6;padding:1px 4px;border-radius:3px;font-size:12.5px}h1{font-size:24px}h2{margin-top:32px;border-bottom:1px solid #d5dae3;padding-bottom:4px}
+@media (prefers-color-scheme:dark){body{background:#14171c;color:#dfe3ea}th{background:#1f242c}th,td{border-color:#2d343f}code{background:#232934}}</style></head>
+<body><div id="o">Загрузка…</div><script>
+const f=new URLSearchParams(location.search).get('f');
+fetch(f+'?t='+Date.now()).then(r=>r.text()).then(t=>{document.getElementById('o').innerHTML=marked.parse(t);document.title=(t.match(/^# (.+)/m)||[,'Документ'])[1]});
+</script></body></html>

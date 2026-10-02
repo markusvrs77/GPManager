@@ -16,3 +16,6 @@ venv/
 .venv/
 logs/
 *.log
+
+# Autopilot: pid и лог локального сервера дашборда
+.autopilot/serve.*
