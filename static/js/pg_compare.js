@@ -743,13 +743,11 @@
             var rows = st.cmpResults.map(function (r, i) {
                 var errSt = r.status === "error" || r.status === "duplicate_keys";
                 var chunk = pgcmpChunkText(r.chunked);
-                // сервер пишет тот же итог в message сырыми числами — его не дублируем
-                var dupMsg = !!chunk && r.message === "по диапазонам: проверено " +
-                    r.chunked.checked + ", несовпавших " + r.chunked.mismatched;
+                // итог по диапазонам — только из chunked: сервер его в message не дублирует
                 return "<tr><td class=\"name\">" + pgcmpEsc(r.schema) + "." + pgcmpEsc(r.table) +
                     (chunk ? '<div class="msg" title="Загрузка разницы перекачает только несовпавшие диапазоны">' +
                         pgcmpEsc(chunk) + "</div>" : "") +
-                    (r.message && !dupMsg ? '<div class="msg' + (errSt ? " err" : "") + '">' + pgcmpEsc(r.message) + "</div>" : "") +
+                    (r.message ? '<div class="msg' + (errSt ? " err" : "") + '">' + pgcmpEsc(r.message) + "</div>" : "") +
                     "</td><td>" + pgcmpStatusBadge(r.status) + "</td>" +
                     "<td>" + pgcmpKeyCell(r) + "</td>" +
                     '<td class="num">' + pgcmpN(r.src_rows) + "</td>" +

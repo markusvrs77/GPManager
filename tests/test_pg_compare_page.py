@@ -90,8 +90,10 @@ def test_pg_compare_script_shows_range_progress(client):
     js = _static(client, "/static/js/pg_compare.js")
 
     # новая версия скрипта, чтобы браузер не держал старый из кеша
-    assert "js/pg_compare.js?v=4" in html
+    assert "js/pg_compare.js?v=5" in html
     # прогресс и итог сравнения по диапазонам берутся из поля chunked
     assert ".chunked" in js
     assert "диапазонов " in js
     assert "по диапазонам: проверено " in js
+    # итог — только из chunked: строку message JS не собирает и не сверяет
+    assert "dupMsg" not in js

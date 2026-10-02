@@ -186,6 +186,12 @@ def test_ranges_give_the_same_numbers_as_row_by_row(live, small_chunks,
         assert chunked and chunked["checked"] > 1, name
         leaves = cmp.get_mismatched_ranges(job_id, SCHEMA, name)
         assert len(leaves) == chunked["mismatched"] >= 1, name
+        if name == "text_key":
+            # collation сторон разный ("C" и ICU) — режим корзин: листья
+            # сравниваются одним проходом, счётчиков по листу нет
+            assert {r["mode"] for r in leaves} == {"bucket"}, name
+            continue
+        assert {r["mode"] for r in leaves} == {"range"}, name
         assert sum(r["to_insert"] + r["to_update"] + r["to_delete"]
                    for r in leaves) == (full["to_insert"] + full["to_update"]
                                         + full["to_delete"]), name
@@ -205,8 +211,8 @@ def test_leaf_predicates_rebuilt_from_storage_select_the_same_rows(
     try:
         for name in TABLES:
             for leaf in cmp.get_mismatched_ranges(job_id, SCHEMA, name):
-                pred = pr.range_predicate("t", leaf["column"], leaf,
-                                          leaf["collate_c"])
+                # общий построитель: диапазон или корзина md5-префикса
+                pred = pr.leaves_predicate("t", [leaf])
                 assert pr.range_checksum(src, SCHEMA, name, ["v"], pred)[0] \
                     == leaf["src_rows"], (name, leaf)
                 assert pr.range_checksum(dst, SCHEMA, name, ["v"], pred)[0] \

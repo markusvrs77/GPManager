@@ -133,7 +133,7 @@ def test_big_table_is_compared_by_ranges_with_exact_totals(chunks, parallel):
     chunked = results["big"]["chunked"]
     assert chunked["mismatched"] == 3
     assert chunked["checked"] == chunked["total"] == chunks["checksums"] // 2
-    assert "по диапазонам" in results["big"]["message"]
+    assert results["big"]["message"] is None
     assert results["small"]["chunked"] is None
     assert cmp.get_mismatched_ranges(job_id, "s", "small") == []
 

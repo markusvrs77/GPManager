@@ -36,7 +36,7 @@ from job_manager import (
 )
 
 import modules.pg_compare as pg_compare
-from modules.pg_ranges import range_predicate
+import modules.pg_ranges as pg_ranges
 from modules.pg_sync_common import (
     StopWatch,
     open_pg,
@@ -95,18 +95,23 @@ def stage_name_for(job_id, n):
 def build_ranges_where(alias, ranges):
     """
     (pred1) OR (pred2) ... — предикаты несовпавших листьев сравнения
-    (pg_compare.get_mismatched_ranges); None — без ограничения.
-    Границы — только sql.Literal (range_predicate).
+    (pg_compare.get_mismatched_ranges) обоих видов: диапазоны и корзины
+    md5-префикса; None — без ограничения. Строит общий построитель
+    pg_ranges.leaves_predicate; значения — только sql.Literal.
     """
     if ranges is None:
         return None
     if not ranges:
         raise ValueError("Пустой список диапазонов")
 
-    return sql.SQL(" OR ").join(
-        sql.SQL("({})").format(range_predicate(
-            alias, r["column"], r, bool(r.get("collate_c"))))
-        for r in ranges)
+    return pg_ranges.leaves_predicate(alias, ranges)
+
+
+def _batches(ranges):
+    """Листья пачками по pg_ranges.LEAF_BATCH; None — одна «пачка» None."""
+    if ranges is None:
+        return [None]
+    return pg_ranges.leaf_batches(ranges)
 
 
 def _and_where(where):
@@ -122,6 +127,22 @@ def build_full_select_sql(schema, table, columns, where=None):
     return sql.SQL("SELECT {} FROM {}{}").format(_cols(None, columns),
                                                  _target(schema, table),
                                                  _only_where(where))
+
+
+def build_source_snapshot_sql():
+    """
+    Первый запрос транзакции источника: все чтения одной таблицы — по
+    одному снимку (строка, переехавшая между листьями, не пропадёт и не
+    задвоится между пачками COPY). Источник только читается.
+    """
+    return sql.SQL("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ "
+                   "READ ONLY")
+
+
+def _open_source_snapshot(src_conn):
+    """Новая транзакция источника REPEATABLE READ READ ONLY."""
+    src_conn.rollback()
+    src_conn.cursor().execute(build_source_snapshot_sql())
 
 
 def build_stage_schema_sql():
@@ -696,10 +717,12 @@ def _apply_keyed(cur, schema, table, stage_name, key_columns, columns,
     out = {"insert": 0, "update": 0, "delete": 0}
 
     if delete_missing:
-        cur.execute(build_key_delete_sql(
-            schema, table, stage_name, key_columns,
-            where=build_ranges_where("t", ranges)))
-        out["delete"] = max(cur.rowcount, 0)
+        # DELETE ограничен листьями — по пачке за раз, транзакция одна
+        for batch in _batches(ranges):
+            cur.execute(build_key_delete_sql(
+                schema, table, stage_name, key_columns,
+                where=build_ranges_where("t", batch)))
+            out["delete"] += max(cur.rowcount, 0)
 
     # identity ALWAYS вне ключа UPDATE изменить не может
     skip = [c for c in always if c not in key_columns]
@@ -719,15 +742,19 @@ def _apply_keyless(cur, schema, table, stage_name, columns, always,
                    delete_missing, ranges=None):
     out = {"insert": 0, "update": 0, "delete": 0}
 
-    if delete_missing:
-        cur.execute(build_keyless_delete_sql(schema, table, stage_name,
-                                             columns, ranges=ranges))
-        out["delete"] = max(cur.rowcount, 0)
+    # листья не пересекаются: разность EXCEPT ALL по пачке листьев на
+    # обеих сторонах — та же, что по всем сразу
+    for batch in _batches(ranges):
+        if delete_missing:
+            cur.execute(build_keyless_delete_sql(schema, table, stage_name,
+                                                 columns, ranges=batch))
+            out["delete"] += max(cur.rowcount, 0)
 
-    cur.execute(build_keyless_insert_sql(schema, table, stage_name, columns,
-                                         overriding=bool(always),
-                                         ranges=ranges))
-    out["insert"] = max(cur.rowcount, 0)
+        cur.execute(build_keyless_insert_sql(schema, table, stage_name,
+                                             columns,
+                                             overriding=bool(always),
+                                             ranges=batch))
+        out["insert"] += max(cur.rowcount, 0)
     return out
 
 
@@ -758,10 +785,15 @@ def load_diff(src_conn, dst_conn, schema, table, key_columns, delete_missing,
         cur.execute(build_stage_schema_sql())
         cur.execute(build_drop_stage_sql(stage_name))
         cur.execute(build_create_stage_sql(schema, table, stage_name, columns))
-        stream_copy(src_conn, dst_conn,
-                    build_full_select_sql(schema, table, columns,
-                                          build_ranges_where(None, ranges)),
-                    _stage(stage_name), columns)
+        # в staging — строки источника из листьев, по пачке листьев;
+        # все COPY таблицы — в одной транзакции источника, одним снимком
+        _open_source_snapshot(src_conn)
+        for batch in _batches(ranges):
+            stream_copy(src_conn, dst_conn,
+                        build_full_select_sql(
+                            schema, table, columns,
+                            build_ranges_where(None, batch)),
+                        _stage(stage_name), columns)
         cur.execute(build_analyze_stage_sql(stage_name))
         dst_conn.commit()
 

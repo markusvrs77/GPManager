@@ -372,7 +372,8 @@ def init_db():
                 to_insert INTEGER,
                 to_update INTEGER,
                 to_delete INTEGER,
-                status TEXT NOT NULL
+                status TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'range'
             )
             """
         )
@@ -551,6 +552,14 @@ def init_db():
             ON user_sessions(user_id)
             """
         )
+
+    # лист сравнения: 'range' — границы диапазона, 'bucket' — md5-префикс
+    ensure_column_exists(
+        "pg_compare_ranges",
+        "mode",
+        "ALTER TABLE pg_compare_ranges ADD COLUMN mode TEXT NOT NULL "
+        "DEFAULT 'range'"
+    )
 
     ensure_column_exists(
         "skew_results",

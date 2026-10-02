@@ -902,10 +902,128 @@ def _plan_chunks(src_conn, dst_conn, schema, table, key, src_cols, work_mem):
                 "не совпала — сравнено построчно")
             return {"row": row}
 
+        if column.get("mode") == "bucket":
+            _rollback([src_conn, dst_conn])
+            null_keys = key_columns if (
+                key_columns and key_source not in UNIQUE_KEY_SOURCES) \
+                else None
+            return _compare_buckets(src_conn, dst_conn, schema, table,
+                                    key_columns, key_source, src_cols,
+                                    column, work_mem, null_keys)
+
         ranges = pg_ranges.top_ranges(src_conn, schema, table, column)
         return {"column": column, "ranges": ranges}
     finally:
         _rollback([src_conn, dst_conn])
+
+
+def _cancel_quiet(conn):
+    if conn is None:
+        return
+    try:
+        conn.cancel()
+    except Exception:
+        pass
+
+
+def _both(on_src, on_dst, src_conn=None, dst_conn=None):
+    """
+    Проходы обеих сторон одновременно (у каждой своё соединение).
+    Упала одна сторона — активный запрос другой отменяется (conn.cancel),
+    чтобы не ждать её полного прохода; наружу уходит первая ошибка.
+    """
+    box = {}
+    lock = threading.Lock()
+    errors = []
+
+    def failed(error, other):
+        with lock:
+            errors.append(error)
+        _cancel_quiet(other)
+
+    def dst_side():
+        try:
+            box["value"] = on_dst()
+        except BaseException as e:  # noqa: B902 — отдаём вызывающему
+            failed(e, src_conn)
+
+    thread = threading.Thread(target=dst_side, daemon=True)
+    thread.start()
+    src_value = None
+    try:
+        src_value = on_src()
+    except BaseException as e:  # noqa: B902 — отдаём вызывающему
+        failed(e, dst_conn)
+    finally:
+        thread.join()
+    if errors:
+        raise errors[0]
+    return src_value, box["value"]
+
+
+def _compare_buckets(src_conn, dst_conn, schema, table, key_columns,
+                     key_source, src_cols, column, work_mem, null_keys=None):
+    """
+    Режим корзин: порядок строк сторон разный или неизвестен, колонка
+    нарезки текстовая. Уровень — один проход GROUP BY по md5-префиксу на
+    каждой стороне (стороны параллельно); несовпавшие корзины больше
+    LEAF_ROWS дробятся следующим уровнем, остальные — листья. Все листья —
+    одним построчным сравнением с предикатом корзин.
+    -> {"row": итог с chunked, "leaves": [лист]} (листья — только differs).
+    """
+    name = column["name"]
+    length, parents = pg_ranges.BUCKET_START, None
+    same_src = same_dst = total = 0
+    leaves = []
+
+    while True:
+        level, prev = length, parents
+        s, d = _both(
+            lambda: pg_ranges.bucket_checksums(
+                src_conn, schema, table, src_cols, name, level, prev,
+                null_keys),
+            lambda: pg_ranges.bucket_checksums(
+                dst_conn, schema, table, src_cols, name, level, prev),
+            src_conn, dst_conn)
+        _rollback([src_conn, dst_conn])
+
+        out = pg_ranges.diff_buckets(s, d, level, name)
+        total += len(set(s) | set(d))
+        for a, b in out["same"].values():
+            same_src += a
+            same_dst += b
+        leaves.extend(out["leaves"])
+
+        if not out["deeper"]:
+            break
+        parents = out["deeper"]
+        length += pg_ranges.BUCKET_STEP
+
+    chunked = {"checked": total, "total": total, "mismatched": 0}
+
+    if not leaves:
+        return {"row": _result("same", src_rows=same_src, dst_rows=same_dst,
+                               to_insert=0, to_update=0, to_delete=0,
+                               chunked=chunked), "leaves": []}
+
+    row = compare_table(src_conn, dst_conn, schema, table, key_columns,
+                        key_source=key_source, work_mem=work_mem,
+                        where=pg_ranges.leaves_predicate("t", leaves, name))
+
+    if row["status"] not in ("same", "differs"):
+        return {"row": dict(row, chunked=chunked), "leaves": []}
+
+    sums = {"src_rows": same_src + int(row.get("src_rows") or 0),
+            "dst_rows": same_dst + int(row.get("dst_rows") or 0)}
+    for key in ("to_insert", "to_update", "to_delete"):
+        sums[key] = int(row.get(key) or 0)
+    changed = sums["to_insert"] or sums["to_update"] or sums["to_delete"]
+
+    if changed:
+        chunked["mismatched"] = len(leaves)
+    return {"row": _result("differs" if changed else "same", chunked=chunked,
+                           **sums),
+            "leaves": leaves if changed else []}
 
 
 def _compare_one(src_conn, dst_conn, schema, table, info, candidates,
@@ -954,38 +1072,56 @@ def _compare_one(src_conn, dst_conn, schema, table, info, candidates,
     return dict(plan, key=key_fields, columns=src_cols)
 
 
-def save_range(job_id, run, rng, row):
-    """Лист differs → pg_compare_ranges."""
+def save_leaf(job_id, schema, table, column, leaf, row):
+    """
+    Лист differs → pg_compare_ranges. mode 'range' — границы lo / hi;
+    'bucket' — lo_json = md5-префикс, hi_json = null.
+    """
     with sqlite_cursor(commit=True) as cur:
         cur.execute(
             """
             INSERT INTO pg_compare_ranges (
                 job_id, schema_name, table_name, column_name, lo_json,
                 hi_json, is_null_range, collate_c, depth, src_rows, dst_rows,
-                to_insert, to_update, to_delete, status
+                to_insert, to_update, to_delete, status, mode
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                int(job_id), run["schema"], run["table"],
-                run["column"]["name"],
-                json.dumps(pg_ranges.bound_to_json(rng.get("lo"))),
-                json.dumps(pg_ranges.bound_to_json(rng.get("hi"))),
-                1 if rng.get("is_null") else 0,
-                1 if run["column"].get("collate_c") else 0,
-                int(rng.get("depth") or 0),
+                int(job_id), schema, table, column["name"],
+                json.dumps(pg_ranges.bound_to_json(leaf.get("lo"))),
+                json.dumps(pg_ranges.bound_to_json(leaf.get("hi"))),
+                1 if leaf.get("is_null") else 0,
+                1 if column.get("collate_c") else 0,
+                int(leaf.get("depth") or 0),
                 row.get("src_rows"), row.get("dst_rows"),
                 row.get("to_insert"), row.get("to_update"),
                 row.get("to_delete"), row.get("status"),
+                "bucket" if leaf.get("mode") == "bucket" else "range",
             ),
         )
+
+
+def save_range(job_id, run, rng, row):
+    """Лист differs режима диапазонов → pg_compare_ranges."""
+    save_leaf(job_id, run["schema"], run["table"], run["column"], rng, row)
+
+
+def clear_leaves(job_id, schema, table):
+    """Листья таблицы из прошлой попытки задачи."""
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            "DELETE FROM pg_compare_ranges WHERE job_id = ? "
+            "AND schema_name = ? AND table_name = ?",
+            (int(job_id), schema, table))
 
 
 def get_mismatched_ranges(job_id, schema, table):
     """
     Несовпавшие листья сравнения таблицы:
-    [{column, lo, hi, is_null, depth, collate_c, src_rows, dst_rows,
+    [{column, lo, hi, is_null, depth, collate_c, mode, src_rows, dst_rows,
       to_insert, to_update, to_delete, status}] в порядке записи.
+    mode 'bucket' — lo = md5-префикс, depth = его длина.
     lo / hi — из JSON: целое как есть, прочее (numeric, дата, время, текст,
     uuid) — строкой; None — открытая граница.
     """
@@ -993,7 +1129,7 @@ def get_mismatched_ranges(job_id, schema, table):
         cur.execute(
             """
             SELECT column_name, lo_json, hi_json, is_null_range, collate_c,
-                   depth, src_rows, dst_rows, to_insert, to_update,
+                   mode, depth, src_rows, dst_rows, to_insert, to_update,
                    to_delete, status
             FROM pg_compare_ranges
             WHERE job_id = ? AND schema_name = ? AND table_name = ?
@@ -1013,6 +1149,7 @@ def get_mismatched_ranges(job_id, schema, table):
             "is_null": bool(r["is_null_range"]),
             "depth": int(r["depth"] or 0),
             "collate_c": bool(r["collate_c"]),
+            "mode": r["mode"] or "range",
             "src_rows": r["src_rows"], "dst_rows": r["dst_rows"],
             "to_insert": r["to_insert"], "to_update": r["to_update"],
             "to_delete": r["to_delete"], "status": r["status"],
@@ -1069,9 +1206,8 @@ def _finish_run(run, shared):
         else:
             changed = sums["to_insert"] or sums["to_update"] \
                 or sums["to_delete"]
+            # итог по диапазонам — в chunked, message его не дублирует
             row = _result("differs" if changed else "same", **sums)
-            row["message"] = "по диапазонам: проверено %d, несовпавших %d" \
-                % (run["checked"], run["mismatched"])
         save_result(job_id, dict(base, chunked=chunked, **row))
         mark_item_done(item["id"])
 
@@ -1092,6 +1228,20 @@ def _put(work, shared, unit):
     with shared["lock"]:
         shared["outstanding"] += 1
     work.put(unit)
+    _grow(shared)
+
+
+def _grow(shared):
+    """
+    Ещё воркер, если единиц больше, чем воркеров, и до parallel не дошли:
+    лишних сессий к источнику не открываем, пары — по мере надобности.
+    """
+    with shared["lock"]:
+        spawn = shared.get("spawn")
+        if spawn and not shared["cancelled"] \
+                and len(shared["threads"]) < shared["max_workers"] \
+                and shared["outstanding"] > len(shared["threads"]):
+            spawn()
 
 
 def _compare_range(job_id, slot, conns, ids, work, run, rng, watch, shared,
@@ -1190,6 +1340,11 @@ def _compare_table_unit(job_id, slot, conns, ids, work, item, info,
         )
 
         if "row" in plan:
+            column = {"name": None}
+            for leaf in plan.get("leaves") or []:
+                column["name"] = leaf["column"]
+                save_leaf(job_id, schema, table, column, leaf,
+                          dict(leaf, status="differs"))
             save_result(job_id, dict(base, **plan["row"]))
             mark_item_done(item["id"])
         else:
@@ -1233,9 +1388,15 @@ def _compare_worker(job_id, slot, conns, ids, work, info, candidates,
     """
     Воркер: берёт единицы («таблица» или «диапазон таблицы») из общей
     очереди, пока все единицы не закрыты или не придёт стоп. Его пара
-    соединений — conns[slot:slot + 2] (их же видит StopWatch); сломанные
-    при откате переоткрываются на том же месте.
+    соединений — conns[slot:slot + 2] (их же видит StopWatch): открывается
+    здесь, при старте воркера; сломанные при откате переоткрываются на том
+    же месте.
     """
+    if conns[slot] is None:
+        conns[slot] = open_pg(ids[0], readonly=True)
+    if conns[slot + 1] is None:
+        conns[slot + 1] = open_pg(ids[1])
+
     while True:
         try:
             unit = work.get(timeout=UNIT_WAIT)
@@ -1276,6 +1437,20 @@ def _run_worker(shared, *args):
             shared["fatal"].append(e)
 
 
+def _fail_runs(job_id, shared, message):
+    """Аварийный путь: незакрытые таблицы по диапазонам — как стоп, error."""
+    for run in list(shared["runs"]):
+        if run["closed"]:
+            continue
+        base = {"schema": run["schema"], "table": run["table"]}
+        base.update(run["key"])
+        save_result(job_id, dict(base, status="error", chunked=_chunked(run),
+                                 message=message))
+        mark_item_failed(run["item"]["id"], message)
+        run["closed"] = True
+        _forget_run(run)
+
+
 def _cancel_runs(job_id, shared):
     """Таблицы по диапазонам, не закрытые к стопу, — строка cancelled."""
     for run in shared["runs"]:
@@ -1308,6 +1483,7 @@ def run_pg_compare_job(job_id):
     # все соединения всех воркеров: воркер slot держит conns[slot:slot+2];
     # этот же список отменяет StopWatch
     conns = []
+    shared = None
 
     try:
         source_id = config.get("source_connection_id")
@@ -1333,36 +1509,48 @@ def run_pg_compare_job(job_id):
         pending = [it for it in items
                    if it.get("status") not in ("done", "failed", "skipped")]
         for item in pending:
+            # листья этой таблицы из прошлой попытки задачи
+            clear_leaves(job_id, item["schema_name"], item["table_name"])
             work.put(("table", item))
 
-        # больших таблиц по диапазонам хватает на всех воркеров
-        workers = max(1, _parallel_of(config))
-
-        for _ in range(workers):
-            conns.append(open_pg(source_id, readonly=True))
-            conns.append(open_pg(dest_id))
+        # воркеров — не больше единиц в очереди; диапазоны добавят ещё
+        # (_grow) до parallel
+        parallel = max(1, _parallel_of(config))
+        work_mem = worker_work_mem(parallel)
 
         refresh_job_progress(job_id)
         shared = {"lock": threading.Lock(), "failed": 0, "fatal": [],
                   "cancelled": False, "outstanding": len(pending),
-                  "runs": []}
+                  "runs": [], "threads": [], "max_workers": parallel}
 
         with StopWatch(job_id, conns) as watch:
-            threads = [
-                threading.Thread(
+            def spawn():
+                # под shared["lock"]: место пары резервируется сразу,
+                # соединения открывает сам воркер
+                slot = len(conns)
+                conns.extend([None, None])
+                thread = threading.Thread(
                     target=_run_worker,
-                    args=(shared, job_id, slot * 2, conns, [source_id, dest_id],
-                          work, info, candidates, watch, shared,
-                          worker_work_mem(workers)),
-                    name="pg_compare-%s-%d" % (job_id, slot),
+                    args=(shared, job_id, slot, conns, [source_id, dest_id],
+                          work, info, candidates, watch, shared, work_mem),
+                    name="pg_compare-%s-%d" % (job_id, slot // 2),
                     daemon=True,
                 )
-                for slot in range(workers)
-            ]
-            for thread in threads:
                 thread.start()
-            for thread in threads:
-                thread.join()
+                shared["threads"].append(thread)
+
+            with shared["lock"]:
+                for _ in range(min(parallel, len(pending))):
+                    spawn()
+                shared["spawn"] = spawn
+
+            while True:
+                with shared["lock"]:
+                    alive = [t for t in shared["threads"] if t.is_alive()]
+                if not alive:
+                    break
+                for thread in alive:
+                    thread.join()
 
             if shared["cancelled"] or (watch.stopped and not work.empty()):
                 _cancel_runs(job_id, shared)
@@ -1379,11 +1567,14 @@ def run_pg_compare_job(job_id):
             mark_job_done(job_id)
 
     except Exception as e:
-        _rollback(conns)
+        _rollback([c for c in conns if c is not None])
+        if shared:
+            _fail_runs(job_id, shared, str(e)[:500])
         mark_job_failed(job_id, str(e)[:500])
     finally:
         for conn in conns:
             try:
-                conn.close()
+                if conn is not None:
+                    conn.close()
             except Exception:
                 pass

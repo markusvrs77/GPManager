@@ -130,21 +130,20 @@ def test_ranges_from_cuts_keep_outer_bounds_and_cover_everything():
 # Выбор колонки нарезки
 # ------------------------------------------------------------------
 
-COLS = {"id": ("integer", ""), "code": ("text", "en_US"),
-        "created": ("date", ""), "amount": ("numeric(12,2)", ""),
-        "flag": ("boolean", "")}
+COLS = {"id": ("integer", None), "code": ("text", ("en_US", "c", "2.28")),
+        "created": ("date", None), "amount": ("numeric(12,2)", None),
+        "flag": ("boolean", None)}
 
 
 def test_key_column_is_the_first_key_column():
     assert rng.choose_chunk_column(COLS, COLS, ["id", "code"]) == \
-        {"name": "id", "kind": "int", "collate_c": False}
+        {"name": "id", "kind": "int", "collate_c": False, "mode": "range"}
 
 
-def test_text_key_with_different_collation_needs_collate_c():
-    dst = dict(COLS, code=("text", "ru_RU"))
-    assert rng.choose_chunk_column(COLS, dst, ["code"]) == \
-        {"name": "code", "kind": "text", "collate_c": True}
-    assert rng.choose_chunk_column(COLS, COLS, ["code"])["collate_c"] is False
+def test_text_key_with_different_collation_goes_to_buckets():
+    # COLLATE "C" отключал индекс; теперь разный порядок — режим корзин
+    dst = dict(COLS, code=("text", ("und-x-icu", "i", "153.120")))
+    assert rng.choose_chunk_column(COLS, dst, ["code"]) ==         {"name": "code", "kind": "text", "collate_c": False, "mode": "bucket"}
 
 
 def test_unsupported_key_type_gives_no_column():
