@@ -343,3 +343,33 @@ def test_dest_duplicate_check_stays_when_dest_key_is_not_unique():
     assert result["status"] == "duplicate_keys"
     assert "приёмник" in result["message"]
     assert SRC_DUP_SQL not in dst.sql_text()
+
+
+# ------------------------------------------------------------ where (диапазон)
+
+def test_where_limits_source_dest_count_and_dest_duplicates():
+    from psycopg2 import sql as psql
+    where = psql.SQL("{} >= {}").format(psql.Identifier("t", "id"),
+                                        psql.Literal(100))
+    src, dst = _sides()
+
+    cmp.compare_table(src, dst, "s", "t", ["id"], key_source="sync_keys",
+                      where=where)
+    cmp.compare_table(src, dst, "s", "t", [], where=where)
+
+    assert src.copies[0].endswith(
+        'FROM "s"."t" AS "t" WHERE "t"."id" >= 100) TO STDOUT')
+    dst_sql = [text for text, _ in dst.executed]
+    keyed_count = next(t for t in dst_sql if "AS to_insert" in t)
+    assert 'FROM "s"."t" AS "t" WHERE "t"."id" >= 100) AS "d"' in keyed_count
+    dup = next(t for t in dst_sql if 'HAVING' in t and '"s"."t"' in t)
+    assert 'FROM "s"."t" AS "t" WHERE "t"."id" >= 100 GROUP BY' in dup
+    keyless = [t for t in dst_sql if "AS to_insert" in t][-1]
+    assert 'FROM "s"."t" AS "t" WHERE "t"."id" >= 100) AS "u"' in keyless
+
+
+def test_without_where_sql_is_unchanged():
+    assert "WHERE" not in render(cmp.build_source_select(
+        "s", "t", ["id"], ["id", "name"]))
+    assert "WHERE" not in render(cmp.build_dest_duplicate_sql(
+        "s", "t", ["id"]))

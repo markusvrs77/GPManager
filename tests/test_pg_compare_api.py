@@ -182,3 +182,34 @@ def test_latest_without_compares_has_empty_running(client):
                       "&dest_connection_id=72").get_json()
 
     assert body["running"] == [] and body["current"] is None
+
+
+def test_results_and_latest_carry_chunked_counters(client, monkeypatch):
+    job_id = create_job("pg_compare", 41, {
+        "source_connection_id": 41, "dest_connection_id": 42,
+        "tables": [{"schema": "s", "table": "big"},
+                   {"schema": "s", "table": "small"},
+                   {"schema": "s", "table": "live"}]})
+    cmp.save_result(job_id, {"schema": "s", "table": "big",
+                             "status": "differs", "src_rows": 10,
+                             "chunked": {"checked": 70, "total": 70,
+                                         "mismatched": 2}})
+    cmp.save_result(job_id, {"schema": "s", "table": "small",
+                             "status": "same"})
+    live = [i for i in get_job_items(job_id) if i["table_name"] == "live"][0]
+    from job_manager import mark_item_running
+    mark_item_running(live["id"])
+    monkeypatch.setattr(cmp, "chunk_progress", lambda jid: {
+        ("s", "live"): {"checked": 5, "total": 64, "mismatched": 1}})
+
+    for url in ("/api/pg/compare/results?job_id=%d" % job_id,
+                "/api/pg/compare/latest?source_connection_id=41"
+                "&dest_connection_id=42"):
+        body = client.get(url).get_json()
+        rows = {r["table"]: r for r in body["results"]}
+        assert rows["big"]["chunked"] == {"checked": 70, "total": 70,
+                                          "mismatched": 2}
+        assert rows["small"]["chunked"] is None
+        assert body["running"] == [{"schema": "s", "table": "live",
+                                    "chunked": {"checked": 5, "total": 64,
+                                                "mismatched": 1}}]

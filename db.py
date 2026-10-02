@@ -351,6 +351,39 @@ def init_db():
             """
         )
 
+        # несовпавшие листья сравнения по диапазонам (задача pg_compare):
+        # одна строка на лист со статусом differs; lo/hi — JSON, null —
+        # открытая граница; collate_c — предикат текста с COLLATE "C"
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pg_compare_ranges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                schema_name TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                column_name TEXT NOT NULL,
+                lo_json TEXT,
+                hi_json TEXT,
+                is_null_range INTEGER NOT NULL DEFAULT 0,
+                collate_c INTEGER NOT NULL DEFAULT 0,
+                depth INTEGER NOT NULL DEFAULT 0,
+                src_rows INTEGER,
+                dst_rows INTEGER,
+                to_insert INTEGER,
+                to_update INTEGER,
+                to_delete INTEGER,
+                status TEXT NOT NULL
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_pg_compare_ranges_job_table
+            ON pg_compare_ranges (job_id, schema_name, table_name)
+            """
+        )
+
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS grants_snapshots (
@@ -591,6 +624,13 @@ def init_db():
         "job_items",
         "parts_done",
         "ALTER TABLE job_items ADD COLUMN parts_done INTEGER DEFAULT 0"
+    )
+
+    # счётчики сравнения по диапазонам: {checked, total, mismatched} JSON
+    ensure_column_exists(
+        "pg_compare_results",
+        "chunked_json",
+        "ALTER TABLE pg_compare_results ADD COLUMN chunked_json TEXT"
     )
 
 

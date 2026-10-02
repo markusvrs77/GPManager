@@ -42,6 +42,7 @@ from job_manager import (
     refresh_job_progress,
 )
 
+import modules.pg_ranges as pg_ranges
 import modules.table_catalog as table_catalog
 from modules.pg_sync_common import (
     StopWatch,
@@ -216,16 +217,25 @@ def _table_ident(schema, table):
     return sql.Identifier(schema, table)
 
 
-def build_source_select(schema, table, key_columns, columns):
-    """SELECT ключ::text..., md5(ROW(колонки)::text) FROM schema.table AS t."""
+def _where(where):
+    """« WHERE <предикат>» (алиас таблицы — t) или пусто."""
+    if where is None:
+        return sql.SQL("")
+    return sql.SQL(" WHERE {}").format(where)
+
+
+def build_source_select(schema, table, key_columns, columns, where=None):
+    """SELECT ключ::text..., md5(ROW(колонки)::text) FROM schema.table AS t
+    [WHERE where]."""
     parts = [sql.SQL("{}::text").format(sql.Identifier("t", k))
              for k in key_columns]
     parts.append(row_hash_sql("t", columns))
 
-    return sql.SQL("SELECT {} FROM {} AS {}").format(
+    return sql.SQL("SELECT {} FROM {} AS {}{}").format(
         sql.SQL(", ").join(parts),
         _table_ident(schema, table),
         sql.Identifier("t"),
+        _where(where),
     )
 
 
@@ -254,14 +264,15 @@ def build_work_mem_sql(work_mem=WORK_MEM):
     return sql.SQL("SET LOCAL work_mem = {}").format(sql.Literal(work_mem))
 
 
-def build_dest_duplicate_sql(schema, table, key_columns):
-    """Сколько значений ключа повторяется в таблице приёмника."""
+def build_dest_duplicate_sql(schema, table, key_columns, where=None):
+    """Сколько значений ключа повторяется в таблице (приёмника)."""
     return sql.SQL(
-        "SELECT count(*) FROM (SELECT 1 FROM {} AS {} GROUP BY {} "
+        "SELECT count(*) FROM (SELECT 1 FROM {} AS {}{} GROUP BY {} "
         "HAVING count(*) > 1) AS x"
     ).format(
         _table_ident(schema, table),
         sql.Identifier("t"),
+        _where(where),
         sql.SQL(", ").join(sql.Identifier("t", k) for k in key_columns),
     )
 
@@ -314,7 +325,7 @@ def build_duplicate_sql(key_columns):
     )
 
 
-def build_count_sql(schema, table, key_columns, columns):
+def build_count_sql(schema, table, key_columns, columns, where=None):
     """
     Одна строка (dst_rows, to_insert, to_update, to_delete) по временной
     таблице источника и таблице приёмника, за один проход приёмника.
@@ -342,10 +353,10 @@ def build_count_sql(schema, table, key_columns, columns):
             "count(*) FILTER (WHERE {side} = 1) AS {sc}, "
             "count(*) FILTER (WHERE {side} = 2) AS {dc} "
             "FROM (SELECT {h}, 1 AS {side} FROM {src} "
-            "UNION ALL SELECT {hash}, 2 FROM {tbl} AS {t}) AS {u} "
+            "UNION ALL SELECT {hash}, 2 FROM {tbl} AS {t}{w}) AS {u} "
             "GROUP BY {h}) AS {x}"
         ).format(sc=sc, dc=dc, side=side, h=h, src=src, hash=hash_expr,
-                 tbl=_table_ident(schema, table), t=t_alias,
+                 tbl=_table_ident(schema, table), t=t_alias, w=_where(where),
                  u=sql.Identifier("u"), x=sql.Identifier("x"))
 
     names = _key_names(key_columns)
@@ -368,11 +379,12 @@ def build_count_sql(schema, table, key_columns, columns):
         "count(*) FILTER (WHERE {sh} <> {dh}) AS to_update, "
         "count(*) FILTER (WHERE {sh} IS NULL) AS to_delete "
         "FROM {src} AS {s} FULL OUTER JOIN "
-        "(SELECT {casts}, {hash} AS {h} FROM {tbl} AS {t}) AS {d} "
+        "(SELECT {casts}, {hash} AS {h} FROM {tbl} AS {t}{w}) AS {d} "
         "ON {join}"
     ).format(
         dh=dh, sh=sh, src=src, s=sql.Identifier("s"), casts=casts,
         hash=hash_expr, h=h, tbl=_table_ident(schema, table), t=t_alias,
+        w=_where(where),
         d=sql.Identifier("d"), join=join,
     )
 
@@ -390,7 +402,7 @@ def _result(status, **values):
 
 
 def compare_table(src_conn, dst_conn, schema, table, key_columns,
-                  key_source=None, work_mem=WORK_MEM):
+                  key_source=None, work_mem=WORK_MEM, where=None):
     """
     Сравнение таблицы, которая есть в обеих базах.
     key_columns — [] для сравнения без ключа (мультимножество строк).
@@ -400,6 +412,8 @@ def compare_table(src_conn, dst_conn, schema, table, key_columns,
     там есть PK / уникальный NOT NULL индекс ровно на ключе.
     work_mem — SET LOCAL для транзакции приёмника (раннер делит бюджет
     WORK_MEM_TOTAL_MB между воркерами).
+    where — необязательный предикат (Composable, алиас таблицы t): сравнение
+    только строк диапазона — выборка источника, подсчёт и дубли приёмника.
     -> {status, src_rows, dst_rows, to_insert, to_update, to_delete, message}
     Приёмник не меняется: временная таблица уходит вместе с откатом.
     """
@@ -446,7 +460,8 @@ def compare_table(src_conn, dst_conn, schema, table, key_columns,
 
         src_rows = stream_copy(
             src_conn, dst_conn,
-            build_source_select(schema, table, key_columns, src_cols),
+            build_source_select(schema, table, key_columns, src_cols,
+                                where),
             sql.Identifier(TEMP_TABLE),
             _key_names(key_columns) + [HASH_COLUMN],
         )
@@ -466,7 +481,8 @@ def compare_table(src_conn, dst_conn, schema, table, key_columns,
 
         if key_columns and not dest_key_is_unique(dst_conn, schema, table,
                                                   key_columns):
-            cur.execute(build_dest_duplicate_sql(schema, table, key_columns))
+            cur.execute(build_dest_duplicate_sql(schema, table, key_columns,
+                                                 where))
             duplicates = int(cur.fetchone()[0] or 0)
 
             if duplicates:
@@ -477,7 +493,8 @@ def compare_table(src_conn, dst_conn, schema, table, key_columns,
                             % (", ".join(key_columns), duplicates),
                 )
 
-        cur.execute(build_count_sql(schema, table, key_columns, src_cols))
+        cur.execute(build_count_sql(schema, table, key_columns, src_cols,
+                                    where))
         dst_rows, to_insert, to_update, to_delete = [
             int(v or 0) for v in cur.fetchone()
         ]
@@ -612,9 +629,9 @@ def save_result(job_id, row):
             INSERT INTO pg_compare_results (
                 job_id, schema_name, table_name, status, key_columns_json,
                 key_source, src_rows, dst_rows, to_insert, to_update,
-                to_delete, message, compared_at
+                to_delete, message, compared_at, chunked_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(job_id), row.get("schema"), row.get("table"), status,
@@ -625,6 +642,7 @@ def save_result(job_id, row):
                 row.get("to_delete"),
                 (str(row["message"])[:1000] if row.get("message") else None),
                 now_str(),
+                (json.dumps(row["chunked"]) if row.get("chunked") else None),
             ),
         )
 
@@ -635,7 +653,8 @@ def get_results(job_id):
             """
             SELECT id, job_id, schema_name, table_name, status,
                    key_columns_json, key_source, src_rows, dst_rows,
-                   to_insert, to_update, to_delete, message, compared_at
+                   to_insert, to_update, to_delete, message, compared_at,
+                   chunked_json
             FROM pg_compare_results
             WHERE job_id = ?
             ORDER BY id
@@ -655,6 +674,11 @@ def get_results(job_id):
         r["schema"] = r.pop("schema_name")
         r["table"] = r.pop("table_name")
         r["key_columns"] = key_columns
+        # сравнение по диапазонам: {checked, total, mismatched}, иначе None
+        try:
+            r["chunked"] = json.loads(r.pop("chunked_json") or "null")
+        except ValueError:
+            r["chunked"] = None
         out.append(r)
 
     return out
@@ -690,33 +714,6 @@ def latest_compare_job(src_id, dst_id):
 # ------------------------------------------------------------------
 # Раннер
 # ------------------------------------------------------------------
-
-def _compare_one(src_conn, dst_conn, schema, table, info, candidates,
-                 work_mem=WORK_MEM):
-    if not info.get("in_src", True):
-        return _result("no_source",
-                       message="Таблицы нет в источнике — не изменяется")
-
-    if not info.get("in_dst", True):
-        return _result("no_dest", message="Таблицы нет в приёмнике")
-
-    src_cols = table_columns(src_conn, schema, table)
-    dst_cols = table_columns(dst_conn, schema, table)
-    valid_unique = None
-
-    if any(c.get("source") == "unique_index" for c in candidates or []):
-        valid_unique = valid_unique_keys(src_conn, schema, table)
-
-    key = pick_key(candidates, src_cols, dst_cols, valid_unique)
-
-    row = compare_table(src_conn, dst_conn, schema, table,
-                        key["columns"] if key else [],
-                        key_source=key["source"] if key else None,
-                        work_mem=work_mem)
-    row["key_columns"] = list(key["columns"]) if key else []
-    row["key_source"] = key["source"] if key else None
-    return row
-
 
 def _rollback(conns):
     """Откат всех соединений; -> индексы тех, чей откат не прошёл."""
@@ -790,66 +787,485 @@ def _parallel_of(config):
         return PARALLEL_DEFAULT
 
 
+# ------------------------------------------------------------------
+# Сравнение по диапазонам
+# ------------------------------------------------------------------
+
+# сколько ждать новой единицы, пока другие воркеры ещё могут их добавить
+UNIT_WAIT = 0.05
+
+# живой прогресс таблиц, сравниваемых по диапазонам: job_id → {(s, t): run}
+_PROGRESS = {}
+_PROGRESS_LOCK = threading.Lock()
+
+
+def chunk_progress(job_id):
+    """{(schema, table): {checked, total, mismatched}} идущих сейчас таблиц."""
+    with _PROGRESS_LOCK:
+        runs = list((_PROGRESS.get(int(job_id)) or {}).values())
+
+    out = {}
+    for run in runs:
+        with run["lock"]:
+            out[(run["schema"], run["table"])] = _chunked(run)
+    return out
+
+
+def _chunked(run):
+    return {"checked": run["checked"], "total": run["total"],
+            "mismatched": run["mismatched"]}
+
+
+def _null_key_sql(schema, table, key_columns, pred):
+    """Есть ли строки с NULL в какой-либо ключевой колонке (под предикатом)."""
+    nulls = sql.SQL(" OR ").join(
+        sql.SQL("{} IS NULL").format(sql.Identifier("t", k))
+        for k in key_columns)
+    where = nulls if pred is None else \
+        sql.SQL("({}) AND ({})").format(pred, nulls)
+    return sql.SQL("SELECT EXISTS (SELECT 1 FROM {} AS {} WHERE {})").format(
+        _table_ident(schema, table), sql.Identifier("t"), where)
+
+
+def _has_null_keys(conn, schema, table, key_columns, pred):
+    # NULL-ключ пары не находит: построчно такие строки — вставка и удаление,
+    # хотя контрольные суммы сторон совпадают
+    cur = conn.cursor()
+    cur.execute(_null_key_sql(schema, table, key_columns, pred))
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def _duplicates(conn, schema, table, key_columns):
+    cur = conn.cursor()
+    cur.execute(build_dest_duplicate_sql(schema, table, key_columns))
+    return int((cur.fetchone() or (0,))[0] or 0)
+
+
+def _plan_chunks(src_conn, dst_conn, schema, table, key, src_cols, work_mem):
+    """
+    Подготовка таблицы к сравнению по диапазонам.
+    -> None (сравнить как раньше), {"row": ...} (итог без нарезки) или
+       {"column": ..., "ranges": [...]}.
+    """
+    key_columns = list(key["columns"]) if key else []
+    key_source = key["source"] if key else None
+
+    try:
+        src_types = table_column_types(src_conn, schema, table)
+        dst_types = table_column_types(dst_conn, schema, table)
+        if src_types != dst_types \
+                or any(k not in src_types for k in key_columns):
+            # structure_diff / отказ по ключу даст compare_table
+            return None
+
+        if key_columns and key_source not in UNIQUE_KEY_SOURCES:
+            dup = _duplicates(src_conn, schema, table, key_columns)
+            if dup:
+                return {"row": _result(
+                    "duplicate_keys",
+                    message="Ключ (%s) не уникален в источнике: повторяется "
+                            "значений — %d" % (", ".join(key_columns), dup))}
+
+        if key_columns and not dest_key_is_unique(dst_conn, schema, table,
+                                                  key_columns):
+            dup = _duplicates(dst_conn, schema, table, key_columns)
+            if dup:
+                return {"row": _result(
+                    "duplicate_keys",
+                    message="Ключ (%s) не уникален в приёмнике: повторяется "
+                            "значений — %d" % (", ".join(key_columns), dup))}
+
+        column = pg_ranges.pick_chunk_column(src_conn, dst_conn, schema,
+                                             table, key_columns)
+
+        if column is None:
+            s = pg_ranges.range_checksum(src_conn, schema, table, src_cols,
+                                         None)
+            d = pg_ranges.range_checksum(dst_conn, schema, table, src_cols,
+                                         None)
+            null_keys = (key_columns and key_source not in UNIQUE_KEY_SOURCES
+                         and _has_null_keys(src_conn, schema, table,
+                                            key_columns, None))
+            if s == d and not null_keys:
+                return {"row": _result(
+                    "same", src_rows=s[0], dst_rows=d[0], to_insert=0,
+                    to_update=0, to_delete=0,
+                    message="по диапазонам: колонки нарезки нет, "
+                            "контрольная сумма таблицы совпала")}
+            _rollback([src_conn, dst_conn])
+            row = compare_table(src_conn, dst_conn, schema, table,
+                                key_columns, key_source=key_source,
+                                work_mem=work_mem)
+            row["message"] = row.get("message") or (
+                "по диапазонам: колонки нарезки нет, контрольная сумма "
+                "не совпала — сравнено построчно")
+            return {"row": row}
+
+        ranges = pg_ranges.top_ranges(src_conn, schema, table, column)
+        return {"column": column, "ranges": ranges}
+    finally:
+        _rollback([src_conn, dst_conn])
+
+
+def _compare_one(src_conn, dst_conn, schema, table, info, candidates,
+                 work_mem=WORK_MEM):
+    """
+    Итог таблицы ({"row": ...}) или план сравнения по диапазонам
+    ({"key", "columns", "column", "ranges"}).
+    """
+    if not info.get("in_src", True):
+        return {"row": _result("no_source",
+                               message="Таблицы нет в источнике — не изменяется")}
+
+    if not info.get("in_dst", True):
+        return {"row": _result("no_dest", message="Таблицы нет в приёмнике")}
+
+    src_cols = table_columns(src_conn, schema, table)
+    dst_cols = table_columns(dst_conn, schema, table)
+    valid_unique = None
+
+    if any(c.get("source") == "unique_index" for c in candidates or []):
+        valid_unique = valid_unique_keys(src_conn, schema, table)
+
+    key = pick_key(candidates, src_cols, dst_cols, valid_unique)
+    key_fields = {"key_columns": list(key["columns"]) if key else [],
+                  "key_source": key["source"] if key else None}
+
+    # транзакцию чтения закроет откат в _plan_chunks / compare_table
+    chunk = pg_ranges.should_chunk(src_conn, schema, table)
+    plan = None
+
+    if chunk:
+        plan = _plan_chunks(src_conn, dst_conn, schema, table, key, src_cols,
+                            work_mem)
+
+    if plan is None:
+        row = compare_table(src_conn, dst_conn, schema, table,
+                            key_fields["key_columns"],
+                            key_source=key_fields["key_source"],
+                            work_mem=work_mem)
+        plan = {"row": row}
+
+    if "row" in plan:
+        plan["row"].update(key_fields)
+        return plan
+
+    return dict(plan, key=key_fields, columns=src_cols)
+
+
+def save_range(job_id, run, rng, row):
+    """Лист differs → pg_compare_ranges."""
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            INSERT INTO pg_compare_ranges (
+                job_id, schema_name, table_name, column_name, lo_json,
+                hi_json, is_null_range, collate_c, depth, src_rows, dst_rows,
+                to_insert, to_update, to_delete, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(job_id), run["schema"], run["table"],
+                run["column"]["name"],
+                json.dumps(pg_ranges.bound_to_json(rng.get("lo"))),
+                json.dumps(pg_ranges.bound_to_json(rng.get("hi"))),
+                1 if rng.get("is_null") else 0,
+                1 if run["column"].get("collate_c") else 0,
+                int(rng.get("depth") or 0),
+                row.get("src_rows"), row.get("dst_rows"),
+                row.get("to_insert"), row.get("to_update"),
+                row.get("to_delete"), row.get("status"),
+            ),
+        )
+
+
+def get_mismatched_ranges(job_id, schema, table):
+    """
+    Несовпавшие листья сравнения таблицы:
+    [{column, lo, hi, is_null, depth, collate_c, src_rows, dst_rows,
+      to_insert, to_update, to_delete, status}] в порядке записи.
+    lo / hi — из JSON: целое как есть, прочее (numeric, дата, время, текст,
+    uuid) — строкой; None — открытая граница.
+    """
+    with sqlite_cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name, lo_json, hi_json, is_null_range, collate_c,
+                   depth, src_rows, dst_rows, to_insert, to_update,
+                   to_delete, status
+            FROM pg_compare_ranges
+            WHERE job_id = ? AND schema_name = ? AND table_name = ?
+              AND status = 'differs'
+            ORDER BY id
+            """,
+            (int(job_id), schema, table),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    out = []
+    for r in rows:
+        out.append({
+            "column": r["column_name"],
+            "lo": json.loads(r["lo_json"]) if r["lo_json"] else None,
+            "hi": json.loads(r["hi_json"]) if r["hi_json"] else None,
+            "is_null": bool(r["is_null_range"]),
+            "depth": int(r["depth"] or 0),
+            "collate_c": bool(r["collate_c"]),
+            "src_rows": r["src_rows"], "dst_rows": r["dst_rows"],
+            "to_insert": r["to_insert"], "to_update": r["to_update"],
+            "to_delete": r["to_delete"], "status": r["status"],
+        })
+    return out
+
+
+def _new_run(job_id, item, plan):
+    key = plan["key"]
+    run = {
+        "job_id": job_id, "item": item, "schema": item["schema_name"],
+        "table": item["table_name"], "key": key, "columns": plan["columns"],
+        "column": plan["column"], "lock": threading.Lock(),
+        "pending": len(plan["ranges"]), "total": len(plan["ranges"]),
+        "checked": 0, "mismatched": 0, "error": None, "override": None,
+        "cancelled": False, "closed": False,
+        # NULL в ключе возможен только у ключа не из PK / уникального индекса
+        "null_check": bool(key["key_columns"]) and
+        key["key_source"] not in UNIQUE_KEY_SOURCES,
+        "sums": {"src_rows": 0, "dst_rows": 0, "to_insert": 0,
+                 "to_update": 0, "to_delete": 0},
+    }
+    with _PROGRESS_LOCK:
+        _PROGRESS.setdefault(int(job_id), {})[(run["schema"],
+                                               run["table"])] = run
+    return run
+
+
+def _forget_run(run):
+    with _PROGRESS_LOCK:
+        runs = _PROGRESS.get(int(run["job_id"])) or {}
+        runs.pop((run["schema"], run["table"]), None)
+        if not runs:
+            _PROGRESS.pop(int(run["job_id"]), None)
+
+
+def _finish_run(run, shared):
+    """Все диапазоны таблицы закрыты: итог в pg_compare_results, item."""
+    job_id, item = run["job_id"], run["item"]
+    base = {"schema": run["schema"], "table": run["table"]}
+    base.update(run["key"])
+    chunked = _chunked(run)
+
+    if run["error"]:
+        with shared["lock"]:
+            shared["failed"] += 1
+        save_result(job_id, dict(base, status="error", chunked=chunked,
+                                 message=run["error"]))
+        mark_item_failed(item["id"], run["error"])
+    else:
+        sums = run["sums"]
+        if run["override"]:
+            row = dict(run["override"])
+        else:
+            changed = sums["to_insert"] or sums["to_update"] \
+                or sums["to_delete"]
+            row = _result("differs" if changed else "same", **sums)
+            row["message"] = "по диапазонам: проверено %d, несовпавших %d" \
+                % (run["checked"], run["mismatched"])
+        save_result(job_id, dict(base, chunked=chunked, **row))
+        mark_item_done(item["id"])
+
+    run["closed"] = True
+    _forget_run(run)
+    refresh_job_progress(job_id)
+
+
+def _range_done(run, shared):
+    with run["lock"]:
+        run["pending"] -= 1
+        last = run["pending"] == 0 and not run["cancelled"]
+    if last:
+        _finish_run(run, shared)
+
+
+def _put(work, shared, unit):
+    with shared["lock"]:
+        shared["outstanding"] += 1
+    work.put(unit)
+
+
+def _compare_range(job_id, slot, conns, ids, work, run, rng, watch, shared,
+                   work_mem):
+    """Одна единица «диапазон таблицы». -> False, если пришёл стоп."""
+    schema, table = run["schema"], run["table"]
+    column = run["column"]
+
+    try:
+        if run["error"] or run["cancelled"]:
+            return True
+
+        src_conn, dst_conn = conns[slot], conns[slot + 1]
+        pred = pg_ranges.range_predicate("t", column["name"], rng,
+                                         column.get("collate_c", False))
+        s = pg_ranges.range_checksum(src_conn, schema, table, run["columns"],
+                                     pred)
+        d = pg_ranges.range_checksum(dst_conn, schema, table, run["columns"],
+                                     pred)
+        same = s == d and not (
+            run["null_check"] and _has_null_keys(
+                src_conn, schema, table, run["key"]["key_columns"], pred))
+        _rollback([src_conn, dst_conn])
+
+        subs = []
+        if not same and max(s[0], d[0]) > pg_ranges.LEAF_ROWS:
+            subs = pg_ranges.split_range(src_conn, schema, table, column, rng)
+            _rollback([src_conn])
+
+        if same:
+            with run["lock"]:
+                run["checked"] += 1
+                run["sums"]["src_rows"] += s[0]
+                run["sums"]["dst_rows"] += d[0]
+        elif len(subs) > 1:
+            with run["lock"]:
+                run["checked"] += 1
+                run["pending"] += len(subs)
+                run["total"] += len(subs)
+            for sub in subs:
+                _put(work, shared, ("range", run, sub))
+        else:
+            row = compare_table(src_conn, dst_conn, schema, table,
+                                run["key"]["key_columns"],
+                                key_source=run["key"]["key_source"],
+                                work_mem=work_mem, where=pred)
+            with run["lock"]:
+                run["checked"] += 1
+                for name in run["sums"]:
+                    run["sums"][name] += int(row.get(name) or 0)
+                if row["status"] == "differs":
+                    run["mismatched"] += 1
+                elif row["status"] != "same" and not run["override"]:
+                    run["override"] = row
+            if row["status"] == "differs":
+                save_range(job_id, run, rng, row)
+        return True
+    except Exception as e:
+        broken = _rollback([conns[slot], conns[slot + 1]])
+
+        if watch.stopped or watch.check():
+            run["cancelled"] = True
+            shared["cancelled"] = True
+            return False
+
+        with run["lock"]:
+            if not run["error"]:
+                where = "NULL" if rng.get("is_null") else "[%s, %s)" % (
+                    rng.get("lo"), rng.get("hi"))
+                run["error"] = ("Диапазон %s %s: %s"
+                                % (column["name"], where, e))[:500]
+
+        if broken:
+            _reopen_broken(conns, broken, ids, base=slot)
+        return True
+    finally:
+        _range_done(run, shared)
+
+
+def _compare_table_unit(job_id, slot, conns, ids, work, item, info,
+                        candidates, watch, shared, work_mem):
+    """Единица «таблица». -> False, если пришёл стоп."""
+    schema, table = item["schema_name"], item["table_name"]
+    mark_item_running(item["id"])
+    refresh_job_progress(job_id)
+
+    base = {"schema": schema, "table": table}
+    src_conn, dst_conn = conns[slot], conns[slot + 1]
+
+    try:
+        plan = _compare_one(
+            src_conn, dst_conn, schema, table,
+            info.get((schema, table), {}),
+            candidates.get((schema, table)),
+            work_mem=work_mem,
+        )
+
+        if "row" in plan:
+            save_result(job_id, dict(base, **plan["row"]))
+            mark_item_done(item["id"])
+        else:
+            run = _new_run(job_id, item, plan)
+            with shared["lock"]:
+                shared["runs"].append(run)
+            for rng in plan["ranges"]:
+                _put(work, shared, ("range", run, rng))
+            return True
+    except Exception as e:
+        broken = _rollback([src_conn, dst_conn])
+
+        # QueryCanceledError от conn.cancel() сторожа — это стоп;
+        # строку закроет mark_job_cancelled в _cancel_rest
+        if watch.stopped or watch.check():
+            save_result(job_id, dict(
+                base, status="cancelled",
+                message="Сравнение остановлено пользователем",
+            ))
+            shared["cancelled"] = True
+            return False
+
+        with shared["lock"]:
+            shared["failed"] += 1
+
+        save_result(job_id, dict(base, status="error",
+                                 message=str(e)[:500]))
+        mark_item_failed(item["id"], str(e)[:500])
+
+        if broken:
+            # без живой пары воркер дальше не может; таблицы
+            # доберут остальные
+            _reopen_broken(conns, broken, ids, base=slot)
+
+    refresh_job_progress(job_id)
+    return True
+
+
 def _compare_worker(job_id, slot, conns, ids, work, info, candidates,
                     watch, shared, work_mem=WORK_MEM):
     """
-    Воркер: берёт таблицы из общей очереди, пока она не опустеет или не
-    придёт стоп. Его пара соединений — conns[slot:slot + 2] (их же видит
-    StopWatch); сломанные при откате переоткрываются на том же месте.
+    Воркер: берёт единицы («таблица» или «диапазон таблицы») из общей
+    очереди, пока все единицы не закрыты или не придёт стоп. Его пара
+    соединений — conns[slot:slot + 2] (их же видит StopWatch); сломанные
+    при откате переоткрываются на том же месте.
     """
     while True:
         try:
-            item = work.get_nowait()
+            unit = work.get(timeout=UNIT_WAIT)
         except queue.Empty:
-            return
-
-        if watch.check():
-            # таблица не начата: _cancel_rest пометит её skipped
-            shared["cancelled"] = True
-            return
-
-        schema, table = item["schema_name"], item["table_name"]
-        mark_item_running(item["id"])
-        refresh_job_progress(job_id)
-
-        base = {"schema": schema, "table": table}
-        src_conn, dst_conn = conns[slot], conns[slot + 1]
+            with shared["lock"]:
+                idle = shared["outstanding"] <= 0
+            if idle or shared["cancelled"] or watch.stopped:
+                return
+            continue
 
         try:
-            row = _compare_one(
-                src_conn, dst_conn, schema, table,
-                info.get((schema, table), {}),
-                candidates.get((schema, table)),
-                work_mem=work_mem,
-            )
-            save_result(job_id, dict(base, **row))
-            mark_item_done(item["id"])
-        except Exception as e:
-            broken = _rollback([src_conn, dst_conn])
-
-            # QueryCanceledError от conn.cancel() сторожа — это стоп;
-            # строку закроет mark_job_cancelled в _cancel_rest
-            if watch.stopped or watch.check():
-                save_result(job_id, dict(
-                    base, status="cancelled",
-                    message="Сравнение остановлено пользователем",
-                ))
+            if watch.check():
+                # единица не начата: таблицу пометит skipped _cancel_rest,
+                # начатую по диапазонам — раннер
                 shared["cancelled"] = True
                 return
 
+            if unit[0] == "range":
+                going = _compare_range(job_id, slot, conns, ids, work,
+                                       unit[1], unit[2], watch, shared,
+                                       work_mem)
+            else:
+                going = _compare_table_unit(job_id, slot, conns, ids, work,
+                                            unit[1], info, candidates, watch,
+                                            shared, work_mem)
+            if not going:
+                return
+        finally:
             with shared["lock"]:
-                shared["failed"] += 1
-
-            save_result(job_id, dict(base, status="error",
-                                     message=str(e)[:500]))
-            mark_item_failed(item["id"], str(e)[:500])
-
-            if broken:
-                # без живой пары воркер дальше не может; таблицы
-                # доберут остальные
-                _reopen_broken(conns, broken, ids, base=slot)
-
-        refresh_job_progress(job_id)
+                shared["outstanding"] -= 1
 
 
 def _run_worker(shared, *args):
@@ -858,6 +1274,21 @@ def _run_worker(shared, *args):
     except Exception as e:
         with shared["lock"]:
             shared["fatal"].append(e)
+
+
+def _cancel_runs(job_id, shared):
+    """Таблицы по диапазонам, не закрытые к стопу, — строка cancelled."""
+    for run in shared["runs"]:
+        if run["closed"]:
+            continue
+        base = {"schema": run["schema"], "table": run["table"]}
+        base.update(run["key"])
+        save_result(job_id, dict(
+            base, status="cancelled", chunked=_chunked(run),
+            message="Сравнение остановлено пользователем",
+        ))
+        run["closed"] = True
+        _forget_run(run)
 
 
 def run_pg_compare_job(job_id):
@@ -902,9 +1333,10 @@ def run_pg_compare_job(job_id):
         pending = [it for it in items
                    if it.get("status") not in ("done", "failed", "skipped")]
         for item in pending:
-            work.put(item)
+            work.put(("table", item))
 
-        workers = max(1, min(_parallel_of(config), len(pending)))
+        # больших таблиц по диапазонам хватает на всех воркеров
+        workers = max(1, _parallel_of(config))
 
         for _ in range(workers):
             conns.append(open_pg(source_id, readonly=True))
@@ -912,7 +1344,8 @@ def run_pg_compare_job(job_id):
 
         refresh_job_progress(job_id)
         shared = {"lock": threading.Lock(), "failed": 0, "fatal": [],
-                  "cancelled": False}
+                  "cancelled": False, "outstanding": len(pending),
+                  "runs": []}
 
         with StopWatch(job_id, conns) as watch:
             threads = [
@@ -932,6 +1365,7 @@ def run_pg_compare_job(job_id):
                 thread.join()
 
             if shared["cancelled"] or (watch.stopped and not work.empty()):
+                _cancel_runs(job_id, shared)
                 _cancel_rest(job_id)
                 return
 

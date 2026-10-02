@@ -1767,6 +1767,14 @@ def _pg_compare_payload(job):
                for item in get_job_items(job["id"])
                if item["status"] == "running"]
 
+    # таблицы, которые сейчас сравниваются по диапазонам: chunked —
+    # {checked, total, mismatched}; в results то же поле по итогу таблицы
+    progress = pg_compare.chunk_progress(job["id"])
+    for entry in running:
+        chunked = progress.get((entry["schema"], entry["table"]))
+        if chunked:
+            entry["chunked"] = chunked
+
     return {"ok": True, "job": job, "running": running,
             "current": running[0] if running else None,
             "results": pg_compare.get_results(job["id"])}
