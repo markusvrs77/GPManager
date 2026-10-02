@@ -56,10 +56,13 @@
         cmpResults: [],
         cmpTimer: null,
         cmpSeq: 0,
+        cmpDirty: false,    // опрос пришёл, пока пользователь выбирал действие: таблица ждёт перерисовки
         actions: {},        // key -> diff | full | create | skip
         loadJob: null,
+        loadPair: null,     // {src, dst} показанной загрузки
         loadItems: [],
         loadExpected: {},   // key -> {action, insert, update, del, rows}
+        loadExpectedFor: null, // id задачи, к которой относится loadExpected
         loadDelete: false,
         loadTimer: null,
         loadSeq: 0          // жива только цепочка опроса с последним номером
@@ -493,6 +496,9 @@
         st.cmpCurrent = null;
         st.actions = {};
         st.pair = null;
+        st.cmpDirty = false;
+
+        pgcmpRestoreLoad(src, dst);
 
         if (!src || !dst) {
             pgcmpRenderResults("Выберите источник и приёмник в шапке страницы.");
@@ -539,12 +545,13 @@
                 if (d.httpStatus !== 404) { pgcmpSchedulePoll(jobId, seq); }
                 return;
             }
-            pgcmpApplyCompare(d);
+            // мягко: открытый пользователем select не трогаем
+            pgcmpApplyCompare(d, true);
             if (d.job && ACTIVE[d.job.status]) { pgcmpSchedulePoll(jobId, seq); }
         });
     }
 
-    function pgcmpApplyCompare(d) {
+    function pgcmpApplyCompare(d, soft) {
         st.cmpJob = d.job;
         st.cmpCurrent = d.current || null;
         st.cmpResults = d.results || [];
@@ -557,7 +564,16 @@
                 st.actions[key] = r.status === "differs" ? "diff" : "skip";
             }
         });
-        pgcmpRenderResults();
+        pgcmpRenderResults(undefined, undefined, soft);
+    }
+
+    // фокус на select или галке таблицы результатов — пользователь выбирает
+    // действие; перерисовка закрыла бы открытый список у него под рукой
+    function pgcmpResultsBusy() {
+        var res = $("pgcmpResults");
+        var el = document.activeElement;
+        return !!(res && el && el !== res && res.contains(el) &&
+            (el.tagName === "SELECT" || el.tagName === "INPUT"));
     }
 
     function pgcmpStatusBadge(status) {
@@ -651,7 +667,9 @@
             (job.status === "stopping" ? " disabled" : "") + ">Стоп</button></div>";
     }
 
-    function pgcmpRenderResults(emptyText, errText) {
+    // soft — перерисовка по опросу: пока пользователь в таблице, она откладывается
+    // до ухода фокуса (сводка, прогресс и кнопка загрузки обновляются сразу)
+    function pgcmpRenderResults(emptyText, errText, soft) {
         var job = st.cmpJob;
         var meta = $("pgcmpResMeta");
         var res = $("pgcmpResults");
@@ -672,6 +690,15 @@
         $("pgcmpAllMissing").checked = hasMissing && st.cmpResults.every(function (r) {
             return r.status !== "no_dest" || st.actions[pgcmpKey(r.schema, r.table)] === "create";
         });
+
+        var showTable = !errText && !(!job && emptyText) &&
+            !(!st.cmpResults.length && !(job && ACTIVE[job.status]));
+        if (showTable && soft && pgcmpResultsBusy()) {
+            st.cmpDirty = true;
+            pgcmpRenderLoadBox();
+            return;
+        }
+        st.cmpDirty = false;
 
         if (errText) {
             res.innerHTML = '<div class="gpp-msg err">' + pgcmpEsc(errText) + "</div>";
@@ -970,6 +997,8 @@
             }
             pgcmpMsg("pgcmpLoadMsg", "Загрузка #" + d.job_id + " запущена.", "ok");
             st.loadExpected = expected;
+            st.loadExpectedFor = d.job_id;
+            st.loadPair = { src: body.source_connection_id, dst: body.dest_connection_id };
             st.loadDelete = !!body.delete_missing;
             st.loadItems = [];
             st.loadSummary = null;
@@ -1002,11 +1031,7 @@
                 if (d.httpStatus !== 404) { next(POLL_MS * 2); }
                 return;
             }
-            st.loadJob = d.job || st.loadJob;
-            st.loadItems = d.items || [];
-            st.loadSummary = d.summary || null;
-            pgcmpRenderLoad();
-            pgcmpRenderLoadBox();
+            pgcmpApplyLoadStatus(d);
 
             if (ACTIVE[st.loadJob.status]) {
                 next(POLL_MS);
@@ -1018,6 +1043,98 @@
                     (st.loadJob.error_message ? " — " + st.loadJob.error_message : "") + ".",
                     st.loadJob.status === "cancelled" ? "" : "err");
             }
+        });
+    }
+
+    // ответ /api/jobs/<id>/status → состояние панели загрузки
+    function pgcmpApplyLoadStatus(d) {
+        st.loadJob = d.job || st.loadJob;
+        st.loadItems = d.items || [];
+        st.loadSummary = d.summary || null;
+
+        // «ожидалось» запущенной с этой страницы загрузки уже есть (там и строки
+        // источника для полной заливки); иначе — из config задачи
+        if (st.loadJob && st.loadExpectedFor !== st.loadJob.id) {
+            var cfg = pgcmpJobConfig(st.loadJob);
+            st.loadExpected = pgcmpExpectedFromConfig(cfg);
+            st.loadExpectedFor = st.loadJob.id;
+            st.loadDelete = !!(cfg && cfg.delete_missing === true);
+        }
+        pgcmpRenderLoad();
+        pgcmpRenderLoadBox();
+    }
+
+    function pgcmpJobConfig(job) {
+        var raw = job && job.config_json;
+        if (raw && typeof raw === "object") { return raw; }
+        try { return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+    }
+
+    // config pg_diff_load: tables [{schema, table, action}], expected
+    // [{schema, table, to_insert, to_update, to_delete}] (числа сравнения), delete_missing
+    function pgcmpExpectedFromConfig(cfg) {
+        var out = {};
+        if (!cfg || typeof cfg !== "object") { return out; }
+        var nums = {};
+        (Array.isArray(cfg.expected) ? cfg.expected : []).forEach(function (e) {
+            if (e) { nums[pgcmpKey(e.schema, e.table)] = e; }
+        });
+        var del = cfg.delete_missing === true;
+        (Array.isArray(cfg.tables) ? cfg.tables : []).forEach(function (t) {
+            if (!t) { return; }
+            var key = pgcmpKey(t.schema, t.table);
+            var e = nums[key] || {};
+            if (t.action === "diff") {
+                out[key] = { action: "diff", insert: e.to_insert, update: e.to_update,
+                    del: del ? e.to_delete : null };
+            } else if (t.action === "full" || t.action === "create") {
+                // строк источника в config нет — «все строки источника»
+                out[key] = { action: t.action, rows: null };
+            }
+        });
+        return out;
+    }
+
+    // после перезагрузки страницы или смены пары: показать последнюю загрузку
+    // этой пары. Последние pg_diff_load берём из ленты (там id источника),
+    // приёмник сверяем по config задачи из /api/jobs/<id>/status
+    function pgcmpRestoreLoad(src, dst) {
+        if (st.loadJob && st.loadPair && st.loadPair.src === src && st.loadPair.dst === dst) {
+            return;
+        }
+        clearTimeout(st.loadTimer);
+        var seq = ++st.loadSeq;
+        st.loadJob = null;
+        st.loadPair = null;
+        st.loadItems = [];
+        st.loadSummary = null;
+        st.loadExpected = {};
+        st.loadExpectedFor = null;
+        pgcmpMsg("pgcmpLoadMsg", "");
+        pgcmpRenderLoad();
+        if (!src || !dst) { return; }
+
+        pgcmpApi("/api/jobs/recent?types=pg_diff_load&limit=20").then(function (d) {
+            if (seq !== st.loadSeq || !d.ok) { return; }
+            var ids = (d.jobs || []).filter(function (j) {
+                return j && j.job_type === "pg_diff_load" && Number(j.connection_id) === src;
+            }).map(function (j) { return j.id; }).slice(0, 5);
+
+            (function tryNext(i) {
+                if (i >= ids.length || seq !== st.loadSeq) { return; }
+                pgcmpApi("/api/jobs/" + ids[i] + "/status").then(function (s) {
+                    if (seq !== st.loadSeq) { return; }
+                    var cfg = s.ok ? pgcmpJobConfig(s.job) : null;
+                    if (!cfg || Number(cfg.source_connection_id) !== src ||
+                        Number(cfg.dest_connection_id) !== dst) {
+                        tryNext(i + 1);
+                        return;
+                    }
+                    st.loadPair = { src: src, dst: dst };
+                    pgcmpApplyLoadStatus(s);
+                    if (ACTIVE[st.loadJob.status]) { pgcmpPollLoad(); }
+                });
+            })(0);
         });
     }
 
@@ -1114,6 +1231,12 @@
         $("pgcmpFullBtn").addEventListener("click", pgcmpStartFull);
         $("pgcmpClearBtn").addEventListener("click", pgcmpClearSelection);
         $("pgcmpResults").addEventListener("change", pgcmpOnResultsChange);
+        // отложенная опросом перерисовка — когда фокус ушёл из таблицы
+        $("pgcmpResults").addEventListener("focusout", function () {
+            setTimeout(function () {
+                if (st.cmpDirty && !pgcmpResultsBusy()) { pgcmpRenderResults(); }
+            }, 0);
+        });
         $("pgcmpAllMissing").addEventListener("change", pgcmpOnAllMissing);
         $("pgcmpLoadBtn").addEventListener("click", pgcmpStartLoad);
 

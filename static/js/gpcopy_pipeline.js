@@ -115,6 +115,8 @@
         gpcopy_partition_diff: "партиции",
         gpcopy_sync: "sync",
         copy_pipe: "полное (COPY)",
+        pg_compare: "Сравнение баз",
+        pg_diff_load: "Загрузка разницы",
     };
 
     function srcId() { return parseInt($("gppSrc").value, 10); }

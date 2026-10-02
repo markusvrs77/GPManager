@@ -75,3 +75,11 @@ def test_dangerous_checkboxes_start_unchecked(client):
         tag = re.search(r'<input[^>]*id="%s"[^>]*>' % box_id, html).group(0)
         assert "checked" not in tag
         assert 'autocomplete="off"' in tag
+
+
+def test_pg_runs_feed_has_human_labels(client):
+    js = _static(client, "/static/js/gpcopy_pipeline.js")
+
+    # лента «Запуски» подписывает задачи режима по-человечески, а не сырым типом
+    assert 'pg_compare: "Сравнение баз"' in js
+    assert 'pg_diff_load: "Загрузка разницы"' in js
