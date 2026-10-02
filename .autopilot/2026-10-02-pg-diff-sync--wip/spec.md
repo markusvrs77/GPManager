@@ -93,6 +93,8 @@ DBA держит две базы PostgreSQL (например, прод и те�
 
 5. **Отсутствующие таблицы** создаются существующей `ddl_check.create_missing_objects(src_id, dst_id, [{schema, table}])`. Затем выполняется полная загрузка без TRUNCATE.
 
+   **Поправка D01 (слепая приёмка, после таска 02):** `create_missing_objects` вызывает Greenplum-функцию `pg_get_table_distributedby` и на PostgreSQL падает. Поэтому для PG↔PG таблица создаётся в `pg_diff_load` по каталогу PostgreSQL источника: схема, если её нет; колонки с типами и NOT NULL; первичный ключ источника; без default-ов на последовательности, потому что значения приходят из источника. Затем — полная загрузка без TRUNCATE. `ddl_check` и `sync_transport` не меняются.
+
 6. **Ключи** определяются по источнику существующими `table_catalog.fetch_primary_keys`, `fetch_unique_indexes`, `load_sync_keys` и `resolve_keys_hierarchy`. Новые читатели каталога не пишутся.
 
 7. **Охват.**

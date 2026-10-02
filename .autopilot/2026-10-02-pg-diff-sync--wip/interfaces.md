@@ -100,3 +100,53 @@ Config задачи `pg_diff_load` содержит `tables` (с `action` и `ke
 - `build_drop_temp_sql()`.
 
 Временная таблица сравнения: `pg_temp.pgcmp_src`, создаётся через `DROP IF EXISTS` + `ON COMMIT DROP`.
+
+### Из таска 02 — загрузка (бэкенд)
+
+**Функции `pg_diff_load`**
+
+- `load_diff(src, dst, schema, table, key_columns, delete_missing, stage_name) -> {insert, update, delete}`
+  - Staging: `opsentri_sync_stage`, `CREATE UNLOGGED TABLE AS SELECT … WITH NO DATA`, после загрузки — ANALYZE.
+  - DELETE выполняется только при `delete_missing is True` и только для строк, где ключ `IS NOT NULL`.
+- `load_full(src, dst, schema, table, truncate, require_empty=False) -> {rows}`
+  - При `require_empty=True` ставится LOCK и проверяется, что таблица пуста; если нет — `NotEmptyError`.
+- `run_pg_diff_load_job(job_id)`
+- `sync_sequences(conn, schema, table) -> [warnings]`
+  - Вызывается после коммита: `setval` только вперёд, по колонкам serial и identity.
+- Вспомогательные: `dest_column_flags`, `dest_table_exists`, `drop_stage`, `stage_name_for`.
+- Исключения: `DuplicateKeyError`, `NotEmptyError`.
+- Константы: `ACTIONS = ("diff", "full", "create")`.
+
+**Колонки**
+
+- Вычисляемые (generated) колонки не записываются.
+- В колонки identity ALWAYS запись идёт с `OVERRIDING SYSTEM VALUE`; в SET они не попадают, если не входят в ключ.
+
+**Маршрут `POST /api/pg/diff-load/start`**
+
+- Запрос: `{source_connection_id, dest_connection_id, compare_job_id?, delete_missing: bool, tables:[{schema, table, action}]}`.
+- Ответ: `{ok, job_id, total_items}`. Ошибка валидации — 400.
+- Какой статус сравнения допускает действие:
+  - `diff` ← `differs` | `same`;
+  - `full` ← `differs` | `same` | `duplicate_keys`;
+  - `create` ← `no_dest`.
+- Для `diff` и `create` сама задача сравнения должна быть в статусе `done`, `failed` или `cancelled`.
+- Без `compare_job_id` разрешено только `full`; таблицы прогоняются через `expand_selection`, поэтому листья партиций выбранного родителя отбрасываются.
+
+**Config задачи**
+
+`source_connection_id, dest_connection_id, compare_job_id, delete_missing, tables:[{schema, table, action, key_columns, key_source, in_dst}], expected:[…]`
+
+### Из таска 03 — интерфейс
+
+- Модуль `static/js/pg_compare.js` (IIFE). В `window` ничего не выставляется.
+- Префиксы: id DOM — `pgcmp*`, CSS-классы — `pgcmp-*`.
+- Подтверждение — `gpConfirm` (ui.js) через обёртку `pgcmpConfirm`. Если диалога нет, действие не выполняется.
+- Используемые маршруты:
+  - каталог: `/api/catalog`, `/api/catalog/schema-tables` (поля `kind`, `parent`), `/api/catalog/search`;
+  - прогресс загрузки: `/api/jobs/<id>/status`;
+  - стоп: `/api/jobs/<id>/stop`.
+
+**Контракт 02↔03.** Задача `pg_diff_load` пишет итог по таблице в поле item `error_message`:
+- `done`: `insert=N; update=M; delete=K` | `truncate+insert=N` | `create+insert=N`;
+- `failed` / `skipped`: текст причины.
