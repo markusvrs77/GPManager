@@ -663,6 +663,18 @@
         box.classList.remove("pgcmp-hide");
     }
 
+    // таблица сравнивается по диапазонам: total может расти по ходу дробления
+    function pgcmpChunkProgress(c) {
+        if (!c) { return ""; }
+        return " — диапазонов " + pgcmpEsc(pgcmpN(c.checked)) + " из " + pgcmpEsc(pgcmpN(c.total));
+    }
+
+    // итог по диапазонам для строки результата
+    function pgcmpChunkText(c) {
+        return c ? "по диапазонам: проверено " + pgcmpN(c.checked) +
+            ", несовпавших " + pgcmpN(c.mismatched) : "";
+    }
+
     function pgcmpRenderProgress() {
         var box = $("pgcmpProgress");
         var job = st.cmpJob;
@@ -673,7 +685,7 @@
         var pct = total ? Math.min(100, Math.round(doneN * 100 / total)) : 0;
         var cur = st.cmpRunning.length
             ? "Сейчас: <b>" + st.cmpRunning.map(function (t) {
-                return pgcmpEsc(t.schema + "." + t.table);
+                return pgcmpEsc(t.schema + "." + t.table) + pgcmpChunkProgress(t.chunked);
             }).join(", ") + "</b>"
             : (job.status === "stopping" ? "Останавливаю…" : "Готовлю сравнение…");
 
@@ -730,8 +742,14 @@
         } else {
             var rows = st.cmpResults.map(function (r, i) {
                 var errSt = r.status === "error" || r.status === "duplicate_keys";
+                var chunk = pgcmpChunkText(r.chunked);
+                // сервер пишет тот же итог в message сырыми числами — его не дублируем
+                var dupMsg = !!chunk && r.message === "по диапазонам: проверено " +
+                    r.chunked.checked + ", несовпавших " + r.chunked.mismatched;
                 return "<tr><td class=\"name\">" + pgcmpEsc(r.schema) + "." + pgcmpEsc(r.table) +
-                    (r.message ? '<div class="msg' + (errSt ? " err" : "") + '">' + pgcmpEsc(r.message) + "</div>" : "") +
+                    (chunk ? '<div class="msg" title="Загрузка разницы перекачает только несовпавшие диапазоны">' +
+                        pgcmpEsc(chunk) + "</div>" : "") +
+                    (r.message && !dupMsg ? '<div class="msg' + (errSt ? " err" : "") + '">' + pgcmpEsc(r.message) + "</div>" : "") +
                     "</td><td>" + pgcmpStatusBadge(r.status) + "</td>" +
                     "<td>" + pgcmpKeyCell(r) + "</td>" +
                     '<td class="num">' + pgcmpN(r.src_rows) + "</td>" +

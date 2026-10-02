@@ -83,3 +83,15 @@ def test_pg_runs_feed_has_human_labels(client):
     # лента «Запуски» подписывает задачи режима по-человечески, а не сырым типом
     assert 'pg_compare: "Сравнение баз"' in js
     assert 'pg_diff_load: "Загрузка разницы"' in js
+
+
+def test_pg_compare_script_shows_range_progress(client):
+    html = _page(client, "/gpcopy?toolkit=pg")
+    js = _static(client, "/static/js/pg_compare.js")
+
+    # новая версия скрипта, чтобы браузер не держал старый из кеша
+    assert "js/pg_compare.js?v=4" in html
+    # прогресс и итог сравнения по диапазонам берутся из поля chunked
+    assert ".chunked" in js
+    assert "диапазонов " in js
+    assert "по диапазонам: проверено " in js
