@@ -35,6 +35,8 @@ from job_manager import (
     refresh_job_progress,
 )
 
+import modules.pg_compare as pg_compare
+from modules.pg_ranges import range_predicate
 from modules.pg_sync_common import (
     StopWatch,
     open_pg,
@@ -90,10 +92,36 @@ def stage_name_for(job_id, n):
     return "stg_%d_%d" % (int(job_id), int(n))
 
 
-def build_full_select_sql(schema, table, columns):
-    """SELECT <колонки по порядку приёмника> FROM schema.table."""
-    return sql.SQL("SELECT {} FROM {}").format(_cols(None, columns),
-                                               _target(schema, table))
+def build_ranges_where(alias, ranges):
+    """
+    (pred1) OR (pred2) ... — предикаты несовпавших листьев сравнения
+    (pg_compare.get_mismatched_ranges); None — без ограничения.
+    Границы — только sql.Literal (range_predicate).
+    """
+    if ranges is None:
+        return None
+    if not ranges:
+        raise ValueError("Пустой список диапазонов")
+
+    return sql.SQL(" OR ").join(
+        sql.SQL("({})").format(range_predicate(
+            alias, r["column"], r, bool(r.get("collate_c"))))
+        for r in ranges)
+
+
+def _and_where(where):
+    return sql.SQL(" AND ({})").format(where) if where is not None         else sql.SQL("")
+
+
+def _only_where(where):
+    return sql.SQL(" WHERE {}").format(where) if where is not None         else sql.SQL("")
+
+
+def build_full_select_sql(schema, table, columns, where=None):
+    """SELECT <колонки по порядку приёмника> FROM schema.table [WHERE ...]."""
+    return sql.SQL("SELECT {} FROM {}{}").format(_cols(None, columns),
+                                                 _target(schema, table),
+                                                 _only_where(where))
 
 
 def build_stage_schema_sql():
@@ -153,19 +181,21 @@ def build_stage_null_key_sql(stage_name, key_columns):
     )
 
 
-def build_key_delete_sql(schema, table, stage_name, key_columns):
+def build_key_delete_sql(schema, table, stage_name, key_columns, where=None):
     """
     Строки приёмника с ключом, которого нет в источнике. Строки с NULL
     в ключе не трогаются: NULL = NULL не истинно, и NOT EXISTS счёл бы
-    их отсутствующими в источнике.
+    их отсутствующими в источнике. where — предикат по алиасу "t"
+    (листья сравнения): строки приёмника вне него не трогаются.
     """
     return sql.SQL(
-        "DELETE FROM {} AS {} WHERE {} AND NOT EXISTS (SELECT 1 FROM {} AS {} "
-        "WHERE {})"
+        "DELETE FROM {} AS {} WHERE {}{} AND NOT EXISTS (SELECT 1 FROM {} "
+        "AS {} WHERE {})"
     ).format(_target(schema, table), sql.Identifier("t"),
              sql.SQL(" AND ").join(
                  sql.SQL("{} IS NOT NULL").format(sql.Identifier("t", k))
                  for k in key_columns),
+             _and_where(where),
              _stage(stage_name), sql.Identifier("s"), _key_match(key_columns))
 
 
@@ -266,26 +296,28 @@ def build_key_insert_sql(schema, table, stage_name, key_columns, columns,
     )
 
 
-def _surplus_cte(left, left_alias, right, right_alias, columns):
+def _surplus_cte(left, left_alias, right, right_alias, columns,
+                 left_where=None, right_where=None):
     """
     "m"(h, c): хеш строки и сколько её копий в left сверх right
-    (разность мультимножеств EXCEPT ALL).
+    (разность мультимножеств EXCEPT ALL). *_where — один и тот же набор
+    диапазонов по алиасу своей стороны.
     """
     return sql.SQL(
         "{m} AS (SELECT {h}, count(*) AS {c} FROM ("
-        "SELECT {lh} AS {h} FROM {left} AS {la} EXCEPT ALL "
-        "SELECT {rh} AS {h} FROM {right} AS {ra}) AS {d} GROUP BY {h})"
+        "SELECT {lh} AS {h} FROM {left} AS {la}{lw} EXCEPT ALL "
+        "SELECT {rh} AS {h} FROM {right} AS {ra}{rw}) AS {d} GROUP BY {h})"
     ).format(
         m=sql.Identifier("m"), h=sql.Identifier("h"), c=sql.Identifier("c"),
         d=sql.Identifier("d"),
         lh=row_hash_sql(left_alias, columns), left=left,
-        la=sql.Identifier(left_alias),
+        la=sql.Identifier(left_alias), lw=_only_where(left_where),
         rh=row_hash_sql(right_alias, columns), right=right,
-        ra=sql.Identifier(right_alias),
+        ra=sql.Identifier(right_alias), rw=_only_where(right_where),
     )
 
 
-def _numbered_cte(source, alias, columns, extra):
+def _numbered_cte(source, alias, columns, extra, where=None):
     """
     "x"(<extra>, h, rn): у каждой копии строки свой номер в разрезе хеша,
     чтобы взять ровно нужное число копий.
@@ -293,15 +325,18 @@ def _numbered_cte(source, alias, columns, extra):
     hash_expr = row_hash_sql(alias, columns)
     return sql.SQL(
         "{x} AS (SELECT {extra}, {hash} AS {h}, row_number() OVER "
-        "(PARTITION BY {hash}) AS {rn} FROM {src} AS {a})"
+        "(PARTITION BY {hash}) AS {rn} FROM {src} AS {a}{w})"
     ).format(x=sql.Identifier("x"), extra=extra, hash=hash_expr,
              h=sql.Identifier("h"), rn=sql.Identifier("rn"),
-             src=source, a=sql.Identifier(alias))
+             src=source, a=sql.Identifier(alias), w=_only_where(where))
 
 
 def build_keyless_insert_sql(schema, table, stage_name, columns,
-                             overriding=False):
-    """INSERT недостающих копий строк: staging EXCEPT ALL приёмник."""
+                             overriding=False, ranges=None):
+    """
+    INSERT недостающих копий строк: staging EXCEPT ALL приёмник.
+    ranges — листья сравнения: обе стороны разности берутся в них.
+    """
     stage = _stage(stage_name)
     target = _target(schema, table)
 
@@ -316,14 +351,17 @@ def build_keyless_insert_sql(schema, table, stage_name, columns,
         "WITH {m}, {x} INSERT INTO {target} ({cols}){ov} SELECT {x_cols} "
         "FROM {xa} JOIN {ma} ON {m_h} = {x_h} WHERE {x_rn} <= {m_c}"
     ).format(
-        m=_surplus_cte(stage, "s", target, "t", columns),
+        m=_surplus_cte(stage, "s", target, "t", columns,
+                       build_ranges_where("s", ranges),
+                       build_ranges_where("t", ranges)),
         x=sql.SQL(
             "{x} AS (SELECT {s_cols}, {hash} AS {h}, row_number() OVER "
-            "(PARTITION BY {hash}) AS {rn} FROM {stage} AS {s})"
+            "(PARTITION BY {hash}) AS {rn} FROM {stage} AS {s}{w})"
         ).format(x=sql.Identifier("x"), s_cols=_cols("s", columns),
                  hash=row_hash_sql("s", columns),
                  h=sql.Identifier(INSERT_HASH), rn=sql.Identifier(INSERT_RN),
-                 stage=stage, s=sql.Identifier("s")),
+                 stage=stage, s=sql.Identifier("s"),
+                 w=_only_where(build_ranges_where("s", ranges))),
         target=target, cols=_cols(None, columns), x_cols=_cols("x", columns),
         ov=_overriding(overriding),
         xa=sql.Identifier("x"), ma=sql.Identifier("m"),
@@ -332,22 +370,29 @@ def build_keyless_insert_sql(schema, table, stage_name, columns,
     )
 
 
-def build_keyless_delete_sql(schema, table, stage_name, columns):
-    """DELETE лишних копий строк приёмника: приёмник EXCEPT ALL staging."""
+def build_keyless_delete_sql(schema, table, stage_name, columns,
+                             ranges=None):
+    """
+    DELETE лишних копий строк приёмника: приёмник EXCEPT ALL staging.
+    ranges — листья сравнения: строки приёмника вне них не трогаются.
+    """
     stage = _stage(stage_name)
     target = _target(schema, table)
+    t_where = build_ranges_where("t", ranges)
 
     return sql.SQL(
         "WITH {m}, {x} DELETE FROM {target} AS {t} USING {xa} JOIN {ma} "
         "ON {m_h} = {x_h} WHERE {x_rn} <= {m_c} AND {t_oid} = {x_oid} "
         "AND {t_tid} = {x_tid}"
     ).format(
-        m=_surplus_cte(target, "t", stage, "s", columns),
+        m=_surplus_cte(target, "t", stage, "s", columns, t_where,
+                       build_ranges_where("s", ranges)),
         # ctid уникален только внутри партиции — берём и tableoid
         x=_numbered_cte(target, "t", columns, sql.SQL(
             "{} AS {}, {} AS {}").format(
                 sql.Identifier("t", "tableoid"), sql.Identifier("toid"),
-                sql.Identifier("t", "ctid"), sql.Identifier("tid"))),
+                sql.Identifier("t", "ctid"), sql.Identifier("tid")),
+            t_where),
         target=target, t=sql.Identifier("t"),
         xa=sql.Identifier("x"), ma=sql.Identifier("m"),
         m_h=sql.Identifier("m", "h"), x_h=sql.Identifier("x", "h"),
@@ -636,7 +681,7 @@ def _count(cur, query):
 
 
 def _apply_keyed(cur, schema, table, stage_name, key_columns, columns,
-                 always, delete_missing):
+                 always, delete_missing, ranges=None):
     duplicates = _count(cur, build_stage_duplicate_sql(stage_name, key_columns))
     if duplicates:
         raise DuplicateKeyError(
@@ -651,8 +696,9 @@ def _apply_keyed(cur, schema, table, stage_name, key_columns, columns,
     out = {"insert": 0, "update": 0, "delete": 0}
 
     if delete_missing:
-        cur.execute(build_key_delete_sql(schema, table, stage_name,
-                                         key_columns))
+        cur.execute(build_key_delete_sql(
+            schema, table, stage_name, key_columns,
+            where=build_ranges_where("t", ranges)))
         out["delete"] = max(cur.rowcount, 0)
 
     # identity ALWAYS вне ключа UPDATE изменить не может
@@ -670,25 +716,29 @@ def _apply_keyed(cur, schema, table, stage_name, key_columns, columns,
 
 
 def _apply_keyless(cur, schema, table, stage_name, columns, always,
-                   delete_missing):
+                   delete_missing, ranges=None):
     out = {"insert": 0, "update": 0, "delete": 0}
 
     if delete_missing:
         cur.execute(build_keyless_delete_sql(schema, table, stage_name,
-                                             columns))
+                                             columns, ranges=ranges))
         out["delete"] = max(cur.rowcount, 0)
 
     cur.execute(build_keyless_insert_sql(schema, table, stage_name, columns,
-                                         overriding=bool(always)))
+                                         overriding=bool(always),
+                                         ranges=ranges))
     out["insert"] = max(cur.rowcount, 0)
     return out
 
 
 def load_diff(src_conn, dst_conn, schema, table, key_columns, delete_missing,
-              stage_name):
+              stage_name, ranges=None):
     """
     Загрузка разницы. key_columns — [] для таблицы без ключа.
     DELETE — только при delete_missing is True. -> {insert, update, delete}
+    ranges — несовпавшие листья сравнения (get_mismatched_ranges): в staging
+    только строки источника из них, DELETE и разность без ключа — тоже
+    только в них. None — вся таблица.
     """
     key_columns = list(key_columns or [])
     delete_missing = delete_missing is True
@@ -709,7 +759,8 @@ def load_diff(src_conn, dst_conn, schema, table, key_columns, delete_missing,
         cur.execute(build_drop_stage_sql(stage_name))
         cur.execute(build_create_stage_sql(schema, table, stage_name, columns))
         stream_copy(src_conn, dst_conn,
-                    build_full_select_sql(schema, table, columns),
+                    build_full_select_sql(schema, table, columns,
+                                          build_ranges_where(None, ranges)),
                     _stage(stage_name), columns)
         cur.execute(build_analyze_stage_sql(stage_name))
         dst_conn.commit()
@@ -717,10 +768,10 @@ def load_diff(src_conn, dst_conn, schema, table, key_columns, delete_missing,
         # одна транзакция приёмника на всё применение
         if key_columns:
             out = _apply_keyed(cur, schema, table, stage_name, key_columns,
-                               columns, always, delete_missing)
+                               columns, always, delete_missing, ranges)
         else:
             out = _apply_keyless(cur, schema, table, stage_name, columns,
-                                 always, delete_missing)
+                                 always, delete_missing, ranges)
 
         dst_conn.commit()
         committed = True
@@ -977,19 +1028,66 @@ def _create_and_fill(src_conn, dst_conn, schema, table, note):
         raise
 
 
+# итог сравнения, по которому таблицу можно грузить по листьям
+CHUNKED_STATUSES = ("same", "differs")
+
+
+def diff_ranges(compare_job_id, schema, table):
+    """
+    Листья сравнения для загрузки разницы:
+      None — грузить всю таблицу, как раньше (сравнение не по диапазонам,
+             нет сравнения, или листья не сходятся с итогом);
+      []   — по диапазонам всё совпало, грузить нечего;
+      [Range + column, collate_c] — только эти листья.
+    """
+    if not compare_job_id:
+        return None
+
+    row = None
+    for r in pg_compare.get_results(compare_job_id):
+        # последняя строка по таблице — актуальная
+        if (r["schema"], r["table"]) == (schema, table):
+            row = r
+
+    chunked = (row or {}).get("chunked")
+    if not chunked or row["status"] not in CHUNKED_STATUSES:
+        return None
+
+    if row["status"] == "same":
+        return []
+
+    leaves = pg_compare.get_mismatched_ranges(compare_job_id, schema, table)
+    # листа не хватает (не записан) — безопаснее вся таблица
+    if not leaves or len(leaves) != int(chunked.get("mismatched") or 0):
+        return None
+    return leaves
+
+
 def _load_one(src_conn, dst_conn, schema, table, entry, delete_missing,
-              stage_name, note):
+              stage_name, note, compare_job_id=None):
     """
     -> ("done", сообщение, вставлено строк) или ("skipped", причина, 0).
     """
     action = entry.get("action")
 
     if action == "diff":
-        out = load_diff(src_conn, dst_conn, schema, table,
-                        entry.get("key_columns") or [], delete_missing,
-                        stage_name)
-        return "done", "insert=%d; update=%d; delete=%d" % (
-            out["insert"], out["update"], out["delete"]), out["insert"]
+        ranges = diff_ranges(compare_job_id, schema, table)
+        if ranges is None:
+            out = load_diff(src_conn, dst_conn, schema, table,
+                            entry.get("key_columns") or [], delete_missing,
+                            stage_name)
+        elif ranges:
+            out = load_diff(src_conn, dst_conn, schema, table,
+                            entry.get("key_columns") or [], delete_missing,
+                            stage_name, ranges=ranges)
+        else:
+            out = {"insert": 0, "update": 0, "delete": 0}
+
+        message = "insert=%d; update=%d; delete=%d" % (
+            out["insert"], out["update"], out["delete"])
+        if ranges is not None:
+            message += "; по диапазонам: %d" % len(ranges)
+        return "done", message, out["insert"]
 
     if action == "full":
         if entry.get("in_dst") is False:
@@ -1085,7 +1183,8 @@ def run_pg_diff_load_job(job_id):
                 try:
                     status, message, inserted = _load_one(
                         conns[0], conns[1], schema, table, entry,
-                        delete_missing, stage_name, note)
+                        delete_missing, stage_name, note,
+                        compare_job_id=config.get("compare_job_id"))
                 except Exception as e:
                     broken = _rollback(conns)
 
