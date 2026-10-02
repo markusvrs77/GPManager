@@ -40,4 +40,63 @@ Config задачи `pg_diff_load` содержит `tables` (с `action` и `ke
 
 ## Построено тасками
 
-(дополняется по мере приёмки тасков)
+### Из таска 01 — сравнение (бэкенд)
+
+**`pg_sync_common`**
+
+- `open_pg(connection_id, readonly=False) -> conn` — ValueError, если подключение не postgres или не найдено.
+- `pg_connection_cfg(connection_id) -> cfg`.
+- `normalize_session(conn, readonly=False)`, `SESSION_SETTINGS`.
+- `table_columns(conn, schema, table) -> [name]` — колонки в порядке attnum.
+- `row_hash_sql(alias|None, columns) -> Composable` — `md5(ROW(cols sorted)::text)`.
+- `stream_copy(src_conn, dst_conn, select_sql, dst_table, dst_columns) -> rows`:
+  - **не коммитит и не откатывает**;
+  - ошибку источника поднимает первой.
+- `StopWatch(job_id, conns, interval=1.0)` — контекст-менеджер:
+  - атрибут `.stopped`, метод `.check()`;
+  - при стопе один раз вызывает `cancel()` у всех conns.
+
+**`pg_compare`**
+
+- `expand_selection(src, dst, schemas, tables)`.
+- `compare_table(src, dst, schema, table, key_columns)` — в `finally` откатывает обе стороны.
+- `resolve_key_candidates(source_id, tables) -> {(s,t): [{columns, source}]}`.
+- `pick_key(candidates, src_cols, dst_cols)`.
+- `save_result(job_id, row)`, `get_results(job_id)`, `latest_compare_job(src_id, dst_id)`, `run_pg_compare_job(job_id)`.
+
+**Строка результата**
+
+`{id, job_id, schema, table, status, key_columns:[...], key_source:'pk'|'unique_index'|'sync_keys'|None, src_rows, dst_rows, to_insert, to_update, to_delete, message, compared_at}`
+
+**Маршруты**
+
+- `POST /api/pg/compare/start` → `{ok, job_id, total_items}`. Ошибки: 400 `{ok:false, message}`; 502, если не удалось прочитать каталог.
+- `GET /api/pg/compare/results?job_id=` → `{ok, job, current:{schema,table}|null, results}`. Нет такой задачи — 404.
+- `GET /api/pg/compare/latest?source_connection_id=&dest_connection_id=` → тот же ответ. Если сравнений ещё не было — `{ok, job:null, current:null, results:[]}`.
+
+**Config `pg_compare`**
+
+`source_connection_id`, `dest_connection_id`, `schemas`, `selected_tables`, `tables` (развёрнутые, с `in_src`/`in_dst`), `item_action='COMPARE'`.
+
+**Важно**
+
+- `job_manager.create_job` сам заводит job_items по `config["tables"]`. Не вызывай `create_job_items` для того же набора, иначе строки задвоятся.
+- Фейки для тестов: `tests/pg_fakes.py`.
+
+**Дополнения после доработки таска 01** (прежние сигнатуры не менялись)
+
+`pg_sync_common`:
+- `table_column_types(conn, schema, table) -> {name: format_type}`.
+- `PUMP_JOIN_TIMEOUT = 60`.
+- `stream_copy`:
+  - если упал приёмник, наружу уходит ошибка приёмника, а запрос источника отменяется;
+  - если pump завис — `cancel` + `close` источника и `RuntimeError`.
+- `StopWatch` вызывает `cancel()` на каждом тике, пока стоп запрошен.
+
+`pg_compare`:
+- `pick_key(candidates, src_cols, dst_cols, valid_unique=None)`.
+- `valid_unique_keys(conn, schema, table) -> [[cols]]` — только индексы, у которых все колонки NOT NULL, нет предиката и нет выражений.
+- `build_dest_duplicate_sql(schema, table, key_columns)`.
+- `build_drop_temp_sql()`.
+
+Временная таблица сравнения: `pg_temp.pgcmp_src`, создаётся через `DROP IF EXISTS` + `ON COMMIT DROP`.

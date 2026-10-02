@@ -138,6 +138,10 @@ POLICY = {
     "api_catalog_sync_keys": "sync.run",
     "api_table_sets": {"GET": "sync.view", "POST": "sync.run"},
     "api_table_set_item": {"GET": "sync.view", "DELETE": "sync.run"},
+    # Postgres Toolkit: сравнение двух баз
+    "api_pg_compare_start": "sync.run",
+    "api_pg_compare_results": "sync.view",
+    "api_pg_compare_latest": "sync.view",
 
     # -------------------------------------------------- резервные копии
     "backups_page": "backups.view",

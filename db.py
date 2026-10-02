@@ -321,6 +321,36 @@ def init_db():
             """
         )
 
+        # итог сравнения двух баз PostgreSQL (задача pg_compare): одна строка
+        # на таблицу, пишется сразу после её сравнения
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pg_compare_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                schema_name TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                key_columns_json TEXT,
+                key_source TEXT,
+                src_rows INTEGER,
+                dst_rows INTEGER,
+                to_insert INTEGER,
+                to_update INTEGER,
+                to_delete INTEGER,
+                message TEXT,
+                compared_at TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_pg_compare_results_job
+            ON pg_compare_results (job_id)
+            """
+        )
+
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS grants_snapshots (

@@ -1731,6 +1731,144 @@ def api_gpcopy_preview_date_json():
             "message": str(e),
         }), 400
 
+# ------------------------------------------------------------------
+# Postgres Toolkit: сравнение двух баз PostgreSQL (задача pg_compare)
+# ------------------------------------------------------------------
+
+import modules.pg_compare as pg_compare  # noqa: E402
+import modules.pg_sync_common as pg_sync_common  # noqa: E402
+
+
+def _pg_compare_pair(data):
+    """(source_id, dest_id, None) или (None, None, текст ошибки)."""
+    try:
+        source_id = int(data.get("source_connection_id"))
+        dest_id = int(data.get("dest_connection_id"))
+    except (TypeError, ValueError):
+        return None, None, "Выберите источник и приёмник"
+
+    if source_id == dest_id:
+        return None, None, ("Источник и приёмник совпадают — "
+                            "выберите разные подключения")
+
+    try:
+        pg_sync_common.pg_connection_cfg(source_id)
+        pg_sync_common.pg_connection_cfg(dest_id)
+    except ValueError as e:
+        return None, None, str(e)
+
+    return source_id, dest_id, None
+
+
+def _pg_compare_payload(job):
+    current = None
+
+    for item in get_job_items(job["id"]):
+        if item["status"] == "running":
+            current = {"schema": item["schema_name"],
+                       "table": item["table_name"]}
+            break
+
+    return {"ok": True, "job": job, "current": current,
+            "results": pg_compare.get_results(job["id"])}
+
+
+@app.route("/api/pg/compare/start", methods=["POST"])
+def api_pg_compare_start():
+    data = request.get_json(silent=True) or {}
+
+    source_id, dest_id, error = _pg_compare_pair(data)
+    if error:
+        return jsonify({"ok": False, "message": error}), 400
+
+    schemas = data.get("schemas") or []
+    tables = data.get("tables") or []
+
+    if not isinstance(schemas, list) or not isinstance(tables, list):
+        return jsonify({"ok": False,
+                        "message": "Неверный формат выбора схем и таблиц"}), 400
+
+    if not schemas and not tables:
+        return jsonify({"ok": False,
+                        "message": "Не выбраны ни схемы, ни таблицы"}), 400
+
+    # схема раскрывается в момент старта: состав сверяется с каталогом
+    conns = []
+    try:
+        conns.append(pg_sync_common.open_pg(source_id, readonly=True))
+        conns.append(pg_sync_common.open_pg(dest_id))
+        expanded = pg_compare.expand_selection(conns[0], conns[1],
+                                               schemas, tables)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False,
+                        "message": "Не удалось прочитать каталог: %s" % e}), 502
+    finally:
+        for conn in conns:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    if not expanded:
+        return jsonify({"ok": False,
+                        "message": "В выбранных схемах нет таблиц"}), 400
+
+    # строки задачи create_job заводит сам по config["tables"]
+    job_id = create_job(
+        job_type="pg_compare",
+        connection_id=source_id,
+        config={
+            "source_connection_id": source_id,
+            "dest_connection_id": dest_id,
+            "schemas": schemas,
+            "selected_tables": tables,
+            "tables": expanded,
+            "item_action": "COMPARE",
+        },
+    )
+
+    threading.Thread(
+        target=pg_compare.run_pg_compare_job,
+        args=(job_id,),
+        daemon=True,
+    ).start()
+
+    return jsonify({"ok": True, "job_id": job_id,
+                    "total_items": len(expanded)})
+
+
+@app.route("/api/pg/compare/results")
+def api_pg_compare_results():
+    job_id = request.args.get("job_id", type=int)
+    if not job_id:
+        return jsonify({"ok": False, "message": "Не указан job_id"}), 400
+
+    job = get_job(job_id)
+    if not job or job.get("job_type") != "pg_compare" or not job_in_scope(job):
+        return jsonify({"ok": False, "message": "Сравнение не найдено"}), 404
+
+    return jsonify(_pg_compare_payload(job))
+
+
+@app.route("/api/pg/compare/latest")
+def api_pg_compare_latest():
+    source_id = request.args.get("source_connection_id", type=int)
+    dest_id = request.args.get("dest_connection_id", type=int)
+
+    if not source_id or not dest_id:
+        return jsonify({"ok": False,
+                        "message": "Выберите источник и приёмник"}), 400
+
+    job = pg_compare.latest_compare_job(source_id, dest_id)
+    if not job:
+        return jsonify({"ok": True, "job": None, "current": None,
+                        "results": []})
+
+    return jsonify(_pg_compare_payload(job))
+
+
 @app.route("/api/gpcopy/start-date", methods=["POST"])
 def api_gpcopy_start_date():
     data = request.get_json(silent=True) or {}

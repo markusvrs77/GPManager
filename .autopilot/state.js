@@ -11,7 +11,7 @@ window.STATE =
   "memoryFile": "AGENTS.md",
   "skillDir": "C:/Users/Meirbekk/.claude/skills/autopilot",
   "startedAt": "2026-10-02T13:05:28+05:00",
-  "updatedAt": "2026-10-02T13:30:38+05:00",
+  "updatedAt": "2026-10-02T13:53:12+05:00",
   "finishedAt": null,
   "stages": [
     {
@@ -52,7 +52,8 @@ window.STATE =
     },
     {
       "id": "review",
-      "status": "pending"
+      "status": "active",
+      "startedAt": "2026-10-02T13:43:27+05:00"
     },
     {
       "id": "final",
@@ -88,11 +89,14 @@ window.STATE =
         "app.py",
         "modules/web_auth.py"
       ],
-      "status": "in-progress",
+      "status": "repair",
       "retries": 0,
-      "repairs": 0,
+      "repairs": 1,
       "handoffs": 0,
-      "startedAt": "2026-10-02T13:30:38+05:00"
+      "startedAt": "2026-10-02T13:30:38+05:00",
+      "repairFindings": [
+        "ключ из nullable/частичного уник. индекса; дубли ключа в приёмнике; типы колонок в structure_diff; стоп между запросами; stream_copy теряет ошибку приёмника; temp-таблица после неудачного rollback"
+      ]
     },
     {
       "id": "02",
@@ -157,10 +161,22 @@ window.STATE =
     "deferred": 1,
     "note": "3 полупокрытия дописаны (галка «создать и залить», no_dest для отдельных таблиц, полная загрузка без сравнения); передача по сети только разницы — Вне рамок"
   },
-  "concerns": [],
+  "concerns": [
+    "pg_compare.py:62-111 — Reinvention: запрос pg_inherits/r-p отношений дублирует table_catalog",
+    "pg_compare.py:520 — table_columns читается дважды на таблицу",
+    "pg_compare.py:481 — latest_compare_job сканирует все задачи pg_compare",
+    "app.py:1855 — /latest не фильтрует job_in_scope как /results (доступ к подключениям проверен)",
+    "tests/test_pg_compare.py:124 — SQL подсчёта проверяется по подстрокам",
+    "tests/test_pg_sync_common.py:258 — слабая проверка завершения потока",
+    "pg_compare.py:446 — valid_unique_keys требует PG11+ (indnkeyatts); на PG10 таблица с кандидатом unique_index получит error",
+    "pg_compare.py:483 — уникальный индекс с INCLUDE никогда не становится ключом (несовпадение наборов) — безопасный откат к sync_keys/без ключа",
+    "pg_compare.py:738 — при неудачном переоткрытии соединения текущая таблица остаётся без строки результата",
+    "pg_compare.py:396 — неудачный rollback в compare_table обнаруживается только на следующей таблице",
+    "tests — ветка зависшего pump в stream_copy не покрыта"
+  ],
   "reviewers": {
-    "manifestSpec": null,
-    "craft": null
+    "manifestSpec": "ae5a310f94189b2ce",
+    "craft": "af0fb57f8090eb9c4"
   },
   "blind": null
 }
