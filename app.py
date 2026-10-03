@@ -1882,6 +1882,31 @@ def api_pg_compare_latest():
     return jsonify(_pg_compare_payload(job))
 
 
+@app.route("/api/pg/compare/<int:job_id>/export.xlsx")
+def api_pg_compare_export(job_id):
+    import modules.pg_compare_export as pg_compare_export
+
+    job = get_job(job_id)
+    if not job or job.get("job_type") != "pg_compare" or not job_in_scope(job):
+        return jsonify({"ok": False, "message": "Сравнение не найдено"}), 404
+
+    filter_name = (request.args.get("filter") or "all").strip()
+    if filter_name not in pg_compare_export.FILTERS:
+        return jsonify({"ok": False,
+                        "message": "Неизвестный фильтр: %s" % filter_name}), 400
+
+    output, filename = pg_compare_export.build_export(
+        job, filter_name, (request.args.get("q") or "").strip())
+
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument."
+                 "spreadsheetml.sheet",
+    )
+
+
 # ------------------------------------------------------------------
 # Postgres Toolkit: загрузка разницы / полная загрузка (задача pg_diff_load)
 # ------------------------------------------------------------------

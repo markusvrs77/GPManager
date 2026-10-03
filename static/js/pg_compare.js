@@ -30,6 +30,24 @@
         cancelled: "остановлено", interrupted: "прервано"
     };
     var KEY_SOURCE = { pk: "PK", unique_index: "уник. индекс", sync_keys: "сохранённый ключ" };
+    // фильтр результатов: [ключ, подпись, статусы | null — все]
+    var FILTERS = [
+        ["all", "Все", null],
+        ["needs", "Нужно выровнять", { differs: 1, no_dest: 1 }],
+        ["same", "Совпадают", { same: 1 }],
+        ["problems", "Проблемы", { structure_diff: 1, duplicate_keys: 1, error: 1,
+            no_source: 1, cancelled: 1 }]
+    ];
+    // порядок статусов при сортировке по статусу: сначала то, что выравнивать
+    var STATUS_RANK = { differs: 0, no_dest: 1, structure_diff: 2, duplicate_keys: 3,
+        error: 4, no_source: 5, cancelled: 6, same: 7 };
+    // сортируемые колонки: ключ → [заголовок, направление по умолчанию]
+    var SORT_COLS = {
+        name: ["Таблица", "asc"], status: ["Статус", "asc"],
+        src_rows: ["Источник", "desc"], dst_rows: ["Приёмник", "desc"],
+        to_insert: ["Добавить", "desc"], to_update: ["Изменить", "desc"],
+        to_delete: ["Удалить", "desc"], total: ["Всего отличий", "desc"]
+    };
     var ACTION_LABEL = {
         diff: "разница", full: "полная (TRUNCATE + INSERT)",
         create: "создать и залить", skip: "пропустить"
@@ -58,6 +76,12 @@
         cmpSeq: 0,
         cmpDirty: false,    // опрос пришёл, пока пользователь выбирал действие: таблица ждёт перерисовки
         actions: {},        // key -> diff | full | create | skip
+        resFilter: null,    // all | needs | same | problems; null — по умолчанию
+        resFilterJob: null, // id сравнения, к которому относится resFilter
+        resQuery: "",       // поиск по schema.table в результатах
+        sortCol: "total",
+        sortDir: "desc",
+        resBarHtml: "",     // последняя отрисовка фильтра: без лишней перерисовки
         loadJob: null,
         loadPair: null,     // {src, dst} показанной загрузки
         loadItems: [],
@@ -514,6 +538,7 @@
         st.cmpDirty = false;
 
         pgcmpRestoreLoad(src, dst);
+        pgcmpRenderResBar();
 
         if (!src || !dst) {
             pgcmpRenderResults("Выберите источник и приёмник в шапке страницы.");
@@ -611,12 +636,13 @@
             (src ? ' <span class="gpp-key-badge ' + cls + '">' + pgcmpEsc(src) + "</span>" : "");
     }
 
-    function pgcmpActionCell(r, i) {
+    function pgcmpActionCell(r) {
         var key = pgcmpKey(r.schema, r.table);
         var cur = st.actions[key];
+        var k = pgcmpEsc(key);
 
         if (r.status === "same" || r.status === "differs") {
-            return '<select data-act="action" data-i="' + i + '" aria-label="Действие">' +
+            return '<select data-act="action" data-k="' + k + '" aria-label="Действие">' +
                 ["diff", "full", "skip"].map(function (a) {
                     return '<option value="' + a + '"' + (cur === a ? " selected" : "") + ">" +
                         ACTION_LABEL[a] + "</option>";
@@ -624,7 +650,7 @@
         }
         if (r.status === "no_dest") {
             return '<label class="gpp-auto" style="color: var(--text);">' +
-                '<input type="checkbox" data-act="create" data-i="' + i + '"' +
+                '<input type="checkbox" data-act="create" data-k="' + k + '"' +
                 (cur === "create" ? " checked" : "") + "> создать и залить</label>";
         }
         if (r.status === "structure_diff") {
@@ -698,6 +724,185 @@
             (job.status === "stopping" ? " disabled" : "") + ">Стоп</button></div>";
     }
 
+    /* ---------------- фильтр, поиск, сортировка результатов ---------------- */
+
+    function pgcmpTotalDiff(r) {
+        return Number(r.to_insert || 0) + Number(r.to_update || 0) + Number(r.to_delete || 0);
+    }
+
+    function pgcmpFilterDef(name) {
+        for (var i = 0; i < FILTERS.length; i++) {
+            if (FILTERS[i][0] === name) { return FILTERS[i]; }
+        }
+        return FILTERS[0];
+    }
+
+    function pgcmpInFilter(r, name) {
+        var statuses = pgcmpFilterDef(name)[2];
+        return !statuses || !!statuses[r.status];
+    }
+
+    function pgcmpMatchQuery(schema, table) {
+        var q = st.resQuery.toLowerCase();
+        return !q || (schema + "." + table).toLowerCase().indexOf(q) >= 0;
+    }
+
+    // выбранный фильтр; пока пользователь не выбирал — «Нужно выровнять»,
+    // если такие таблицы есть, иначе «Все». Новое сравнение — снова по умолчанию
+    function pgcmpCurFilter() {
+        var jobId = st.cmpJob ? st.cmpJob.id : null;
+        if (st.resFilterJob !== jobId) {
+            st.resFilterJob = jobId;
+            st.resFilter = null;
+        }
+        if (st.resFilter) { return st.resFilter; }
+        return st.cmpResults.some(function (r) { return pgcmpInFilter(r, "needs"); })
+            ? "needs" : "all";
+    }
+
+    function pgcmpSortValue(r, col) {
+        if (col === "name") { return (r.schema + "." + r.table).toLowerCase(); }
+        if (col === "status") {
+            return STATUS_RANK[r.status] === undefined ? 99 : STATUS_RANK[r.status];
+        }
+        if (col === "total") { return pgcmpTotalDiff(r); }
+        var v = r[col];
+        return v == null || v === "" ? -1 : Number(v);
+    }
+
+    // строки под фильтром и поиском, отсортированные; при равенстве — по имени
+    function pgcmpVisibleResults() {
+        var filter = pgcmpCurFilter();
+        var col = SORT_COLS[st.sortCol] ? st.sortCol : "total";
+        var dir = st.sortDir === "asc" ? 1 : -1;
+        return st.cmpResults.filter(function (r) {
+            return pgcmpInFilter(r, filter) && pgcmpMatchQuery(r.schema, r.table);
+        }).sort(function (a, b) {
+            var x = pgcmpSortValue(a, col);
+            var y = pgcmpSortValue(b, col);
+            if (x !== y) { return (x < y ? -1 : 1) * dir; }
+            var na = (a.schema + "." + a.table).toLowerCase();
+            var nb = (b.schema + "." + b.table).toLowerCase();
+            return na < nb ? -1 : (na > nb ? 1 : 0);
+        });
+    }
+
+    function pgcmpResultByKey(key) {
+        for (var i = 0; i < st.cmpResults.length; i++) {
+            var r = st.cmpResults[i];
+            if (pgcmpKey(r.schema, r.table) === key) { return r; }
+        }
+        return null;
+    }
+
+    // сегменты фильтра с числом строк (с учётом поиска); Excel — когда есть что выгружать
+    function pgcmpRenderResBar() {
+        var bar = $("pgcmpResBar");
+        var has = st.cmpResults.length > 0;
+        bar.classList.toggle("pgcmp-hide", !has);
+        $("pgcmpExcelBtn").disabled = !has || !st.cmpJob;
+        if (!has) { return; }
+
+        var filter = pgcmpCurFilter();
+        var html = FILTERS.map(function (f) {
+            var n = st.cmpResults.filter(function (r) {
+                return pgcmpInFilter(r, f[0]) && pgcmpMatchQuery(r.schema, r.table);
+            }).length;
+            return '<button type="button" data-filter="' + f[0] + '" aria-pressed="' +
+                (f[0] === filter ? "true" : "false") + '">' + pgcmpEsc(f[1]) +
+                '<span class="cnt">' + pgcmpN(n) + "</span></button>";
+        }).join("");
+        if (html !== st.resBarHtml) {
+            st.resBarHtml = html;
+            $("pgcmpFilter").innerHTML = html;
+        }
+    }
+
+    function pgcmpSortHead(col) {
+        var on = st.sortCol === col;
+        var arrow = on ? (st.sortDir === "asc" ? " ▲" : " ▼") : "";
+        return '<th class="pgcmp-sortable" data-sort="' + col + '" tabindex="0" aria-sort="' +
+            (on ? (st.sortDir === "asc" ? "ascending" : "descending") : "none") + '">' +
+            pgcmpEsc(SORT_COLS[col][0]) + arrow + "</th>";
+    }
+
+    // клик или Enter / пробел по заголовку: та же колонка — смена направления
+    function pgcmpOnSortClick(e) {
+        var th = e.target.closest ? e.target.closest("th[data-sort]") : null;
+        if (!th) { return; }
+        if (e.type === "keydown") {
+            if (e.key !== "Enter" && e.key !== " ") { return; }
+            e.preventDefault();
+        }
+        var col = th.getAttribute("data-sort");
+        if (!SORT_COLS[col]) { return; }
+        if (st.sortCol === col) {
+            st.sortDir = st.sortDir === "asc" ? "desc" : "asc";
+        } else {
+            st.sortCol = col;
+            st.sortDir = SORT_COLS[col][1];
+        }
+        pgcmpRenderResults();
+        if (e.type === "keydown") {
+            var again = $("pgcmpResults").querySelector('th[data-sort="' + col + '"]');
+            if (again) { again.focus(); }
+        }
+    }
+
+    function pgcmpOnFilterClick(e) {
+        var b = e.target.closest ? e.target.closest("[data-filter]") : null;
+        if (!b) { return; }
+        st.resFilter = b.getAttribute("data-filter");
+        st.resFilterJob = st.cmpJob ? st.cmpJob.id : null;
+        pgcmpRenderResults();
+    }
+
+    function pgcmpOnResSearch() {
+        st.resQuery = ($("pgcmpResSearch").value || "").trim();
+        pgcmpRenderResults();
+    }
+
+    // выгрузка в Excel с текущим фильтром и поиском
+    function pgcmpExportExcel() {
+        var job = st.cmpJob;
+        if (!job) { return; }
+        var btn = $("pgcmpExcelBtn");
+        var url = "/api/pg/compare/" + encodeURIComponent(job.id) + "/export.xlsx?filter=" +
+            encodeURIComponent(pgcmpCurFilter()) + "&q=" + encodeURIComponent(st.resQuery);
+        btn.disabled = true;
+
+        function fail(text) {
+            btn.disabled = false;
+            if (window.gpToast) { pgcmpToast(text, "error"); } else { pgcmpMsg("pgcmpMsg", text, "err"); }
+        }
+
+        fetch(url).then(function (r) {
+            if (!r.ok) {
+                return r.text().then(function (t) {
+                    var d = null;
+                    try { d = JSON.parse(t); } catch (e) { d = null; }
+                    fail("Excel не выгружен: " + ((d && d.message) || "сервер ответил HTTP " + r.status));
+                });
+            }
+            var cd = r.headers.get("Content-Disposition") || "";
+            var m = /filename="?([^";]+)"?/i.exec(cd);
+            var name = m ? m[1] : "pg_compare_" + job.id + ".xlsx";
+            return r.blob().then(function (blob) {
+                var href = URL.createObjectURL(blob);
+                var a = document.createElement("a");
+                a.href = href;
+                a.download = name;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(function () { URL.revokeObjectURL(href); }, 1000);
+                btn.disabled = false;
+            });
+        }).catch(function (e) {
+            fail("Excel не выгружен: " + (e && e.message || e));
+        });
+    }
+
     // soft — перерисовка по опросу: пока пользователь в таблице, она откладывается
     // до ухода фокуса (сводка, прогресс и кнопка загрузки обновляются сразу)
     function pgcmpRenderResults(emptyText, errText, soft) {
@@ -715,6 +920,7 @@
 
         pgcmpRenderProgress();
         pgcmpRenderSummary();
+        pgcmpRenderResBar();
 
         var hasMissing = st.cmpResults.some(function (r) { return r.status === "no_dest"; });
         $("pgcmpAllMissingRow").classList.toggle("pgcmp-hide", !hasMissing);
@@ -740,7 +946,7 @@
                 (job && job.error_message ? '<span class="gpp-msg err">' + pgcmpEsc(job.error_message) + "</span>"
                     : "В этом сравнении нет результатов.") + "</div>";
         } else {
-            var rows = st.cmpResults.map(function (r, i) {
+            var rows = pgcmpVisibleResults().map(function (r) {
                 var errSt = r.status === "error" || r.status === "duplicate_keys";
                 var chunk = pgcmpChunkText(r.chunked);
                 // итог по диапазонам — только из chunked: сервер его в message не дублирует
@@ -755,19 +961,26 @@
                     '<td class="num">' + pgcmpN(r.to_insert) + "</td>" +
                     '<td class="num">' + pgcmpN(r.to_update) + "</td>" +
                     '<td class="num">' + pgcmpN(r.to_delete) + "</td>" +
-                    "<td>" + pgcmpActionCell(r, i) + "</td></tr>";
+                    '<td class="num">' + pgcmpN(pgcmpTotalDiff(r)) + "</td>" +
+                    "<td>" + pgcmpActionCell(r) + "</td></tr>";
             });
+            if (!rows.length && st.cmpResults.length) {
+                rows.push('<tr><td colspan="10" class="pgcmp-empty">Под фильтр и поиск ничего не подходит.</td></tr>');
+            }
             if (job && ACTIVE[job.status]) {
                 st.cmpRunning.forEach(function (t) {
+                    if (!pgcmpMatchQuery(t.schema, t.table)) { return; }
                     rows.push('<tr class="cur"><td class="name">' + pgcmpEsc(t.schema) + "." +
                         pgcmpEsc(t.table) + '</td><td><span class="pgcmp-st run">сравнивается…</span></td>' +
-                        '<td colspan="7"></td></tr>');
+                        '<td colspan="8"></td></tr>');
                 });
             }
-            var html = '<div class="pgcmp-tablewrap"><table class="pgcmp-table"><thead><tr>' +
-                "<th>Таблица</th><th>Статус</th><th>Ключ</th><th>Источник</th><th>Приёмник</th>" +
-                "<th>Добавить</th><th>Изменить</th><th>Удалить</th><th>Действие</th>" +
-                "</tr></thead><tbody>" + rows.join("") + "</tbody></table></div>";
+            // без своей обёртки: прокрутка и закреплённая шапка — у #pgcmpResults
+            var html = '<table class="pgcmp-table"><thead><tr>' +
+                pgcmpSortHead("name") + pgcmpSortHead("status") + "<th>Ключ</th>" +
+                pgcmpSortHead("src_rows") + pgcmpSortHead("dst_rows") + pgcmpSortHead("to_insert") +
+                pgcmpSortHead("to_update") + pgcmpSortHead("to_delete") + pgcmpSortHead("total") +
+                "<th>Действие</th></tr></thead><tbody>" + rows.join("") + "</tbody></table>";
             if (window.gpKeepScroll) {
                 window.gpKeepScroll(res, function () { res.innerHTML = html; });
             } else {
@@ -807,9 +1020,9 @@
     function pgcmpOnResultsChange(e) {
         var el = e.target;
         var act = el.getAttribute("data-act");
-        var r = st.cmpResults[parseInt(el.getAttribute("data-i"), 10)];
+        var key = el.getAttribute("data-k");
+        var r = key ? pgcmpResultByKey(key) : null;
         if (!r) { return; }
-        var key = pgcmpKey(r.schema, r.table);
 
         if (act === "action") {
             st.actions[key] = el.value;
@@ -884,7 +1097,12 @@
 
         var pair = st.pair;
         var ctx = st.ctxSeq;
-        var text = "Загрузка " + pgcmpPairNames(pair.src, pair.dst) + ", таблиц: " + plan.length + ". ";
+        // в загрузку идут и выбранные строки, скрытые фильтром или поиском
+        var shown = {};
+        pgcmpVisibleResults().forEach(function (r) { shown[pgcmpKey(r.schema, r.table)] = true; });
+        var hidden = plan.filter(function (r) { return !shown[pgcmpKey(r.schema, r.table)]; }).length;
+        var text = "Загрузка " + pgcmpPairNames(pair.src, pair.dst) + ", таблиц: " + plan.length +
+            (hidden ? ", в том числе скрытые фильтром: " + hidden : "") + ". ";
         if (n.diff) {
             text += "Разница — " + n.diff + " табл.: добавить " + pgcmpN(ins) + ", изменить " + pgcmpN(upd) +
                 (del ? ", удалить " + pgcmpN(dels) : "; удаление выключено") + ". ";
@@ -1268,6 +1486,11 @@
         $("pgcmpFullBtn").addEventListener("click", pgcmpStartFull);
         $("pgcmpClearBtn").addEventListener("click", pgcmpClearSelection);
         $("pgcmpResults").addEventListener("change", pgcmpOnResultsChange);
+        $("pgcmpResults").addEventListener("click", pgcmpOnSortClick);
+        $("pgcmpResults").addEventListener("keydown", pgcmpOnSortClick);
+        $("pgcmpFilter").addEventListener("click", pgcmpOnFilterClick);
+        $("pgcmpResSearch").addEventListener("input", pgcmpOnResSearch);
+        $("pgcmpExcelBtn").addEventListener("click", pgcmpExportExcel);
         // отложенная опросом перерисовка — когда фокус ушёл из таблицы
         $("pgcmpResults").addEventListener("focusout", function () {
             setTimeout(function () {

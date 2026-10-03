@@ -90,10 +90,33 @@ def test_pg_compare_script_shows_range_progress(client):
     js = _static(client, "/static/js/pg_compare.js")
 
     # новая версия скрипта, чтобы браузер не держал старый из кеша
-    assert "js/pg_compare.js?v=5" in html
+    assert "js/pg_compare.js?v=6" in html
     # прогресс и итог сравнения по диапазонам берутся из поля chunked
     assert ".chunked" in js
     assert "диапазонов " in js
     assert "по диапазонам: проверено " in js
     # итог — только из chunked: строку message JS не собирает и не сверяет
     assert "dupMsg" not in js
+
+
+def test_compare_results_scroll_inside_a_box_with_filter_bar(client):
+    import re
+
+    html = _page(client, "/gpcopy?toolkit=pg")
+    js = _static(client, "/static/js/pg_compare.js")
+
+    # список результатов прокручивается в своём контейнере, шапка закреплена
+    tag = re.search(r'<div[^>]*id="pgcmpResults"[^>]*>', html).group(0)
+    assert "pgcmp-scroll" in tag
+    css = re.search(r"\.pgcmp-scroll\s*\{([^}]*)\}", html).group(1)
+    assert "max-height: 60vh" in css and "overflow" in css
+    assert "position: sticky" in html
+    # фильтр, поиск и Excel — над прокруткой, вне #pgcmpResults
+    bar = html.index('id="pgcmpResBar"')
+    assert bar < html.index('id="pgcmpResults"')
+    for el in ('id="pgcmpFilter"', 'id="pgcmpResSearch"', 'id="pgcmpExcelBtn"'):
+        assert el in html
+    # Excel скачивается тем же маршрутом с фильтром и поиском
+    assert "/export.xlsx?filter=" in js
+    # строки адресуются ключом, а не индексом массива
+    assert "data-i=" not in js

@@ -399,6 +399,24 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
     .pgcmp-st.bad { color: var(--crit); border-color: var(--crit); }
     .pgcmp-st.run { color: var(--run); border-color: var(--run); }
     .pgcmp-empty { color: var(--text-muted); font-size: 13px; padding: 14px 4px; }
+    /* результаты сравнения: своя прокрутка, шапка закреплена */
+    .pgcmp-scroll { max-height: 60vh; overflow: auto; margin-top: 10px;
+      border: 1px solid var(--hairline); border-radius: var(--radius-sm, 6px); }
+    .pgcmp-scroll .pgcmp-table thead th { position: sticky; top: 0; z-index: 1;
+      background: var(--surface); box-shadow: inset 0 -1px 0 var(--hairline); }
+    .pgcmp-table th.pgcmp-sortable { cursor: pointer; user-select: none; }
+    .pgcmp-table th.pgcmp-sortable:hover { color: var(--text); }
+    .pgcmp-table th[aria-sort="ascending"], .pgcmp-table th[aria-sort="descending"] { color: var(--a1); }
+    .pgcmp-resbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    .pgcmp-seg { display: inline-flex; border: 1px solid var(--hairline); border-radius: var(--radius-pill);
+      overflow: hidden; }
+    .pgcmp-seg button { border: none; background: none; color: var(--text-muted); padding: 5px 12px;
+      font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+    .pgcmp-seg button + button { border-left: 1px solid var(--hairline); }
+    .pgcmp-seg button[aria-pressed="true"] { background: color-mix(in srgb, var(--a1) 14%, transparent);
+      color: var(--text); font-weight: 600; }
+    .pgcmp-seg button .cnt { font-family: var(--font-mono); margin-left: 4px; opacity: .8; }
+    .pgcmp-resbar .gpp-sc-filter { width: 220px; margin: 0; }
     </style>
 
     <div class="pgcmp-switch" id="pgcmpModeSwitch" role="group" aria-label="Режим синхронизации">
@@ -441,7 +459,14 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
             <input type="checkbox" id="pgcmpAllMissing" autocomplete="off"> Отметить все отсутствующие в приёмнике
             («создать и залить»)
         </label>
-        <div id="pgcmpResults"><div class="pgcmp-empty">Загрузка…</div></div>
+        <div class="pgcmp-resbar pgcmp-hide" id="pgcmpResBar">
+            <div class="pgcmp-seg" id="pgcmpFilter" role="group" aria-label="Фильтр результатов"></div>
+            <input class="gpp-sc-filter" id="pgcmpResSearch" type="search" autocomplete="off"
+                   placeholder="Поиск: схема.таблица" aria-label="Поиск по результатам">
+            <button type="button" class="gpp-btn sm" id="pgcmpExcelBtn"
+                    title="Скачать результаты с текущим фильтром и поиском">Excel</button>
+        </div>
+        <div class="pgcmp-scroll" id="pgcmpResults"><div class="pgcmp-empty">Загрузка…</div></div>
 
         <div id="pgcmpLoadBox" class="pgcmp-hide" style="margin-top: 14px;">
             <label class="gpp-auto">
@@ -702,6 +727,6 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 <script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
 <script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=17"></script>
 {% if (toolkit or 'gp') == 'pg' %}
-<script src="{{ url_for('static', filename='js/pg_compare.js') }}?v=5"></script>
+<script src="{{ url_for('static', filename='js/pg_compare.js') }}?v=6"></script>
 {% endif %}
 {% endblock %}
