@@ -45,6 +45,11 @@ try:
 except ImportError:
     from gpcopy import open_psycopg2_connection_by_cfg
 
+try:
+    from modules.sync_targets import normalize_targets, target_of
+except ImportError:
+    from sync_targets import normalize_targets, target_of
+
 
 DB_TYPES = ("greenplum", "postgres", "mysql", "oracle")
 
@@ -206,34 +211,99 @@ def build_create_table_sql(schema, table, columns, distributed_randomly=False):
     return sql
 
 
-def ensure_dest_table(src_conn, dst_conn, schema, table, dest_is_greenplum):
+def ensure_dest_table(src_conn, dst_conn, schema, table, dest_is_greenplum,
+                      dst_schema=None, dst_table=None):
     """
     Если таблицы нет на приёмнике — создаёт её по структуре источника.
+    schema / table — таблица источника; dst_schema / dst_table — цель
+    (карта targets), по умолчанию одноимённая. DDL — только на приёмнике.
     Возвращает True, если таблица была создана.
     """
-    if table_exists(dst_conn, schema, table):
+    dst_schema = dst_schema or schema
+    dst_table = dst_table or table
+
+    if table_exists(dst_conn, dst_schema, dst_table):
         return False
 
     columns = fetch_table_columns(src_conn, schema, table)
     cur = dst_conn.cursor()
-    cur.execute("CREATE SCHEMA IF NOT EXISTS %s" % qident(schema))
-    cur.execute(build_create_table_sql(
-        schema, table, columns, distributed_randomly=dest_is_greenplum
-    ))
-    dst_conn.commit()
+    try:
+        cur.execute("CREATE SCHEMA IF NOT EXISTS %s" % qident(dst_schema))
+        cur.execute(build_create_table_sql(
+            dst_schema, dst_table, columns,
+            distributed_randomly=dest_is_greenplum
+        ))
+        dst_conn.commit()
+    except Exception:
+        try:
+            dst_conn.rollback()
+        except Exception:
+            pass
+        raise
     return True
 
 
+def mapped_copy_columns(src_conn, dst_conn, src_schema, src_table,
+                        dst_schema, dst_table):
+    """
+    Колонки для COPY в таблицу с другим именем: колонки источника в его
+    порядке; каждая должна быть в цели (порядок колонок цели может быть
+    другим). Колонок источника нет в цели — ValueError, данные не трогаются.
+    """
+    src_cols = [c["name"] for c in
+                fetch_table_columns(src_conn, src_schema, src_table)]
+    dst_cols = {c["name"] for c in
+                fetch_table_columns(dst_conn, dst_schema, dst_table)}
+
+    if not src_cols:
+        raise ValueError("Таблицы %s.%s нет в источнике"
+                         % (src_schema, src_table))
+    if not dst_cols:
+        raise ValueError("Таблицы %s.%s нет в приёмнике"
+                         % (dst_schema, dst_table))
+
+    absent = [c for c in src_cols if c not in dst_cols]
+    if absent:
+        raise ValueError("В таблице %s.%s приёмника нет колонок источника: %s"
+                         % (dst_schema, dst_table, ", ".join(absent)))
+    return src_cols
+
+
+def build_copy_pipe_sql(src_schema, src_table, dst_schema, dst_table,
+                        columns=None):
+    """
+    (COPY ... TO STDOUT источника, COPY ... FROM STDIN приёмника).
+    columns — явный список колонок обеих сторон (таблица с другим именем,
+    порядок колонок цели может отличаться); None — как раньше, SELECT *.
+    """
+    src_full = qident(src_schema) + "." + qident(src_table)
+    dst_full = qident(dst_schema) + "." + qident(dst_table)
+
+    if columns is None:
+        return ("COPY (SELECT * FROM %s) TO STDOUT" % src_full,
+                "COPY %s FROM STDIN" % dst_full)
+
+    if not columns:
+        raise ValueError("Нет колонок для COPY %s.%s" % (src_schema, src_table))
+
+    cols = ", ".join(qident(c) for c in columns)
+    return ("COPY (SELECT %s FROM %s) TO STDOUT" % (cols, src_full),
+            "COPY %s (%s) FROM STDIN" % (dst_full, cols))
+
+
 def copy_table_pipe(src_conn, dst_conn, src_schema, src_table,
-                    dst_schema, dst_table, truncate=False, on_bytes=None):
+                    dst_schema, dst_table, truncate=False, on_bytes=None,
+                    columns=None):
     """
     Стримит таблицу источника в приёмник: COPY TO STDOUT → COPY FROM STDIN
     через os.pipe + reader-поток. Возвращает число перенесённых строк.
     on_bytes(total) вызывается по мере перекачки — для live-прогресса.
+    columns — явный список колонок (см. build_copy_pipe_sql).
     Коммитит приёмник; при ошибке откатывает и пробрасывает исключение.
     """
-    src_full = qident(src_schema) + "." + qident(src_table)
     dst_full = qident(dst_schema) + "." + qident(dst_table)
+    copy_out, copy_in = build_copy_pipe_sql(src_schema, src_table,
+                                            dst_schema, dst_table, columns)
 
     src_cur = src_conn.cursor()
     dst_cur = dst_conn.cursor()
@@ -250,9 +320,7 @@ def copy_table_pipe(src_conn, dst_conn, src_schema, src_table,
 
         def pump():
             try:
-                src_cur.copy_expert(
-                    "COPY (SELECT * FROM %s) TO STDOUT" % src_full, writer
-                )
+                src_cur.copy_expert(copy_out, writer)
             except Exception as e:
                 src_error.append(e)
             finally:
@@ -267,7 +335,7 @@ def copy_table_pipe(src_conn, dst_conn, src_schema, src_table,
         counted = _CountingReader(reader, on_bytes) if on_bytes else reader
 
         try:
-            dst_cur.copy_expert("COPY %s FROM STDIN" % dst_full, counted)
+            dst_cur.copy_expert(copy_in, counted)
         finally:
             try:
                 reader.close()
@@ -313,6 +381,22 @@ def job_config(job):
         return {}
 
 
+def validated_targets(config, items):
+    """
+    Карта targets задачи, заново проверенная по её строкам (normalize_
+    targets): ключи — среди таблиц задачи, у каждой своя цель, формат имён.
+    Конфиг мог прийти не из маршрута (расписание, перезапуск), поэтому
+    раннер ему не доверяет. Ошибка — ValueError с текстом для человека.
+    """
+    raw = config.get("targets")
+    selected = ["%s.%s" % (i["schema_name"], i["table_name"])
+                for i in items or []]
+    try:
+        return normalize_targets(raw, selected)
+    except ValueError as e:
+        raise ValueError("Карта «куда грузить» задачи неверна: %s" % e)
+
+
 def run_copy_pipe_job(job_id):
     """
     Раннер job_type='copy_pipe': полный перенос выбранных таблиц
@@ -346,6 +430,10 @@ def run_copy_pipe_job(job_id):
             truncate = True  # безопасный дефолт полного переноса
 
         dest_is_gp = normalize_db_type(dst_cfg.get("db_type")) == "greenplum"
+        # карта проверяется заново: задачу может создать и расписание из
+        # сохранённого конфига, минуя маршрут. Ошибка — задача failed до
+        # того, как тронута хоть одна таблица
+        targets = validated_targets(config, get_job_items(job_id))
 
         src_conn = open_psycopg2_connection_by_cfg(src_cfg)
         dst_conn = open_psycopg2_connection_by_cfg(dst_cfg)
@@ -399,19 +487,40 @@ def run_copy_pipe_job(job_id):
                     set_item_bytes(_item_id, total)
                     refresh_job_progress(job_id)
 
+            schema, table = item["schema_name"], item["table_name"]
+            dst_schema, dst_table = target_of(targets, schema, table)
+
             try:
-                ensure_dest_table(
-                    src_conn, dst_conn,
-                    item["schema_name"], item["table_name"],
-                    dest_is_greenplum=dest_is_gp,
-                )
-                copy_table_pipe(
-                    src_conn, dst_conn,
-                    item["schema_name"], item["table_name"],
-                    item["schema_name"], item["table_name"],
-                    truncate=truncate,
-                    on_bytes=on_bytes,
-                )
+                if (dst_schema, dst_table) == (schema, table):
+                    # без карты — прежние команды байт-в-байт
+                    ensure_dest_table(
+                        src_conn, dst_conn, schema, table,
+                        dest_is_greenplum=dest_is_gp,
+                    )
+                    copy_table_pipe(
+                        src_conn, dst_conn, schema, table, schema, table,
+                        truncate=truncate,
+                        on_bytes=on_bytes,
+                    )
+                else:
+                    # другая таблица приёмника: нет — создаём по источнику,
+                    # COPY с явным списком колонок
+                    ensure_dest_table(
+                        src_conn, dst_conn, schema, table,
+                        dest_is_greenplum=dest_is_gp,
+                        dst_schema=dst_schema, dst_table=dst_table,
+                    )
+                    columns = mapped_copy_columns(
+                        src_conn, dst_conn, schema, table,
+                        dst_schema, dst_table,
+                    )
+                    copy_table_pipe(
+                        src_conn, dst_conn, schema, table,
+                        dst_schema, dst_table,
+                        truncate=truncate,
+                        on_bytes=on_bytes,
+                        columns=columns,
+                    )
                 mark_item_done(item["id"])
             except Exception as e:
                 failed += 1

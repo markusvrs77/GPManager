@@ -650,6 +650,14 @@ def init_db():
         "ALTER TABLE pg_compare_results ADD COLUMN chunked_json TEXT"
     )
 
+    # таблица приёмника, с которой сравнивали, если она не одноимённая
+    # (карта targets): "schema.table", иначе NULL
+    ensure_column_exists(
+        "pg_compare_results",
+        "target_name",
+        "ALTER TABLE pg_compare_results ADD COLUMN target_name TEXT"
+    )
+
 
 def get_connection_by_id(connection_id):
     """

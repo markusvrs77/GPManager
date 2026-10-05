@@ -66,6 +66,11 @@ try:
 except ImportError:
     from modules.gpcopy_ip_map import write_dest_mapping_file
 
+try:
+    from modules.sync_targets import is_mapped, normalize_targets, target_of
+except ImportError:
+    from sync_targets import is_mapped, normalize_targets, target_of
+
 
 DEFAULT_GPCOPY_PATH = "/usr/local/gpdb/greenplum-db/bin/gpcopy"
 
@@ -511,15 +516,21 @@ def find_owner_item(leaf_schema, leaf_table, item_keys):
     return prefix_hit
 
 
-def owner_item_keys(items):
+def owner_item_keys(items, targets=None):
     """
     Ключи для атрибуции партиций из лога — без пропущенных строк.
 
     find_owner_item сначала ищет точное имя. Если отдельная строка
     партиции осталась в списке, её прогресс прилип бы к пропущенной
     строке, а не к корню, через который партиция на самом деле льётся.
+
+    targets — карта «источник -> цель». Строки задачи хранят имя
+    источника, а gpcopy может написать в логе имя приёмника, поэтому
+    для таблиц с картой добавляется второй ключ — по цели. Ключи
+    источника идут первыми: при совпадении имён (обмен a.x <-> a.y)
+    выигрывает таблица источника.
     """
-    return [
+    keys = [
         (
             get_item_value(item, "id"),
             get_item_value(item, "schema_name"),
@@ -528,6 +539,65 @@ def owner_item_keys(items):
         for item in items
         if get_item_value(item, "status") != "skipped"
     ]
+
+    if not targets:
+        return keys
+
+    dest_keys = []
+
+    for item_id, schema, table in keys:
+        if is_mapped(targets, schema, table):
+            dst_schema, dst_table = target_of(targets, schema, table)
+            dest_keys.append((item_id, dst_schema, dst_table))
+
+    return keys + dest_keys
+
+
+def item_owns_leaf(leaf_schema, leaf_table, item_schema, item_table,
+                   targets=None, source_pairs=()):
+    """
+    Партиция/таблица из лога относится к строке задачи — по имени
+    источника, а для таблицы с картой и по имени цели. Имя цели не
+    перехватывает то, что по имени источника принадлежит другой строке
+    задачи (source_pairs). Чистая функция.
+    """
+    if leaf_belongs_to_item(leaf_schema, leaf_table, item_schema, item_table):
+        return True
+
+    if not is_mapped(targets, item_schema, item_table):
+        return False
+
+    for schema, table in source_pairs or ():
+        if (schema, table) == (item_schema, item_table):
+            continue
+
+        if leaf_belongs_to_item(leaf_schema, leaf_table, schema, table):
+            return False
+
+    dst_schema, dst_table = target_of(targets, item_schema, item_table)
+    return leaf_belongs_to_item(leaf_schema, leaf_table, dst_schema, dst_table)
+
+
+def leaf_source_name(leaf_schema, leaf_table, source_pairs, targets=None):
+    """
+    Имя из лога -> имя в источнике. Если gpcopy отчитался именем цели
+    (или её партиции), возвращает соответствующее имя источника: по нему
+    строится дозагрузка упавших. Чистая функция.
+    """
+    for schema, table in source_pairs or ():
+        if leaf_belongs_to_item(leaf_schema, leaf_table, schema, table):
+            return (leaf_schema, leaf_table)
+
+    for schema, table in source_pairs or ():
+        if not is_mapped(targets, schema, table):
+            continue
+
+        dst_schema, dst_table = target_of(targets, schema, table)
+
+        if leaf_belongs_to_item(leaf_schema, leaf_table, dst_schema, dst_table):
+            return (schema, table + leaf_table[len(dst_table):])
+
+    return (leaf_schema, leaf_table)
 
 
 def skip_covered_items(items, source_connection_id):
@@ -650,6 +720,26 @@ def build_retry_config(config, failed_leaves, existing_mode="truncate"):
             "Все упавшие объекты уже скопированы — дозагружать нечего"
         )
 
+    # Партиция таблицы с картой в дозагрузке ушла бы в одноимённую
+    # партицию приёмника, а не в цель, — а с --truncate цель пришлось бы
+    # чистить целиком. Такие таблицы перезапускаются обычным копированием.
+    targets = config.get("targets") or {}
+    mapped_roots = []
+
+    for key in sorted(targets):
+        src_schema, src_table = key.split(".", 1)
+
+        if any(leaf_belongs_to_item(ls, lt, src_schema, src_table)
+               for ls, lt in leaves):
+            mapped_roots.append(key)
+
+    if mapped_roots:
+        raise ValueError(
+            "Дозагрузка упавших недоступна для таблиц, которые грузятся в "
+            "другую таблицу ({}) — перезапусти их копирование целиком".format(
+                ", ".join(mapped_roots[:5]))
+        )
+
     tables = [
         {"schema": schema, "table": table}
         for schema, table in leaves
@@ -668,6 +758,8 @@ def build_retry_config(config, failed_leaves, existing_mode="truncate"):
     # лежат корневые таблицы, и дозагрузка получала их вдобавок к упавшим
     # партициям — то есть переливала все таблицы целиком вместо разницы.
     retry.pop("tables", None)
+    # ни одна из оставшихся партиций не принадлежит таблице с картой
+    retry.pop("targets", None)
 
     retry["selected_tables"] = tables
     retry["expanded_tables"] = tables
@@ -848,6 +940,183 @@ def make_include_table_file(items, dbname=None):
         except Exception:
             pass
         raise
+
+
+def build_full_include_json(items, source_db, dest_db, targets=None):
+    """
+    include-table-json полного копирования: [{source, dest}] без "sql" —
+    gpcopy копирует таблицу целиком. Нужен, когда хоть одна таблица задачи
+    грузится в другую таблицу (карта targets): include-table-file имени
+    приёмника не задаёт. Таблицы без карты идут в одноимённую.
+    Чистая функция.
+    """
+    entries = []
+
+    for item in items:
+        schema_name = (
+            get_item_value(item, "schema_name")
+            or get_item_value(item, "schema")
+        )
+        table_name = (
+            get_item_value(item, "table_name")
+            or get_item_value(item, "table")
+        )
+
+        if not schema_name or not table_name:
+            continue
+
+        dst_schema, dst_table = target_of(targets, schema_name, table_name)
+
+        entries.append({
+            "source": gpcopy_full_name(source_db, schema_name, table_name),
+            "dest": gpcopy_full_name(dest_db, dst_schema, dst_table),
+        })
+
+    if not entries:
+        raise ValueError("Нет таблиц для gpcopy include-table-json")
+
+    return entries
+
+
+def make_include_table_json_file(items, source_db, dest_db, targets=None):
+    entries = build_full_include_json(items, source_db, dest_db, targets)
+
+    fd, path = tempfile.mkstemp(
+        prefix="gpcopy_include_full_",
+        suffix=".json",
+        text=True,
+    )
+
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(entries, f, ensure_ascii=False, indent=2)
+    except Exception:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        raise
+
+    return path
+
+
+def _config_table_pair(tc):
+    """(schema, table) источника из table_config задачи по датам."""
+    src = tc.get("source") or ""
+    parts = [p for p in str(src).split(".") if p]
+    schema_name = (tc.get("schema") or tc.get("schema_name")
+                   or (parts[-2] if len(parts) >= 2 else None))
+    table_name = (tc.get("table") or tc.get("table_name")
+                  or (parts[-1] if parts else None))
+
+    return schema_name, table_name
+
+
+def job_targets(config, pairs):
+    """
+    Карта targets задачи, проверенная заново на выборе этой задачи.
+    Маршрут уже проверял её, но задачу может завести и расписание с
+    сохранённым конфигом: имя цели уходит в DDL и аргументы gpcopy.
+    ValueError — карта не годится.
+    """
+    raw = config.get("targets")
+
+    if not raw:
+        return {}
+
+    return normalize_targets(
+        raw,
+        ["{}.{}".format(s, t) for s, t in pairs if s and t],
+    )
+
+
+def missing_dest_tables(dest_connection_id, pairs):
+    """
+    Каких (schema, table) нет в приёмнике. Только чтение каталога —
+    превью окна для цели, которую задача ещё только создаст.
+    """
+    pairs = list(dict.fromkeys(pairs or []))
+
+    if not pairs:
+        return set()
+
+    connection = get_connection_by_id(int(dest_connection_id))
+
+    if not connection:
+        raise Exception("Connection not found: {}".format(dest_connection_id))
+
+    conn = open_psycopg2_connection_by_cfg(connection)
+    missing = set()
+
+    try:
+        with conn.cursor() as cur:
+            for schema_name, table_name in pairs:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = %s AND c.relname = %s
+                    """,
+                    (schema_name, table_name),
+                )
+
+                if cur.fetchone() is None:
+                    missing.add((schema_name, table_name))
+    finally:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        conn.close()
+
+    return missing
+
+
+def check_mapped_flags(config, targets):
+    """
+    Режим существующих таблиц для задачи gpcopy с картой targets.
+
+    Цель с картой раннер создаёт заранее (пустой), поэтому для gpcopy она
+    всегда «существует»:
+      * --skip-existing пропустил бы её — gpcopy вернул бы 0, и строка
+        задачи стала бы done без единой строки данных;
+      * без truncate/drop/append gpcopy упал бы на существующей таблице.
+    ValueError с текстом для человека; без карты — ничего не проверяет.
+    """
+    if not targets:
+        return
+
+    if (to_bool(config.get("skip_existing"), False)
+            or "--skip-existing" in str(config.get("extra_args") or "")):
+        raise ValueError(
+            "Загрузка в другую таблицу несовместима с «пропускать "
+            "существующие» (skip-existing): цель создаётся заранее, и gpcopy "
+            "пропустил бы её без данных. Выбери truncate, drop или append")
+
+    if not any(to_bool(config.get(flag), False)
+               for flag in ("truncate", "drop", "append")):
+        raise ValueError(
+            "Для загрузки в другую таблицу выбери, что делать с "
+            "существующей целью: truncate, drop или append")
+
+
+def prepare_mapped_targets(source_connection_id, dest_connection_id,
+                           targets, pairs):
+    """
+    Для таблиц с картой цель должна быть в приёмнике до gpcopy: нет —
+    создаём по структуре источника. -> {(schema, table): ошибка}.
+    """
+    if not targets:
+        return {}
+
+    try:
+        from modules.ddl_check import ensure_mapped_targets
+    except ImportError:
+        from ddl_check import ensure_mapped_targets
+
+    return ensure_mapped_targets(
+        source_connection_id, dest_connection_id, targets, pairs)
 
 
 # ------------------------------------------------------------
@@ -1053,6 +1322,11 @@ def expand_date_entries_to_leaves(entries, leaves_by_key, date_from, date_to):
 
     entries: [{schema, table, dest_schema, dest_table, date_column, sql}]
     leaves_by_key: {(schema, table): [(leaf_schema, leaf_table), ...]}
+
+    Таблица с картой targets (entry["dest_is_root"]) грузится в цель под
+    другим именем: одноимённых партиций там нет, цель создаётся обычной
+    таблицей. Поэтому срез каждой партиции источника идёт в корень цели,
+    а не в партицию с именем источника.
     """
     expanded = []
 
@@ -1075,24 +1349,68 @@ def expand_date_entries_to_leaves(entries, leaves_by_key, date_from, date_to):
             )
 
         for leaf_schema, leaf_table in leaves:
-            expanded.append({
-                "schema": leaf_schema,
-                "table": leaf_table,
+            if entry.get("dest_is_root"):
+                dest_schema = entry["dest_schema"]
+                dest_table = entry["dest_table"]
+            else:
                 # партиции живут в той же схеме, что и родитель
-                "dest_schema": (
+                dest_schema = (
                     entry["dest_schema"]
                     if leaf_schema == entry["schema"]
                     else leaf_schema
-                ),
-                "dest_table": leaf_table,
+                )
+                dest_table = leaf_table
+
+            leaf_entry = {
+                "schema": leaf_schema,
+                "table": leaf_table,
+                "dest_schema": dest_schema,
+                "dest_table": dest_table,
                 "date_column": entry["date_column"],
                 "sql": build_date_slice_sql(
                     leaf_schema, leaf_table,
                     entry["date_column"], date_from, date_to,
                 ),
-            })
+            }
+
+            if entry.get("dest_is_root"):
+                leaf_entry["dest_is_root"] = True
+
+            expanded.append(leaf_entry)
 
     return expanded
+
+
+def check_shared_dest(entries, config):
+    """
+    Несколько срезов в одну цель (партиции таблицы с картой) — это
+    нормально для append: каждый дописывает своё. С --truncate/--drop
+    каждый срез очистил бы цель заново и оставил только последний.
+    Чистая функция; ValueError — такую задачу запускать нельзя.
+    """
+    if not (to_bool(config.get("truncate"), False)
+            or to_bool(config.get("drop"), False)):
+        return
+
+    seen = {}
+
+    for entry in entries:
+        # без карты срезы идут в одноимённые партиции — как и раньше
+        if not entry.get("dest_is_root"):
+            continue
+
+        key = (entry["dest_schema"], entry["dest_table"])
+        seen[key] = seen.get(key, 0) + 1
+
+    shared = sorted(k for k, n in seen.items() if n > 1)
+
+    if shared:
+        raise ValueError(
+            "Партиции {} грузятся в одну цель — с truncate/drop каждая "
+            "очистила бы её заново. Для таблиц с другой целью выбери "
+            "append или окно с очисткой".format(
+                ", ".join("{}.{}".format(*k) for k in shared[:5]))
+        )
 
 
 _RANGE_BOUND_RE = re.compile(
@@ -1343,7 +1661,24 @@ def build_gpcopy_date_include_json_preview(config):
     # имена до трёхчастных db.schema.table.
     table_configs = config.get("table_configs") or []
 
-    if table_configs and any(tc.get("sql") for tc in table_configs):
+    # карта «источник -> цель» (modules/sync_targets.py); без неё всё как
+    # раньше. Превью зовут и с сырой картой из запроса — проверяем здесь же.
+    sliced = bool(table_configs) and any(tc.get("sql") for tc in table_configs)
+    targets = {}
+
+    if config.get("targets"):
+        if sliced:
+            selection = [
+                "{}.{}".format(*pair)
+                for pair in (_config_table_pair(tc) for tc in table_configs)
+                if pair[0] and pair[1]
+            ]
+        else:
+            selection = config.get("selected_tables") or []
+
+        targets = normalize_targets(config.get("targets"), selection)
+
+    if sliced:
         entries = []
 
         for tc in table_configs:
@@ -1358,14 +1693,21 @@ def build_gpcopy_date_include_json_preview(config):
             dest_schema = dest.split(".")[0] if "." in dest else schema_name
             dest_table = dest.split(".")[-1] if dest else table_name
 
-            entries.append({
+            entry = {
                 "schema": schema_name,
                 "table": table_name,
                 "dest_schema": dest_schema,
                 "dest_table": dest_table,
                 "date_column": tc.get("date_column"),
                 "sql": tc["sql"],
-            })
+            }
+
+            if is_mapped(targets, schema_name, table_name):
+                entry["dest_schema"], entry["dest_table"] = target_of(
+                    targets, schema_name, table_name)
+                entry["dest_is_root"] = True
+
+            entries.append(entry)
 
         if not entries:
             raise ValueError("table_configs без SQL — нечего копировать")
@@ -1383,6 +1725,8 @@ def build_gpcopy_date_include_json_preview(config):
             cfg_date_from,
             cfg_date_to,
         )
+
+        check_shared_dest(entries, config)
 
         return [
             {
@@ -1439,7 +1783,7 @@ def build_gpcopy_date_include_json_preview(config):
 
         seen.add(key)
 
-        entries.append({
+        entry = {
             "schema": schema_name,
             "table": table_name,
             "dest_schema": target_schema or schema_name,
@@ -1448,7 +1792,14 @@ def build_gpcopy_date_include_json_preview(config):
             "sql": build_date_slice_sql(
                 schema_name, table_name, date_filter_column, date_from, date_to
             ),
-        })
+        }
+
+        if is_mapped(targets, schema_name, table_name):
+            entry["dest_schema"], entry["dest_table"] = target_of(
+                targets, schema_name, table_name)
+            entry["dest_is_root"] = True
+
+        entries.append(entry)
 
     if not entries:
         raise ValueError("Нет таблиц для gpcopy include-table-json")
@@ -1460,6 +1811,8 @@ def build_gpcopy_date_include_json_preview(config):
         date_from,
         date_to,
     )
+
+    check_shared_dest(entries, config)
 
     # Формат, который у тебя уже сработал:
     # source: adb.schema.table
@@ -1920,13 +2273,26 @@ def finalize_gpcopy_job(job_id, items, rc, stdout_data, stderr_data,
         stdout_data + "\n" + (stderr_data or "")
     )
 
+    # карта «источник -> цель»: gpcopy мог отчитаться именем цели
+    targets = config.get("targets") or {}
+    source_pairs = [
+        (get_item_value(i, "schema_name"), get_item_value(i, "table_name"))
+        for i in items
+    ]
+
     # точный список упавших — в конфиг задачи: по нему кнопка
     # «Дозагрузить упавшие» перельёт только эти партиции
     if failed_leaves:
         try:
-            config["failed_leaves"] = [list(p) for p in failed_leaves]
+            config["failed_leaves"] = [
+                list(leaf_source_name(ls, lt, source_pairs, targets))
+                for ls, lt in failed_leaves
+            ]
             # успешные тоже: по ним дозагрузка отсеет уже доехавшее
-            config["finished_leaves"] = [list(p) for p in finished]
+            config["finished_leaves"] = [
+                list(leaf_source_name(ls, lt, source_pairs, targets))
+                for ls, lt in finished
+            ]
             update_job_config(job_id, config)
         except Exception:
             pass
@@ -1938,11 +2304,11 @@ def finalize_gpcopy_job(job_id, items, rc, stdout_data, stderr_data,
 
         my_failed = [
             (ls, lt) for (ls, lt) in failed_leaves
-            if leaf_belongs_to_item(ls, lt, ischema, itable)
+            if item_owns_leaf(ls, lt, ischema, itable, targets, source_pairs)
         ]
         my_done = [
             lt for (ls, lt) in finished
-            if leaf_belongs_to_item(ls, lt, ischema, itable)
+            if item_owns_leaf(ls, lt, ischema, itable, targets, source_pairs)
         ]
 
         if my_failed:
@@ -1953,7 +2319,8 @@ def finalize_gpcopy_job(job_id, items, rc, stdout_data, stderr_data,
                     my_error = failed_errors[pair]
                     break
 
-            if len(my_failed) == 1 and my_failed[0][1] == itable:
+            if len(my_failed) == 1 and my_failed[0] in (
+                    (ischema, itable), target_of(targets, ischema, itable)):
                 # обычная таблица (не партиции) — сразу реальная причина
                 msg = "Ошибка: {}".format(my_error or error_text[:400])
             else:
@@ -2043,8 +2410,8 @@ def resume_unfinished_gpcopy_jobs():
 
         try:
             items = get_job_items(job_id)
-            item_keys = owner_item_keys(items)
             config = json.loads(job.get("config_json") or "{}")
+            item_keys = owner_item_keys(items, config.get("targets"))
         except Exception:
             continue
 
@@ -2203,28 +2570,135 @@ def run_gpcopy_job(job_id):
         if not dest_db:
             raise Exception("Destination database/dbname is empty")
 
-        # партиция, выбранная вместе с корнем, иначе ушла бы в gpcopy дважды
-        items, covered = skip_covered_items(items, source_connection_id)
-
+        # карта «источник -> цель»: проверяем заново на выборе задачи —
+        # конфиг мог прийти из расписания, минуя маршрут
         if mode == "date_filter":
-            if covered:
-                table_configs = [
-                    tc for tc in table_configs
-                    if (tc.get("schema") or tc.get("schema_name"),
-                        tc.get("table") or tc.get("table_name")) not in covered
-                ]
+            selection_pairs = [
+                _config_table_pair(tc)
+                for tc in (table_configs or selected_tables)
+                if isinstance(tc, dict)
+            ]
+        else:
+            selection_pairs = [
+                (get_item_value(i, "schema_name"),
+                 get_item_value(i, "table_name"))
+                for i in items
+            ]
+
+        targets = job_targets(config, selection_pairs)
+
+        # цель создаётся заранее: skip-existing / отсутствие режима дали
+        # бы done без данных или падение — отказываем до gpcopy
+        check_mapped_flags(config, targets)
+
+        if targets:
+            config["targets"] = targets
+
+            # очистка окна (window_targets) берёт имя приёмника из dest:
+            # у таблицы с картой это цель, даже если конфиг собирали не
+            # через маршрут
+            if mode == "date_filter":
+                table_configs = [dict(tc) for tc in table_configs]
+
+                for tc in table_configs:
+                    pair = _config_table_pair(tc)
+
+                    if is_mapped(targets, *pair):
+                        tc["dest"] = "{}.{}".format(*target_of(targets, *pair))
+
                 config["table_configs"] = table_configs
                 config.pop("date_table_configs", None)
 
+        # партиция, выбранная вместе с корнем, иначе ушла бы в gpcopy дважды
+        items, covered = skip_covered_items(items, source_connection_id)
+
+        if mode == "date_filter" and covered:
+            table_configs = [
+                tc for tc in table_configs
+                if (tc.get("schema") or tc.get("schema_name"),
+                    tc.get("table") or tc.get("table_name")) not in covered
+            ]
+            config["table_configs"] = table_configs
+            config.pop("date_table_configs", None)
+
+        # цель с картой должна быть в приёмнике до gpcopy (и до очистки
+        # окна): нет — создаём по структуре источника. Не вышло — таблица
+        # падает без загрузки, остальные идут дальше. В dry-run приёмник
+        # не трогаем.
+        if targets and not dry_run:
+            if mode == "date_filter":
+                prepare_pairs = [_config_table_pair(tc) for tc in table_configs]
+            else:
+                prepare_pairs = [
+                    (get_item_value(i, "schema_name"),
+                     get_item_value(i, "table_name"))
+                    for i in items
+                ]
+
+            target_errors = prepare_mapped_targets(
+                source_connection_id, dest_connection_id, targets,
+                prepare_pairs)
+
+            if target_errors:
+                kept_items = []
+
+                for item in items:
+                    pair = (get_item_value(item, "schema_name"),
+                            get_item_value(item, "table_name"))
+
+                    if pair in target_errors:
+                        safe_mark_item_failed(
+                            get_item_value(item, "id"),
+                            error_message=target_errors[pair][:2000],
+                        )
+                    else:
+                        kept_items.append(item)
+
+                items = kept_items
+
+                if mode == "date_filter":
+                    table_configs = [
+                        tc for tc in table_configs
+                        if _config_table_pair(tc) not in target_errors
+                    ]
+                    config["table_configs"] = table_configs
+                    config.pop("date_table_configs", None)
+
+                refresh_job_progress(job_id)
+
+                if not items or (mode == "date_filter" and not table_configs):
+                    raise Exception(
+                        "Не удалось подготовить цели в приёмнике:\n{}".format(
+                            "\n".join(target_errors.values())))
+
+        if mode == "date_filter":
             if not table_configs:
                 raise Exception("table_configs is empty")
+
+            # карта — только по оставшимся таблицам (пропущенные партиции и
+            # таблицы с неудавшейся целью из table_configs уже убраны)
+            if targets:
+                left = {"{}.{}".format(*_config_table_pair(tc))
+                        for tc in table_configs}
+                config["targets"] = {k: v for k, v in targets.items()
+                                     if k in left}
 
             include_json_file = build_gpcopy_date_include_json_file(config)
         else:
             if not selected_tables and not items:
                 raise Exception("selected_tables is empty")
 
-            include_file = make_include_table_file(items, source_db)
+            if any(is_mapped(targets,
+                             get_item_value(i, "schema_name"),
+                             get_item_value(i, "table_name"))
+                   for i in items):
+                # include-table-file не умеет имя приёмника — для задачи,
+                # где хоть одна таблица идёт в другую, весь список уходит
+                # include-table-json с dest
+                include_json_file = make_include_table_json_file(
+                    items, source_db, dest_db, targets)
+            else:
+                include_file = make_include_table_file(items, source_db)
 
         source_host = (
                 source_connection.get("host")
@@ -2332,7 +2806,8 @@ def run_gpcopy_job(job_id):
         refresh_job_progress(job_id)
 
         # ключи для атрибуции партиций из лога к таблицам задачи
-        item_keys = owner_item_keys(items)
+        # (для таблиц с картой — и по имени цели)
+        item_keys = owner_item_keys(items, targets)
 
         # сколько партиций у каждой таблицы — для пер-табличного индикатора
         try:
@@ -2343,7 +2818,8 @@ def run_gpcopy_job(job_id):
 
             _cnt_conn = open_psycopg2_connection_by_cfg(source_connection)
             try:
-                for item_id, ischema, itable in item_keys:
+                # партиции считаем в источнике — только по его именам
+                for item_id, ischema, itable in owner_item_keys(items):
                     leaves = list_leaf_partitions(_cnt_conn, ischema, itable)
                     set_item_parts(item_id, parts_total=max(len(leaves), 1))
             finally:

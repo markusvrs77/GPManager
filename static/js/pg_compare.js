@@ -89,7 +89,12 @@
         loadExpectedFor: null, // id задачи, к которой относится loadExpected
         loadDelete: false,
         loadTimer: null,
-        loadSeq: 0          // жива только цепочка опроса с последним номером
+        loadSeq: 0,         // жива только цепочка опроса с последним номером
+        targets: {},        // "schema.table" -> ввод «в таблицу» (пусто — одноимённая)
+        tgtFilter: "",
+        tgtOnlyMapped: false,
+        tgtVisible: [],     // ключи "schema.table" под фильтром, в порядке списка
+        tgtShown: 0         // строк списка «Куда грузить» отрисовано
     };
 
     /* ---------------- helpers ---------------- */
@@ -193,6 +198,270 @@
             return { schema: st.selTables[k].schema, table: st.selTables[k].table };
         });
         return { schemas: schemas, tables: tables };
+    }
+
+    /* ---------------- куда грузить ---------------- */
+
+    /* Карта targets {"src_schema.src_table": "dst_schema.dst_table"} — только
+       для отдельно отмеченных таблиц; схемы целиком грузятся в одноимённые.
+       Правила — как в modules/sync_targets.py. Карта уходит в сравнение,
+       загрузка разницы берёт её из задачи сравнения. */
+
+    var TGT_PART_RE = /^[a-z_][a-z0-9_$]{0,62}$/;
+    var TGT_CHUNK = 200;
+
+    function pgcmpTgtStoreKey() { return "pgcmp_tgt_" + pgcmpSrc() + "_" + pgcmpDst(); }
+
+    function pgcmpTgtLoad() {
+        st.targets = {};
+        try {
+            var raw = localStorage.getItem(pgcmpTgtStoreKey());
+            var obj = raw ? JSON.parse(raw) : null;
+            if (obj && typeof obj === "object") {
+                Object.keys(obj).forEach(function (k) {
+                    if (typeof obj[k] === "string" && obj[k]) { st.targets[k] = obj[k]; }
+                });
+            }
+        } catch (e) { /* приватный режим */ }
+    }
+
+    function pgcmpTgtSave() {
+        try {
+            if (Object.keys(st.targets).length) {
+                localStorage.setItem(pgcmpTgtStoreKey(), JSON.stringify(st.targets));
+            } else {
+                localStorage.removeItem(pgcmpTgtStoreKey());
+            }
+        } catch (e) { /* приватный режим */ }
+    }
+
+    // ввод -> {dst} | {error} | null (пусто)
+    function pgcmpTgtParse(value, srcSchema) {
+        var text = String(value == null ? "" : value).trim();
+        if (!text) { return null; }
+
+        var parts = text.split(".");
+        var implicit = parts.length === 1;
+
+        if (implicit) { parts = [srcSchema, parts[0]]; }
+        if (parts.length !== 2) { return { error: "нужно schema.table или table" }; }
+
+        for (var i = 0; i < 2; i++) {
+            // схема, взятая из источника, уже существует — проверяем только
+            // то, что ввёл человек (как parse_target в sync_targets.py)
+            if (implicit && i === 0) { continue; }
+            if (TGT_PART_RE.test(parts[i])) { continue; }
+            return { error: parts[i]
+                ? "«" + parts[i] + "» — только строчные латинские буквы, цифры, " +
+                  "_ и $, не с цифры, до 63 символов"
+                : "пустая часть имени" };
+        }
+
+        return { dst: parts[0] + "." + parts[1] };
+    }
+
+    // отдельно отмеченные таблицы — "schema.table", по алфавиту
+    function pgcmpTgtKeys() {
+        return Object.keys(st.selTables).map(function (k) {
+            return st.selTables[k].schema + "." + st.selTables[k].table;
+        }).sort();
+    }
+
+    // проверка карты: по строке — цель и ошибка. Таблицы схем целиком
+    // (из уже загруженного каталога) грузятся в одноимённые — с ними тоже
+    // нельзя столкнуться; остальное проверит сервер
+    function pgcmpTgtCheck() {
+        var rows = {};
+        var owner = {};
+        var out = { rows: rows, payload: {}, mapped: 0, errors: 0 };
+
+        pgcmpTgtKeys().forEach(function (k) {
+            var r = { dst: k, mapped: false, error: "" };
+            var p = pgcmpTgtParse(st.targets[k], k.slice(0, k.indexOf(".")));
+
+            if (p && p.error) { r.error = p.error; }
+            else if (p && p.dst !== k) { r.dst = p.dst; r.mapped = true; }
+
+            rows[k] = r;
+            if (!r.error) { (owner[r.dst] = owner[r.dst] || []).push(k); }
+        });
+
+        Object.keys(st.selSchemas).forEach(function (schema) {
+            if (!Array.isArray(st.tables[schema])) { return; }
+            st.tables[schema].forEach(function (t) {
+                var k = schema + "." + t.table;
+                if (!rows[k]) { (owner[k] = owner[k] || []).push(k); }
+            });
+        });
+
+        Object.keys(owner).forEach(function (dst) {
+            var list = owner[dst];
+            if (list.length < 2) { return; }
+            list.forEach(function (k) {
+                if (!rows[k] || !rows[k].mapped) { return; }
+                rows[k].error = "в " + dst + " уже грузится " +
+                    list.filter(function (o) { return o !== k; }).join(", ") +
+                    " — у каждой таблицы должна быть своя цель";
+            });
+        });
+
+        Object.keys(rows).forEach(function (k) {
+            var r = rows[k];
+            if (r.error) { out.errors += 1; return; }
+            if (r.mapped) { out.mapped += 1; out.payload[k] = r.dst; }
+        });
+
+        return out;
+    }
+
+    // текст ошибки карты для запуска или ""
+    function pgcmpTgtError(chk) {
+        if (!chk.errors) { return ""; }
+        var first = "";
+        Object.keys(chk.rows).some(function (k) {
+            if (chk.rows[k].error) { first = k + ": " + chk.rows[k].error; return true; }
+            return false;
+        });
+        return "«Куда грузить»: ошибок — " + chk.errors + ". " + first;
+    }
+
+    function pgcmpTgtRowHtml(k, i) {
+        return '<div class="gpp-tgt-row" data-k="' + pgcmpEsc(k) + '">' +
+            '<span class="src" title="' + pgcmpEsc(k) + '">' + pgcmpEsc(k) + "</span>" +
+            '<span class="arr" aria-hidden="true">→</span>' +
+            '<input type="text" spellcheck="false" autocomplete="off" data-k="' + pgcmpEsc(k) +
+            '" placeholder="' + pgcmpEsc(k) + '" value="' + pgcmpEsc(st.targets[k] || "") +
+            '" aria-label="' + pgcmpEsc("Таблица приёмника для " + k) +
+            '" aria-describedby="pgcmpTgtErr' + i + '">' +
+            '<div class="err" id="pgcmpTgtErr' + i + '"></div></div>';
+    }
+
+    function pgcmpTgtPaint(chk) {
+        var list = $("pgcmpTgtList");
+        if (!list) { return; }
+        list.querySelectorAll(".gpp-tgt-row").forEach(function (row) {
+            var r = chk.rows[row.getAttribute("data-k")];
+            if (!r) { return; }
+            var input = row.querySelector("input");
+            row.classList.toggle("mapped", r.mapped && !r.error);
+            input.classList.toggle("bad", Boolean(r.error));
+            input.setAttribute("aria-invalid", r.error ? "true" : "false");
+            row.querySelector(".err").textContent = r.error;
+        });
+    }
+
+    function pgcmpTgtCount(chk) {
+        var cnt = $("pgcmpTgtCount");
+        if (!cnt) { return; }
+        var n = Object.keys(chk.rows).length;
+        if (!n) {
+            cnt.innerHTML = Object.keys(st.selSchemas).length
+                ? "— схемы целиком грузятся в одноимённые таблицы"
+                : "— отметьте отдельные таблицы";
+            return;
+        }
+        cnt.innerHTML = "— переназначено: <b>" + pgcmpN(chk.mapped) + "</b> из " + pgcmpN(n) +
+            (chk.errors ? ' · <span class="bad">ошибок: ' + pgcmpN(chk.errors) + "</span>" : "");
+    }
+
+    function pgcmpTgtAppend() {
+        var list = $("pgcmpTgtList");
+        var upto = Math.min(st.tgtVisible.length, st.tgtShown + TGT_CHUNK);
+        var html = "";
+        for (var i = st.tgtShown; i < upto; i++) { html += pgcmpTgtRowHtml(st.tgtVisible[i], i); }
+        if (html) { list.insertAdjacentHTML("beforeend", html); }
+        st.tgtShown = upto;
+        $("pgcmpTgtMore").textContent = upto < st.tgtVisible.length
+            ? "показано " + pgcmpN(upto) + " из " + pgcmpN(st.tgtVisible.length) + " — прокрутите ниже"
+            : "";
+    }
+
+    // счётчик — всегда, список — только в раскрытом блоке
+    function pgcmpTgtRender() {
+        var box = $("pgcmpTgt");
+        if (!box) { return; }
+        var chk = pgcmpTgtCheck();
+        pgcmpTgtCount(chk);
+        if (!box.open) { return; }
+
+        var list = $("pgcmpTgtList");
+        var f = st.tgtFilter.toLowerCase();
+        st.tgtVisible = pgcmpTgtKeys().filter(function (k) {
+            if (st.tgtOnlyMapped && !String(st.targets[k] || "").trim()) { return false; }
+            return !f || k.toLowerCase().indexOf(f) !== -1 ||
+                (chk.rows[k].mapped && chk.rows[k].dst.indexOf(f) !== -1);
+        });
+        st.tgtShown = 0;
+
+        if (!Object.keys(chk.rows).length) {
+            list.innerHTML = '<div class="pgcmp-empty" style="padding: 8px 10px;">' +
+                "Отметьте отдельные таблицы в дереве выше.</div>";
+            $("pgcmpTgtMore").textContent = "";
+            return;
+        }
+
+        list.innerHTML = '<div class="gpp-tgt-head"><span>Источник</span><span></span>' +
+            "<span>В таблицу приёмника</span></div>" +
+            (st.tgtVisible.length ? "" : '<div class="pgcmp-empty" style="padding: 8px 10px;">' +
+                "Под фильтр ничего не подходит.</div>");
+        pgcmpTgtAppend();
+        pgcmpTgtPaint(chk);
+    }
+
+    function pgcmpTgtOnInput(e) {
+        var input = e.target;
+        if (input.tagName !== "INPUT" || !input.hasAttribute("data-k")) { return; }
+        var k = input.getAttribute("data-k");
+
+        // заглавные сервер не принимает — приводим сразу при вводе
+        var v = input.value;
+        var low = v.toLowerCase();
+        if (v !== low) {
+            var a = input.selectionStart;
+            var b = input.selectionEnd;
+            input.value = low;
+            try { input.setSelectionRange(a, b); } catch (err) { /* без выделения */ }
+        }
+
+        if (low.trim()) { st.targets[k] = low; } else { delete st.targets[k]; }
+        pgcmpTgtSave();
+
+        var chk = pgcmpTgtCheck();
+        pgcmpTgtCount(chk);
+        pgcmpTgtPaint(chk);
+    }
+
+    function pgcmpTgtWire() {
+        var box = $("pgcmpTgt");
+        if (!box) { return; }
+        box.addEventListener("toggle", function () { if (box.open) { pgcmpTgtRender(); } });
+        $("pgcmpTgtList").addEventListener("input", pgcmpTgtOnInput);
+        $("pgcmpTgtList").addEventListener("scroll", function () {
+            var list = $("pgcmpTgtList");
+            if (st.tgtShown < st.tgtVisible.length &&
+                list.scrollTop + list.clientHeight > list.scrollHeight - 120) {
+                pgcmpTgtAppend();
+                pgcmpTgtPaint(pgcmpTgtCheck());
+            }
+        });
+        $("pgcmpTgtFilter").addEventListener("input", function () {
+            st.tgtFilter = ($("pgcmpTgtFilter").value || "").trim();
+            pgcmpTgtRender();
+        });
+        $("pgcmpTgtOnlyMapped").addEventListener("change", function () {
+            st.tgtOnlyMapped = $("pgcmpTgtOnlyMapped").checked;
+            pgcmpTgtRender();
+        });
+        $("pgcmpTgtReset").addEventListener("click", function () {
+            var n = 0;
+            pgcmpTgtKeys().forEach(function (k) {
+                if (st.targets[k]) { delete st.targets[k]; n += 1; }
+            });
+            if (!n) { return; }
+            pgcmpTgtSave();
+            pgcmpTgtRender();
+            pgcmpToast("Сброшено переназначений: " + pgcmpN(n), "info");
+        });
     }
 
     /* ---------------- режим ---------------- */
@@ -384,6 +653,8 @@
         if (nS) { parts.push("схем целиком: " + nS); }
         if (nT) { parts.push("отдельных таблиц: " + nT); }
         $("pgcmpSelCount").textContent = parts.length ? "— " + parts.join(", ") : "— ничего не выбрано";
+        // список «Куда грузить» — это отдельно отмеченные таблицы
+        pgcmpTgtRender();
     }
 
     function pgcmpOnTreeChange(e) {
@@ -483,7 +754,13 @@
         if (!err && !sel.schemas.length && !sel.tables.length) {
             err = "Отметьте схемы целиком и/или отдельные таблицы.";
         }
-        if (err) { pgcmpMsg("pgcmpMsg", err, "err"); return; }
+        var tgt = pgcmpTgtCheck();
+        if (!err) { err = pgcmpTgtError(tgt); }
+        if (err) {
+            pgcmpMsg("pgcmpMsg", err, "err");
+            if (tgt.errors) { $("pgcmpTgt").open = true; }
+            return;
+        }
 
         var src = pgcmpSrc();
         var dst = pgcmpDst();
@@ -492,13 +769,17 @@
         btn.disabled = true;
         pgcmpMsg("pgcmpMsg", "Запускаю сравнение…");
 
-        pgcmpApi("/api/pg/compare/start", "POST", {
+        var body = {
             source_connection_id: src,
             dest_connection_id: dst,
             schemas: sel.schemas,
             tables: sel.tables,
             parallel: parallel
-        }).then(function (d) {
+        };
+        // без переназначений тело запроса прежнее: поля нет
+        if (tgt.mapped) { body.targets = tgt.payload; }
+
+        pgcmpApi("/api/pg/compare/start", "POST", body).then(function (d) {
             btn.disabled = false;
             if (ctx !== st.ctxSeq) {
                 // пара или режим сменились: ответ к текущему экрану не относится
@@ -513,6 +794,7 @@
             }
             pgcmpMsg("pgcmpMsg", "Сравнение #" + d.job_id + " запущено" +
                 (d.total_items ? ": таблиц — " + pgcmpN(d.total_items) : "") +
+                (tgt.mapped ? ", в другие таблицы — " + pgcmpN(tgt.mapped) : "") +
                 ". Базы при этом не меняются.", "ok");
             st.pair = { src: src, dst: dst };
             st.cmpJob = { id: d.job_id, status: "running", total_items: d.total_items };
@@ -742,9 +1024,10 @@
         return !statuses || !!statuses[r.status];
     }
 
-    function pgcmpMatchQuery(schema, table) {
+    function pgcmpMatchQuery(schema, table, target) {
         var q = st.resQuery.toLowerCase();
-        return !q || (schema + "." + table).toLowerCase().indexOf(q) >= 0;
+        return !q || (schema + "." + table).toLowerCase().indexOf(q) >= 0 ||
+            (!!target && String(target).toLowerCase().indexOf(q) >= 0);
     }
 
     // выбранный фильтр; пока пользователь не выбирал — «Нужно выровнять»,
@@ -776,7 +1059,7 @@
         var col = SORT_COLS[st.sortCol] ? st.sortCol : "total";
         var dir = st.sortDir === "asc" ? 1 : -1;
         return st.cmpResults.filter(function (r) {
-            return pgcmpInFilter(r, filter) && pgcmpMatchQuery(r.schema, r.table);
+            return pgcmpInFilter(r, filter) && pgcmpMatchQuery(r.schema, r.table, r.target);
         }).sort(function (a, b) {
             var x = pgcmpSortValue(a, col);
             var y = pgcmpSortValue(b, col);
@@ -806,7 +1089,7 @@
         var filter = pgcmpCurFilter();
         var html = FILTERS.map(function (f) {
             var n = st.cmpResults.filter(function (r) {
-                return pgcmpInFilter(r, f[0]) && pgcmpMatchQuery(r.schema, r.table);
+                return pgcmpInFilter(r, f[0]) && pgcmpMatchQuery(r.schema, r.table, r.target);
             }).length;
             return '<button type="button" data-filter="' + f[0] + '" aria-pressed="' +
                 (f[0] === filter ? "true" : "false") + '">' + pgcmpEsc(f[1]) +
@@ -951,6 +1234,8 @@
                 var chunk = pgcmpChunkText(r.chunked);
                 // итог по диапазонам — только из chunked: сервер его в message не дублирует
                 return "<tr><td class=\"name\">" + pgcmpEsc(r.schema) + "." + pgcmpEsc(r.table) +
+                    (r.target ? ' <span class="gpp-tgt-to" title="Сравнивается и грузится в эту таблицу приёмника">→ ' +
+                        pgcmpEsc(r.target) + "</span>" : "") +
                     (chunk ? '<div class="msg" title="Загрузка разницы перекачает только несовпавшие диапазоны">' +
                         pgcmpEsc(chunk) + "</div>" : "") +
                     (r.message ? '<div class="msg' + (errSt ? " err" : "") + '">' + pgcmpEsc(r.message) + "</div>" : "") +
@@ -1110,6 +1395,8 @@
         if (n.full) { text += "Полная (TRUNCATE + INSERT) — " + n.full + " табл. "; }
         if (n.create) { text += "Создать и залить — " + n.create + " табл. "; }
         if (n.full || n.create) { text += "Строк источника для полной заливки: " + pgcmpN(fullRows) + ". "; }
+        var nMapped = plan.filter(function (r) { return !!r.target; }).length;
+        if (nMapped) { text += "В другие таблицы (по карте сравнения) — " + nMapped + " табл. "; }
         text += "Источник только читается, каждая таблица меняется одной транзакцией.";
 
         var tables = plan.map(function (r) {
@@ -1146,6 +1433,13 @@
         if (err) { pgcmpMsg("pgcmpMsg", err, "err"); return; }
         if (st.loadJob && ACTIVE[st.loadJob.status]) {
             pgcmpMsg("pgcmpMsg", "Дождитесь окончания текущей загрузки #" + st.loadJob.id + ".", "err");
+            return;
+        }
+        // без сравнения карту «Куда грузить» шлём сами — по таблицам запроса
+        var tgtFull = pgcmpTgtCheck();
+        if (tgtFull.errors) {
+            pgcmpMsg("pgcmpMsg", pgcmpTgtError(tgtFull), "err");
+            $("pgcmpTgt").open = true;
             return;
         }
 
@@ -1206,13 +1500,20 @@
             pgcmpMsg("pgcmpMsg", "");
 
             var expected = {};
-            tables.forEach(function (t) { expected[pgcmpKey(t.schema, t.table)] = { action: "full", rows: null }; });
+            var fullTargets = {};
+            tables.forEach(function (t) {
+                expected[pgcmpKey(t.schema, t.table)] = { action: "full", rows: null };
+                var name = t.schema + "." + t.table;
+                if (tgtFull.payload[name]) { fullTargets[name] = tgtFull.payload[name]; }
+            });
+            var nMapped = Object.keys(fullTargets).length;
 
             pgcmpConfirm("pgcmpMsg", "Полная загрузка без сравнения " + pgcmpPairNames(src, dst) +
                 ": TRUNCATE + INSERT для " + tables.length + " табл. Данные этих таблиц в приёмнике " +
                 "будут заменены данными источника; каждая таблица — одной транзакцией. Таблицы, " +
                 "которых нет в приёмнике, будут пропущены — создать их можно через «Сравнить» и " +
-                "галку «создать и залить».", {
+                "галку «создать и залить»." +
+                (nMapped ? " В другие таблицы из «Куда грузить» — " + nMapped + " табл." : ""), {
                 title: "Полная загрузка (TRUNCATE + INSERT)?",
                 confirmText: "TRUNCATE + INSERT",
                 danger: true
@@ -1222,12 +1523,16 @@
                     pgcmpMsg("pgcmpMsg", "Пара подключений или режим сменились — загрузка не запущена.", "err");
                     return;
                 }
-                pgcmpPostLoad({
+                var body = {
                     source_connection_id: src,
                     dest_connection_id: dst,
                     delete_missing: false,
                     tables: tables
-                }, expected, ctx);
+                };
+                // без переназначений тело прежнее; с compare_job_id карту
+                // берёт сервер из сравнения, здесь сравнения нет
+                if (nMapped) { body.targets = fullTargets; }
+                pgcmpPostLoad(body, expected, ctx);
             });
         });
     }
@@ -1421,6 +1726,17 @@
         }
     }
 
+    // цель таблицы в загрузке: из config задачи, а у только что запущенной
+    // (config ещё не пришёл) — из показанного сравнения
+    function pgcmpLoadTarget(cfg, schema, table) {
+        if (cfg) {
+            var map = cfg.targets && typeof cfg.targets === "object" ? cfg.targets : {};
+            return map[schema + "." + table] || "";
+        }
+        var r = pgcmpResultByKey(pgcmpKey(schema, table));
+        return r && r.target ? r.target : "";
+    }
+
     function pgcmpRenderLoad() {
         var box = $("pgcmpLoad");
         var job = st.loadJob;
@@ -1441,11 +1757,14 @@
             (active ? '<button type="button" class="gpp-btn sm stop" id="pgcmpLoadStop"' +
                 (job.status === "stopping" ? " disabled" : "") + ">Стоп</button>" : "") + "</div>";
 
+        var cfg = pgcmpJobConfig(job);
         var rows = st.loadItems.map(function (item) {
             var key = pgcmpKey(item.schema_name, item.table_name);
             var exp = st.loadExpected[key];
             var action = exp ? ACTION_LABEL[exp.action] : (item.action || "");
+            var to = pgcmpLoadTarget(cfg, item.schema_name, item.table_name);
             return '<tr><td class="name">' + pgcmpEsc(item.schema_name) + "." + pgcmpEsc(item.table_name) +
+                (to ? ' <span class="gpp-tgt-to">→ ' + pgcmpEsc(to) + "</span>" : "") +
                 "</td><td>" + pgcmpEsc(action) + "</td><td>" + pgcmpEsc(pgcmpExpectedText(exp)) +
                 "</td><td>" + pgcmpItemDone(item) + "</td></tr>";
         });
@@ -1461,6 +1780,9 @@
 
     function pgcmpOnPairChange(srcChanged) {
         st.ctxSeq++;
+        // карта «Куда грузить» своя у каждой пары подключений
+        pgcmpTgtLoad();
+        pgcmpTgtRender();
         if (st.mode !== "compare") {
             if (srcChanged) { st.catalogFor = null; }
             return;
@@ -1499,6 +1821,9 @@
         });
         $("pgcmpAllMissing").addEventListener("change", pgcmpOnAllMissing);
         $("pgcmpLoadBtn").addEventListener("click", pgcmpStartLoad);
+        pgcmpTgtWire();
+        pgcmpTgtLoad();
+        pgcmpTgtRender();
 
         $("pgcmpProgress").addEventListener("click", function (e) {
             if (e.target.id !== "pgcmpCmpStop" || !st.cmpJob) { return; }

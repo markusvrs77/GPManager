@@ -78,6 +78,10 @@
         schemaView: "all",         // all | parents | plain
         schemaLimit: 300,          // сколько строк отрендерено (infinite scroll)
         expandedParent: null,      // родитель, чьи партиции раскрыты
+        targets: {},               // "schema.table" -> ввод «в таблицу» (пусто — одноимённая)
+        tgtFilter: "",             // фильтр списка «Куда грузить»
+        tgtOnlyMapped: false,      // показывать только переназначенные
+        tgtShown: 0,               // строк списка «Куда грузить» отрисовано
     };
 
     function modeName() {
@@ -175,6 +179,302 @@
             var raw = localStorage.getItem(persistKey());
             if (raw) { JSON.parse(raw).forEach(function (k) { state.sel.add(k); }); }
         } catch (e) { /* ignore */ }
+    }
+
+    /* ---------------- куда грузить: таблица источника -> приёмника ---------------- */
+
+    /* Карта targets {"src_schema.src_table": "dst_schema.dst_table"} уходит
+       во все запуски, кроме «Партиций целиком». Правила — как в
+       modules/sync_targets.py: каждая часть имени ^[a-z_][a-z0-9_$]{0,62}$,
+       «table» берёт схему источника, пустое или равное источнику — карты нет,
+       две таблицы в одну цель нельзя, и цель не может быть одноимённой
+       целью другой выбранной таблицы без карты. */
+
+    var TGT_PART_RE = /^[a-z_][a-z0-9_$]{0,62}$/;
+    var TGT_CHUNK = 200;
+
+    // карта своя у каждой пары: имя цели — это имя в конкретном приёмнике
+    function tgtKey() { return "gpp_tgt_" + srcId() + "_" + dstId(); }
+
+    function tgtLoad() {
+        state.targets = {};
+        try {
+            var raw = localStorage.getItem(tgtKey());
+            var obj = raw ? JSON.parse(raw) : null;
+            if (obj && typeof obj === "object") {
+                Object.keys(obj).forEach(function (k) {
+                    if (typeof obj[k] === "string" && obj[k]) { state.targets[k] = obj[k]; }
+                });
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    function tgtSave() {
+        try {
+            var keys = Object.keys(state.targets);
+            if (keys.length) {
+                localStorage.setItem(tgtKey(), JSON.stringify(state.targets));
+            } else {
+                localStorage.removeItem(tgtKey());
+            }
+        } catch (e) { /* quota — не критично */ }
+    }
+
+    // «Партиции целиком» карту не принимают — блок выключен
+    function tgtOff() { return state.mode === "part"; }
+
+    // ввод -> {dst} | {error} | null (пусто)
+    function tgtParse(value, srcKey) {
+        var text = String(value == null ? "" : value).trim();
+        if (!text) { return null; }
+
+        var srcSchema = srcKey.slice(0, srcKey.indexOf("."));
+        var parts = text.split(".");
+        var implicit = parts.length === 1;
+
+        if (implicit) { parts = [srcSchema, parts[0]]; }
+        if (parts.length !== 2) { return { error: "нужно schema.table или table" }; }
+
+        for (var i = 0; i < 2; i++) {
+            // схема, взятая из источника, уже существует — проверяем только
+            // то, что ввёл человек (как parse_target в sync_targets.py)
+            if (implicit && i === 0) { continue; }
+            if (TGT_PART_RE.test(parts[i])) { continue; }
+            return { error: parts[i]
+                ? "«" + parts[i] + "» — только строчные латинские буквы, цифры, " +
+                  "_ и $, не с цифры, до 63 символов"
+                : "пустая часть имени" };
+        }
+
+        return { dst: parts[0] + "." + parts[1] };
+    }
+
+    // проверка карты по выбранным таблицам: по строке — цель и ошибка
+    function tgtCheck() {
+        var rows = {};
+        var owner = {};
+        var out = { rows: rows, payload: {}, mapped: 0, errors: 0 };
+
+        state.sel.forEach(function (k) {
+            var r = { dst: k, mapped: false, error: "" };
+            var p = tgtParse(state.targets[k], k);
+
+            if (p && p.error) { r.error = p.error; }
+            else if (p && p.dst !== k) { r.dst = p.dst; r.mapped = true; }
+
+            rows[k] = r;
+            if (!r.error) { (owner[r.dst] = owner[r.dst] || []).push(k); }
+        });
+
+        Object.keys(owner).forEach(function (dst) {
+            var list = owner[dst];
+            if (list.length < 2) { return; }
+            list.forEach(function (k) {
+                if (!rows[k].mapped) { return; }   // одноимённая таблица остаётся своей
+                rows[k].error = "в " + dst + " уже грузится " +
+                    list.filter(function (o) { return o !== k; }).join(", ") +
+                    " — у каждой таблицы должна быть своя цель";
+            });
+        });
+
+        Object.keys(rows).forEach(function (k) {
+            var r = rows[k];
+            if (r.error) { out.errors += 1; return; }
+            if (r.mapped) { out.mapped += 1; out.payload[k] = r.dst; }
+        });
+
+        return out;
+    }
+
+    // карта для тех таблиц, что уходят в этот запрос; {} — карты нет
+    function tgtFor(tables) {
+        if (tgtOff()) { return {}; }
+        var payload = tgtCheck().payload;
+        var out = {};
+        (tables || []).forEach(function (t) {
+            var k = t.schema + "." + t.table;
+            if (payload[k]) { out[k] = payload[k]; }
+        });
+        return out;
+    }
+
+    // без переназначений тело запроса остаётся прежним: поле не добавляется
+    function tgtAttach(body, tables) {
+        var m = tgtFor(tables);
+        if (Object.keys(m).length) { body.targets = m; }
+        return body;
+    }
+
+    // корректные переназначения выбранных таблиц; в партициях — пусто
+    function tgtMap() { return tgtOff() ? {} : tgtCheck().payload; }
+
+    // текст ошибки для запуска или ""
+    function tgtLaunchError() {
+        if (tgtOff()) { return ""; }
+        var chk = tgtCheck();
+        if (!chk.errors) { return ""; }
+        var first = null;
+        Object.keys(chk.rows).some(function (k) {
+            if (chk.rows[k].error) { first = k + ": " + chk.rows[k].error; return true; }
+            return false;
+        });
+        return "«Куда грузить»: ошибок — " + chk.errors + ". " + first;
+    }
+
+    function tgtVisibleKeys(chk) {
+        var f = state.tgtFilter.toLowerCase();
+        return Array.from(state.sel).sort().filter(function (k) {
+            if (state.tgtOnlyMapped && !String(state.targets[k] || "").trim()) { return false; }
+            if (!f) { return true; }
+            return k.toLowerCase().indexOf(f) !== -1 ||
+                (chk.rows[k].mapped && chk.rows[k].dst.indexOf(f) !== -1);
+        });
+    }
+
+    var tgtVisible = [];   // ключи под фильтром, в порядке списка
+
+    function tgtRowHtml(k, i) {
+        return '<div class="gpp-tgt-row" data-k="' + esc(k) + '">' +
+            '<span class="src" title="' + esc(k) + '">' + esc(k) + "</span>" +
+            '<span class="arr" aria-hidden="true">→</span>' +
+            '<input type="text" spellcheck="false" autocomplete="off" data-k="' + esc(k) +
+            '" placeholder="' + esc(k) + '" value="' + esc(state.targets[k] || "") +
+            '" aria-label="' + esc("Таблица приёмника для " + k) +
+            '" aria-describedby="gppTgtErr' + i + '"' + (tgtOff() ? " disabled" : "") + ">" +
+            '<div class="err" id="gppTgtErr' + i + '"></div></div>';
+    }
+
+    // ошибки и стрелки в отрисованных строках — без перерисовки списка
+    function tgtPaintRows(chk) {
+        var list = $("gppTgtList");
+        if (!list) { return; }
+        var off = tgtOff();
+        list.querySelectorAll(".gpp-tgt-row").forEach(function (row) {
+            var r = chk.rows[row.getAttribute("data-k")];
+            if (!r) { return; }
+            var input = row.querySelector("input");
+            var err = row.querySelector(".err");
+            var bad = !off && Boolean(r.error);
+            row.classList.toggle("mapped", !off && r.mapped && !r.error);
+            input.classList.toggle("bad", bad);
+            input.disabled = off;
+            input.setAttribute("aria-invalid", bad ? "true" : "false");
+            err.textContent = bad ? r.error : "";
+        });
+    }
+
+    function tgtRenderCount(chk) {
+        var cnt = $("gppTgtCount");
+        if (!cnt) { return; }
+        if (tgtOff()) {
+            cnt.innerHTML = "— не используется в режиме партиций";
+        } else if (!state.sel.size) {
+            cnt.innerHTML = "— сначала выберите таблицы";
+        } else {
+            cnt.innerHTML = "— переназначено: <b>" + fmtN(chk.mapped) + "</b> из " +
+                fmtN(state.sel.size) +
+                (chk.errors ? ' · <span class="bad">ошибок: ' + fmtN(chk.errors) + "</span>" : "");
+        }
+        $("gppTgt").classList.toggle("off", tgtOff());
+        $("gppTgtOff").hidden = !tgtOff();
+    }
+
+    function tgtAppendRows() {
+        var list = $("gppTgtList");
+        var upto = Math.min(tgtVisible.length, state.tgtShown + TGT_CHUNK);
+        var html = "";
+        for (var i = state.tgtShown; i < upto; i++) { html += tgtRowHtml(tgtVisible[i], i); }
+        if (html) { list.insertAdjacentHTML("beforeend", html); }
+        state.tgtShown = upto;
+        $("gppTgtMore").textContent = upto < tgtVisible.length
+            ? "показано " + fmtN(upto) + " из " + fmtN(tgtVisible.length) + " — прокрутите ниже"
+            : "";
+    }
+
+    // полный рендер: счётчик всегда, список — только в раскрытом блоке
+    function tgtRender() {
+        var box = $("gppTgt");
+        if (!box) { return; }
+        var chk = tgtCheck();
+        tgtRenderCount(chk);
+        if (!box.open) { return; }
+
+        var list = $("gppTgtList");
+        tgtVisible = tgtVisibleKeys(chk);
+        state.tgtShown = 0;
+
+        if (!state.sel.size) {
+            list.innerHTML = '<div class="gpp-hint" style="padding: 8px 10px;">' +
+                "Выберите таблицы на шаге 1.</div>";
+            $("gppTgtMore").textContent = "";
+            return;
+        }
+
+        list.innerHTML = '<div class="gpp-tgt-head"><span>Источник</span><span></span>' +
+            "<span>В таблицу приёмника</span></div>" +
+            (tgtVisible.length ? "" : '<div class="gpp-hint" style="padding: 8px 10px;">' +
+                "Под фильтр ничего не подходит.</div>");
+        tgtAppendRows();
+        tgtPaintRows(chk);
+    }
+
+    function tgtOnInput(ev) {
+        var input = ev.target;
+        if (input.tagName !== "INPUT" || !input.hasAttribute("data-k")) { return; }
+        var k = input.getAttribute("data-k");
+
+        // регистр не угадываем на сервере — приводим сразу при вводе
+        var v = input.value;
+        var low = v.toLowerCase();
+        if (v !== low) {
+            var a = input.selectionStart;
+            var b = input.selectionEnd;
+            input.value = low;
+            try { input.setSelectionRange(a, b); } catch (e) { /* type без выделения */ }
+        }
+
+        if (low.trim()) { state.targets[k] = low; } else { delete state.targets[k]; }
+        tgtSave();
+
+        var chk = tgtCheck();
+        tgtRenderCount(chk);
+        tgtPaintRows(chk);
+        renderSummary();
+    }
+
+    function tgtWire() {
+        var box = $("gppTgt");
+        if (!box) { return; }
+
+        box.addEventListener("toggle", function () { if (box.open) { tgtRender(); } });
+        $("gppTgtList").addEventListener("input", tgtOnInput);
+        $("gppTgtList").addEventListener("scroll", function () {
+            var list = $("gppTgtList");
+            if (state.tgtShown < tgtVisible.length &&
+                list.scrollTop + list.clientHeight > list.scrollHeight - 120) {
+                tgtAppendRows();
+                tgtPaintRows(tgtCheck());
+            }
+        });
+        $("gppTgtFilter").addEventListener("input", function () {
+            state.tgtFilter = $("gppTgtFilter").value.trim();
+            tgtRender();
+        });
+        $("gppTgtOnlyMapped").addEventListener("change", function () {
+            state.tgtOnlyMapped = $("gppTgtOnlyMapped").checked;
+            tgtRender();
+        });
+        $("gppTgtReset").addEventListener("click", function () {
+            var n = 0;
+            state.sel.forEach(function (k) {
+                if (state.targets[k]) { delete state.targets[k]; n += 1; }
+            });
+            if (!n) { return; }
+            tgtSave();
+            tgtRender();
+            renderSummary();
+            toast("Сброшено переназначений: " + fmtN(n), "info");
+        });
     }
 
     /* ---------------- стратегии переноса ---------------- */
@@ -417,6 +717,7 @@
         });
 
         renderStrategies();
+        tgtRender();   // «Партиции целиком» выключают блок «Куда грузить»
         renderSummary();
     }
 
@@ -449,6 +750,7 @@
             };
         });
 
+        tgtRender();
         renderSummary();
 
         if (opts && opts.keepList) { updateModalCounters(); }
@@ -1191,13 +1493,15 @@
         var op = opStart("Watermark-превью: " + fmtN(todo.length) + " таблиц",
             function () { ac.abort(); });
 
-        api("/api/gpcopy/increment/preview", "POST", {
+        var wmTables = todo.map(function (r) {
+            return { schema: r.schema, table: r.table, watermark_column: r.column };
+        });
+
+        api("/api/gpcopy/increment/preview", "POST", tgtAttach({
             source_connection_id: srcId(),
             dest_connection_id: dstId(),
-            tables: todo.map(function (r) {
-                return { schema: r.schema, table: r.table, watermark_column: r.column };
-            }),
-        }, ac.signal).then(function (d) {
+            tables: wmTables,
+        }, wmTables), ac.signal).then(function (d) {
             opEnd(op);
             btn.disabled = false;
             if (!d.ok) { toast(d.message, "error"); renderIncSummaryHint(); return; }
@@ -2015,6 +2319,15 @@
               "</b>"
             : "<b>прямо сейчас</b>";
 
+        var tgt = tgtOff() ? { mapped: 0, errors: 0 } : tgtCheck();
+        if (tgt.mapped) {
+            whenTxt += " · <b>" + fmtN(tgt.mapped) + " в другие таблицы</b>";
+        }
+        if (tgt.errors) {
+            whenTxt += ' · <span style="color: var(--crit);">ошибок в «Куда грузить»: ' +
+                fmtN(tgt.errors) + "</span>";
+        }
+
         $("gppSummary").innerHTML = "Скопировать <b>" + fmtN(state.sel.size) +
             " таблиц</b>" +
             (schemas.length ? " (" + schemas.slice(0, 4).map(esc).join(", ") +
@@ -2116,7 +2429,7 @@
             };
 
             body[$("gppFullExisting").value] = true;
-            calls.push(api("/api/gpcopy/start", "POST", body));
+            calls.push(api("/api/gpcopy/start", "POST", tgtAttach(body, fb.full)));
         }
 
         if (fb.date.length) {
@@ -2142,13 +2455,13 @@
                         return null;
                     }
 
-                    return api("/api/gpcopy/start-date", "POST", {
+                    return api("/api/gpcopy/start-date", "POST", tgtAttach({
                         source_connection_id: srcId(),
                         dest_connection_id: dstId(),
                         date_from: range[0], date_to: range[1],
                         table_configs: cfgs,
                         gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
-                    });
+                    }, cfgs));
                 }));
             }
         }
@@ -2183,7 +2496,7 @@
                 extra_args: ex.extra_args,
             };
             body[$("gppFullExisting").value] = true;
-            return api("/api/gpcopy/start", "POST", body);
+            return api("/api/gpcopy/start", "POST", tgtAttach(body, tables));
         }
 
         if (state.mode === "inc" && state.incStrategy === "watermark") {
@@ -2195,10 +2508,10 @@
                 if (!incTables.length) {
                     return { ok: false, message: "Ни у одной таблицы нет watermark-колонки" };
                 }
-                return api("/api/gpcopy/increment/start", "POST", {
+                return api("/api/gpcopy/increment/start", "POST", tgtAttach({
                     source_connection_id: srcId(), dest_connection_id: dstId(),
                     tables: incTables, gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
-                });
+                }, incTables));
             });
         }
 
@@ -2219,12 +2532,12 @@
                 return runFallbackJobs(fb, ex).then(function (extra) {
                     if (!cfgs.length) { return extra; }
 
-                    return api("/api/gpcopy/sync/apply", "POST", {
+                    return api("/api/gpcopy/sync/apply", "POST", tgtAttach({
                         source_connection_id: srcId(),
                         dest_connection_id: dstId(),
                         table_configs: cfgs, gpcopy_path: ex.gpcopy_path,
                         jobs: ex.jobs,
-                    }).then(function (d) {
+                    }, cfgs)).then(function (d) {
                         if (d && d.ok && extra && extra.jobs) {
                             d.message = (d.message || "") +
                                 " · плюс задач для таблиц без ключа: " +
@@ -2251,7 +2564,7 @@
                 if (!cfgs.length) {
                     return { ok: false, message: "Ни у одной таблицы нет колонки даты" };
                 }
-                return api("/api/gpcopy/start-date", "POST", {
+                return api("/api/gpcopy/start-date", "POST", tgtAttach({
                     source_connection_id: srcId(), dest_connection_id: dstId(),
                     date_from: range[0], date_to: range[1],
                     table_configs: cfgs,
@@ -2259,12 +2572,13 @@
                     // загрузкой — этим и держится идемпотентность
                     window_cleanup: state.strategy === "window",
                     gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
-                });
+                }, cfgs));
             });
         }
 
         // part: расхождение считает сама задача на старте, если стоит
-        // галочка (иначе грузим ровно отмеченные в превью партиции)
+        // галочка (иначе грузим ровно отмеченные в превью партиции).
+        // targets сюда не уходят: маршрут партиций карту не принимает
         var body = {
             source_connection_id: srcId(), dest_connection_id: dstId(),
             tables: tables, gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
@@ -2298,7 +2612,7 @@
             base.tables = tables;
             base.selected_tables = tables;
             base[$("gppFullExisting").value] = true;
-            return Promise.resolve(base);
+            return Promise.resolve(tgtAttach(base, tables));
         }
 
         if (state.mode === "inc" && state.incStrategy === "watermark") {
@@ -2309,7 +2623,7 @@
                 var incTables = buildIncTables();
                 if (!incTables.length) { return null; }
                 base.tables = incTables;
-                return base;
+                return tgtAttach(base, incTables);
             });
         }
 
@@ -2324,7 +2638,7 @@
                     return { schema: c.schema, table: c.table };
                 });
                 base.table_configs = cfgs;
-                return base;
+                return tgtAttach(base, cfgs);
             });
         }
 
@@ -2335,11 +2649,11 @@
             base.tables = tables;
             base.selected_tables = tables;
             base.date_window = dw;
-            return Promise.resolve(base);
+            return Promise.resolve(tgtAttach(base, tables));
         }
 
         // part: в расписании список партиций не фиксируем — задача
-        // считает расхождение в момент запуска
+        // считает расхождение в момент запуска; targets не передаются
         base.tables = tables;
         base.count_mode = $("gppPartExact").checked ? "exact" : "stats";
         base.recompute = true;
@@ -2382,11 +2696,13 @@
 
         setMsg("Сверяю DDL с приёмником…");
 
-        return api("/api/gpcopy/precheck", "POST", {
+        var preTables = selTables();
+
+        return api("/api/gpcopy/precheck", "POST", tgtAttach({
             source_connection_id: srcId(),
             dest_connection_id: dstId(),
-            tables: selTables(),
-        }).then(function (d) {
+            tables: preTables,
+        }, preTables)).then(function (d) {
             if (!d.ok) { return true; }   // предпроверка не должна блокировать
 
             ddlLast = d;
@@ -2440,6 +2756,13 @@
         }
         if (isNaN(srcId()) || isNaN(dstId())) { setMsg("Выбери подключения.", "err"); return; }
         if (srcId() === dstId()) { setMsg("Источник и назначение совпадают.", "err"); return; }
+
+        var tgtErr = tgtLaunchError();
+        if (tgtErr) {
+            setMsg(esc(tgtErr), "err");
+            $("gppTgt").open = true;
+            return;
+        }
 
         $("gppGo").disabled = true;
         setMsg("Запускаю…");
@@ -2987,11 +3310,11 @@
 
     // создать недостающие объекты, следом — их зависимости
     function createMissing(tables) {
-        return api("/api/gpcopy/create-tables", "POST", {
+        return api("/api/gpcopy/create-tables", "POST", tgtAttach({
             source_connection_id: srcId(),
             dest_connection_id: dstId(),
             tables: tables,
-        }).then(function (d) {
+        }, tables)).then(function (d) {
             if (!d.ok) { return d; }
 
             return api("/api/gpcopy/fix-deps", "POST", {
@@ -3079,13 +3402,18 @@
                 "зависимости (" + fmtN(deps.length) + ")</button>";
         }
 
+        var tmap = tgtMap();
+
         if (bad.length) {
             html += '<div class="gpp-key-list" style="max-height: 240px; margin-top: 8px;">' +
                 bad.map(function (r) {
                     var det = [];
+                    var to = r.target || tmap[r.schema + "." + r.table] || "";
 
                     if (r.status === "no_dest") {
-                        det.push("нет в приёмнике — создам по DDL источника");
+                        det.push(to
+                            ? "цели нет в приёмнике — создам по структуре источника"
+                            : "нет в приёмнике — создам по DDL источника");
                     }
                     if (r.status === "no_source") {
                         det.push("нет в источнике (проверь имя)");
@@ -3107,6 +3435,7 @@
 
                     return '<div class="gpp-key-row"><span>' +
                         esc(r.schema + "." + r.table) +
+                        (to ? ' <span class="gpp-tgt-to">→ ' + esc(to) + "</span>" : "") +
                         ' <span class="cols err">· ' + esc(det.join(" · ")) +
                         "</span></span></div>";
                 }).join("") + "</div>";
@@ -3125,10 +3454,13 @@
                 renameBtn.disabled = true;
                 renameBtn.textContent = "Переименовываю…";
 
-                api("/api/gpcopy/rename-columns", "POST", {
+                var renTables = ddlRenames();
+
+                // правится цель из карты, а не одноимённая таблица
+                api("/api/gpcopy/rename-columns", "POST", tgtAttach({
                     dest_connection_id: dstId(),
-                    tables: ddlRenames(),
-                }).then(function (d) {
+                    tables: renTables,
+                }, renTables)).then(function (d) {
                     renameBtn.disabled = false;
 
                     if (!d.ok) {
@@ -3154,10 +3486,13 @@
         if (recreateBtn) {
             recreateBtn.onclick = function () {
                 var tables = ddlBroken();
+                var nMapped = Object.keys(tgtFor(tables)).length;
                 var ask = window.gpConfirm
                     ? window.gpConfirm("Пересоздать " + tables.length +
                         " таблиц в приёмнике? Данные в них будут удалены " +
-                        "(DROP + CREATE по DDL источника).",
+                        "(DROP + CREATE по DDL источника)." +
+                        (nMapped ? " Для " + nMapped + " переназначенных таблиц " +
+                            "пересоздаётся их цель из «Куда грузить»." : ""),
                         { danger: true, confirmText: "Пересоздать" })
                     : Promise.resolve(window.confirm("Пересоздать таблицы? " +
                         "Данные в приёмнике будут удалены."));
@@ -3168,11 +3503,12 @@
                     recreateBtn.disabled = true;
                     recreateBtn.textContent = "Пересоздаю…";
 
-                    api("/api/gpcopy/recreate-tables", "POST", {
+                    // DROP + CREATE идёт по цели из карты
+                    api("/api/gpcopy/recreate-tables", "POST", tgtAttach({
                         source_connection_id: srcId(),
                         dest_connection_id: dstId(),
                         tables: tables,
-                    }).then(function (d) {
+                    }, tables)).then(function (d) {
                         recreateBtn.disabled = false;
 
                         if (!d.ok) {
@@ -3255,9 +3591,9 @@
 
                 var go = function () {
                     fixBtn.disabled = true;
-                    api("/api/gpcopy/add-columns", "POST", {
+                    api("/api/gpcopy/add-columns", "POST", tgtAttach({
                         dest_connection_id: dstId(), tables: payload,
-                    }).then(function (d) {
+                    }, payload)).then(function (d) {
                         fixBtn.disabled = false;
                         toast(d.ok
                             ? "Добавлено колонок: " + d.added +
@@ -3327,16 +3663,24 @@
             return Promise.resolve();
         }
 
+        var tgtErr = tgtLaunchError();
+        if (tgtErr) {
+            box.innerHTML = '<div class="gpp-hint" style="color: var(--crit);">' +
+                esc(tgtErr) + "</div>";
+            $("gppTgt").open = true;
+            return Promise.resolve();
+        }
+
         var btn = $("gppDdlCheck");
         btn.disabled = true;
         btn.textContent = "Проверяю DDL…";
         box.innerHTML = '<div class="gpp-hint">Читаю колонки с обеих сторон…</div>';
 
         // возвращаем промис: после правок надо дождаться перепроверки
-        return api("/api/gpcopy/precheck", "POST", {
+        return api("/api/gpcopy/precheck", "POST", tgtAttach({
             source_connection_id: srcId(), dest_connection_id: dstId(),
             tables: tables,
-        }).then(function (d) {
+        }, tables)).then(function (d) {
             btn.disabled = false;
             btn.textContent = "⚖ Проверить DDL";
 
@@ -3581,6 +3925,7 @@
             state.catalog = null;
             invalidateResolutions();
             loadSel();
+            tgtLoad();
             renderSelection();
             // ключи и партиционирование — свойства источника, а не выбора
             loadStrategies();
@@ -3589,6 +3934,9 @@
         };
         $("gppDst").onchange = function () {
             saveConn(DST_KEY, $("gppDst").value);
+            // карта «Куда грузить» своя у каждой пары подключений
+            tgtLoad();
+            tgtRender();
             renderSummary();
         };
         $("gppCatalogRefresh").onclick = function () { loadCatalog(true); };
@@ -3636,7 +3984,9 @@
             };
         }
 
+        tgtWire();
         loadSel();
+        tgtLoad();
         renderSelection();
         loadStrategies();
         loadCatalog(false);

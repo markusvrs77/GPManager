@@ -44,7 +44,8 @@ from modules.pg_sync_common import (
     stream_copy,
     table_column_types,
 )
-from modules.sync_transport import job_config
+from modules.sync_targets import target_of
+from modules.sync_transport import job_config, validated_targets
 
 
 STAGE_SCHEMA = "opsentri_sync_stage"
@@ -536,16 +537,24 @@ def _quiet(fn):
         pass
 
 
-def _checked_columns(src_conn, dst_conn, schema, table, with_types):
+def _dst_name(schema, table, dst):
+    """(схема, таблица) приёмника: цель карты targets или та же таблица."""
+    return tuple(dst) if dst else (schema, table)
+
+
+def _checked_columns(src_conn, dst_conn, schema, table, with_types, dst=None):
     """
     Колонки в порядке приёмника. Структура могла измениться после
     сравнения — тогда ValueError, данные не трогаются.
+    dst — (схема, таблица) приёмника с другим именем (targets) или None.
     """
+    dst_schema, dst_table = _dst_name(schema, table, dst)
     src_types = table_column_types(src_conn, schema, table)
-    dst_types = table_column_types(dst_conn, schema, table)
+    dst_types = table_column_types(dst_conn, dst_schema, dst_table)
 
     if not dst_types:
-        raise ValueError("Таблицы %s.%s нет в приёмнике" % (schema, table))
+        raise ValueError("Таблицы %s.%s нет в приёмнике"
+                         % (dst_schema, dst_table))
 
     only_src = sorted(set(src_types) - set(dst_types))
     only_dst = sorted(set(dst_types) - set(src_types))
@@ -759,19 +768,24 @@ def _apply_keyless(cur, schema, table, stage_name, columns, always,
 
 
 def load_diff(src_conn, dst_conn, schema, table, key_columns, delete_missing,
-              stage_name, ranges=None):
+              stage_name, ranges=None, dst=None):
     """
     Загрузка разницы. key_columns — [] для таблицы без ключа.
     DELETE — только при delete_missing is True. -> {insert, update, delete}
     ranges — несовпавшие листья сравнения (get_mismatched_ranges): в staging
     только строки источника из них, DELETE и разность без ключа — тоже
     только в них. None — вся таблица.
+    dst — (схема, таблица) приёмника с другим именем (targets) или None:
+    staging, DELETE / UPDATE / INSERT — по ней; источник только читается.
     """
     key_columns = list(key_columns or [])
     delete_missing = delete_missing is True
+    dst_schema, dst_table = _dst_name(schema, table, dst)
 
-    columns = _checked_columns(src_conn, dst_conn, schema, table, True)
-    columns, always = _writable_columns(dst_conn, schema, table, columns)
+    columns = _checked_columns(src_conn, dst_conn, schema, table, True,
+                               dst=dst)
+    columns, always = _writable_columns(dst_conn, dst_schema, dst_table,
+                                        columns)
 
     absent = [k for k in key_columns if k not in columns]
     if absent:
@@ -784,7 +798,8 @@ def load_diff(src_conn, dst_conn, schema, table, key_columns, delete_missing,
     try:
         cur.execute(build_stage_schema_sql())
         cur.execute(build_drop_stage_sql(stage_name))
-        cur.execute(build_create_stage_sql(schema, table, stage_name, columns))
+        cur.execute(build_create_stage_sql(dst_schema, dst_table, stage_name,
+                                           columns))
         # в staging — строки источника из листьев, по пачке листьев;
         # все COPY таблицы — в одной транзакции источника, одним снимком
         _open_source_snapshot(src_conn)
@@ -799,11 +814,12 @@ def load_diff(src_conn, dst_conn, schema, table, key_columns, delete_missing,
 
         # одна транзакция приёмника на всё применение
         if key_columns:
-            out = _apply_keyed(cur, schema, table, stage_name, key_columns,
-                               columns, always, delete_missing, ranges)
+            out = _apply_keyed(cur, dst_schema, dst_table, stage_name,
+                               key_columns, columns, always, delete_missing,
+                               ranges)
         else:
-            out = _apply_keyless(cur, schema, table, stage_name, columns,
-                                 always, delete_missing, ranges)
+            out = _apply_keyless(cur, dst_schema, dst_table, stage_name,
+                                 columns, always, delete_missing, ranges)
 
         dst_conn.commit()
         committed = True
@@ -816,35 +832,40 @@ def load_diff(src_conn, dst_conn, schema, table, key_columns, delete_missing,
 
 
 def load_full(src_conn, dst_conn, schema, table, truncate,
-              require_empty=False):
+              require_empty=False, dst=None):
     """
     Полная загрузка: TRUNCATE (если truncate) и COPY всех строк источника
     в одной транзакции приёмника. При ошибке — откат. -> {rows}
     require_empty — заливка без TRUNCATE только в пустую таблицу
     (проверка под блокировкой, в той же транзакции), иначе NotEmptyError.
+    dst — (схема, таблица) приёмника с другим именем (targets) или None.
     """
-    columns = _checked_columns(src_conn, dst_conn, schema, table, False)
+    dst_schema, dst_table = _dst_name(schema, table, dst)
+    columns = _checked_columns(src_conn, dst_conn, schema, table, False,
+                               dst=dst)
     # COPY FROM сам пишет значения identity ALWAYS из потока; вычисляемые
     # колонки приёмник считает сам
-    columns, _always = _writable_columns(dst_conn, schema, table, columns)
+    columns, _always = _writable_columns(dst_conn, dst_schema, dst_table,
+                                         columns)
 
     try:
         cur = dst_conn.cursor()
 
         if truncate:
-            cur.execute(build_truncate_sql(schema, table))
+            cur.execute(build_truncate_sql(dst_schema, dst_table))
         elif require_empty:
-            cur.execute(build_lock_for_fill_sql(schema, table))
-            cur.execute(build_not_empty_sql(schema, table))
+            cur.execute(build_lock_for_fill_sql(dst_schema, dst_table))
+            cur.execute(build_not_empty_sql(dst_schema, dst_table))
             if cur.fetchone():
                 raise NotEmptyError(
                     "В таблице %s.%s в приёмнике уже есть строки — «создать "
                     "и залить» их не дописывает. Выберите полную загрузку "
-                    "(TRUNCATE + INSERT) или разницу." % (schema, table))
+                    "(TRUNCATE + INSERT) или разницу."
+                    % (dst_schema, dst_table))
 
         rows = stream_copy(src_conn, dst_conn,
                            build_full_select_sql(schema, table, columns),
-                           _target(schema, table), columns)
+                           _target(dst_schema, dst_table), columns)
         dst_conn.commit()
         return {"rows": rows}
     except Exception:
@@ -897,16 +918,18 @@ def source_table_definition(src_conn, schema, table):
             "partitioned": rows[0][6] == "p"}
 
 
-def create_table_from_source(src_conn, dst_conn, schema, table):
+def create_table_from_source(src_conn, dst_conn, schema, table, dst=None):
     """
     Создаёт в приёмнике таблицу по каталогу PostgreSQL источника
     (вместо ddl_check.create_missing_objects: тот обращается к функциям
     Greenplum). Схема — только если её нет; схема и таблица — в одной
     транзакции приёмника. Партиционированный родитель создаётся обычной
     таблицей. Ошибка — откат приёмника и исключение.
+    dst — (схема, таблица) цели с другим именем (targets): создаётся она.
     -> {partitioned, virtual_as_stored: [колонки VIRTUAL, созданные STORED]}
     """
     definition = source_table_definition(src_conn, schema, table)
+    schema, table = _dst_name(schema, table, dst)
     version = getattr(dst_conn, "server_version", None)
     virtual = bool(version) and version >= VIRTUAL_GENERATED_VERSION
     as_stored = [] if virtual else [
@@ -1027,17 +1050,28 @@ VIRTUAL_AS_STORED_NOTE = ("пометка: приёмник не поддерж�
                           "как STORED: %s")
 
 
-def _create_and_fill(src_conn, dst_conn, schema, table, note):
+def _dst_kw(dst):
+    """{"dst": ...} только для цели с другим именем: вызовы без карты
+    остаются прежними."""
+    return {"dst": tuple(dst)} if dst else {}
+
+
+def _create_and_fill(src_conn, dst_conn, schema, table, note, dst=None):
     """
     Таблицы нет — создаём по каталогу источника; есть — только если пуста
     (проверка в load_full). Если таблица уже создана, а заливка не прошла,
     это видно в item. -> ({rows}, пометка или None)
+    dst — (схема, таблица) цели с другим именем (targets): создаётся и
+    заливается она.
     """
     created = False
     remark = None
+    src_schema, src_table = schema, table
+    schema, table = _dst_name(schema, table, dst)
 
     if not dest_table_exists(dst_conn, schema, table):
-        out = create_table_from_source(src_conn, dst_conn, schema, table)
+        out = create_table_from_source(src_conn, dst_conn, src_schema,
+                                       src_table, **_dst_kw(dst))
         created = True
         remarks = []
         if out.get("partitioned"):
@@ -1051,8 +1085,9 @@ def _create_and_fill(src_conn, dst_conn, schema, table, note):
              % (schema, table))
 
     try:
-        return load_full(src_conn, dst_conn, schema, table, truncate=False,
-                         require_empty=True), remark
+        return load_full(src_conn, dst_conn, src_schema, src_table,
+                         truncate=False, require_empty=True,
+                         **_dst_kw(dst)), remark
     except Exception as e:
         if created:
             raise RuntimeError("Таблица %s.%s создана в приёмнике, но "
@@ -1096,22 +1131,25 @@ def diff_ranges(compare_job_id, schema, table):
 
 
 def _load_one(src_conn, dst_conn, schema, table, entry, delete_missing,
-              stage_name, note, compare_job_id=None):
+              stage_name, note, compare_job_id=None, dst=None):
     """
     -> ("done", сообщение, вставлено строк) или ("skipped", причина, 0).
+    dst — (схема, таблица) приёмника с другим именем (targets) или None;
+    листья сравнения хранятся по имени источника.
     """
     action = entry.get("action")
+    dst = None if not dst or tuple(dst) == (schema, table) else tuple(dst)
 
     if action == "diff":
         ranges = diff_ranges(compare_job_id, schema, table)
         if ranges is None:
             out = load_diff(src_conn, dst_conn, schema, table,
                             entry.get("key_columns") or [], delete_missing,
-                            stage_name)
+                            stage_name, **_dst_kw(dst))
         elif ranges:
             out = load_diff(src_conn, dst_conn, schema, table,
                             entry.get("key_columns") or [], delete_missing,
-                            stage_name, ranges=ranges)
+                            stage_name, ranges=ranges, **_dst_kw(dst))
         else:
             out = {"insert": 0, "update": 0, "delete": 0}
 
@@ -1124,12 +1162,13 @@ def _load_one(src_conn, dst_conn, schema, table, entry, delete_missing,
     if action == "full":
         if entry.get("in_dst") is False:
             return "skipped", MISSING_IN_DEST, 0
-        out = load_full(src_conn, dst_conn, schema, table, truncate=True)
+        out = load_full(src_conn, dst_conn, schema, table, truncate=True,
+                        **_dst_kw(dst))
         return "done", "truncate+insert=%d" % out["rows"], out["rows"]
 
     if action == "create":
         out, remark = _create_and_fill(src_conn, dst_conn, schema, table,
-                                       note)
+                                       note, **_dst_kw(dst))
         message = "create+insert=%d" % out["rows"]
         if remark:
             message += "; " + remark
@@ -1154,7 +1193,8 @@ def run_pg_diff_load_job(job_id):
     """
     Раннер job_type='pg_diff_load'. Config: source_connection_id,
     dest_connection_id, delete_missing, compare_job_id, expected,
-    tables=[{schema, table, action, key_columns, in_dst}].
+    tables=[{schema, table, action, key_columns, in_dst}], targets
+    (необязательно, {"schema.table": "schema.table"} — куда грузить).
     Item на таблицу; done — только после коммита таблицы.
     """
     job = get_job(job_id)
@@ -1172,6 +1212,12 @@ def run_pg_diff_load_job(job_id):
         if not source_id or not dest_id:
             raise Exception("В задаче не указан источник или назначение")
 
+        # карта targets: куда грузить таблицу источника; строки задачи — по
+        # имени источника. Конфигу не доверяем (перезапуск идёт из
+        # сохранённого): проверка заново до первого соединения с приёмником
+        items = get_job_items(job_id)
+        targets = validated_targets(config, items)
+
         conns.append(open_pg(source_id, readonly=True))
         conns.append(open_pg(dest_id))
 
@@ -1185,8 +1231,6 @@ def run_pg_diff_load_job(job_id):
         delete_missing = config.get("delete_missing") is True
         info = {(t.get("schema"), t.get("table")): t
                 for t in config.get("tables") or []}
-        items = get_job_items(job_id)
-
         refresh_job_progress(job_id)
         failed = 0
         stopped = False
@@ -1205,6 +1249,9 @@ def run_pg_diff_load_job(job_id):
                 entry = info.get((schema, table)) or {
                     "action": str(item.get("action") or "").lower()}
                 stage_name = stage_name_for(job_id, n)
+                dst_schema, dst_table = target_of(targets, schema, table)
+                dst = None if (dst_schema, dst_table) == (schema, table) \
+                    else (dst_schema, dst_table)
 
                 mark_item_running(item["id"])
                 refresh_job_progress(job_id)
@@ -1216,7 +1263,8 @@ def run_pg_diff_load_job(job_id):
                     status, message, inserted = _load_one(
                         conns[0], conns[1], schema, table, entry,
                         delete_missing, stage_name, note,
-                        compare_job_id=config.get("compare_job_id"))
+                        compare_job_id=config.get("compare_job_id"),
+                        **_dst_kw(dst))
                 except Exception as e:
                     broken = _rollback(conns)
 
@@ -1239,7 +1287,7 @@ def run_pg_diff_load_job(job_id):
                     else:
                         if inserted:
                             message = _with_sequence_warnings(
-                                conns[1], schema, table, message)
+                                conns[1], dst_schema, dst_table, message)
                         # итог — до done; сбой записи итога не делает
                         # закоммиченную таблицу failed
                         _quiet(lambda: _set_item_message(item["id"], message))

@@ -52,7 +52,7 @@ FILTER_RU = {"all": "все", "needs": "нужно выровнять", "same": 
 RESULT_HEADER = ["Схема", "Таблица", "Статус", "Ключ", "Источник ключа",
                  "Строк в источнике", "Строк в приёмнике", "Добавить",
                  "Изменить", "Удалить", "Всего отличий", "Диапазоны",
-                 "Сообщение", "Время сравнения"]
+                 "Сообщение", "Время сравнения", "Приёмник"]
 RESULT_NUMERIC = (6, 7, 8, 9, 10, 11)
 
 RANGE_HEADER = ["Схема", "Таблица", "Колонка", "Режим", "От", "До",
@@ -70,16 +70,24 @@ def total_diff(row):
                for k in ("to_insert", "to_update", "to_delete"))
 
 
+def dest_name(row):
+    """Таблица приёмника: цель карты targets или то же schema.table."""
+    return row.get("target") or "%s.%s" % (row.get("schema"),
+                                           row.get("table"))
+
+
 def select_rows(results, filter_name, query):
-    """Строки под фильтром и поиском по schema.table (без учёта регистра),
-    по «всего отличий» по убыванию."""
+    """Строки под фильтром и поиском по schema.table источника или цели
+    (без учёта регистра), по «всего отличий» по убыванию."""
     statuses = FILTERS[filter_name]
     needle = (query or "").strip().lower()
 
     rows = [r for r in results
             if (statuses is None or r.get("status") in statuses)
-            and (not needle or needle in
-                 ("%s.%s" % (r.get("schema"), r.get("table"))).lower())]
+            and (not needle
+                 or needle in ("%s.%s" % (r.get("schema"),
+                                          r.get("table"))).lower()
+                 or needle in str(r.get("target") or "").lower())]
     rows.sort(key=lambda r: (-total_diff(r), str(r.get("schema")),
                              str(r.get("table"))))
     return rows
@@ -156,7 +164,7 @@ def _results_sheet(ws, rows):
             r.get("src_rows"), r.get("dst_rows"),
             r.get("to_insert"), r.get("to_update"), r.get("to_delete"),
             total_diff(r), _ranges_text(r.get("chunked")),
-            r.get("message"), r.get("compared_at"),
+            r.get("message"), r.get("compared_at"), dest_name(r),
         ])
     _style_sheet(ws, RESULT_NUMERIC)
 

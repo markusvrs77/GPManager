@@ -269,14 +269,17 @@ def _column_info(conn, schema, table):
     return out
 
 
-def pick_chunk_column(src_conn, dst_conn, schema, table, key_columns):
+def pick_chunk_column(src_conn, dst_conn, schema, table, key_columns,
+                      dst=None):
     """
     Колонка нарезки по каталогам обеих сторон и pg_stats источника.
+    dst — (схема, таблица) приёмника, если она не одноимённая (targets).
     -> {"name", "kind", "collate_c", "mode"} или None (одна сумма на
     таблицу).
     """
+    dst_schema, dst_table = dst or (schema, table)
     src_info = _column_info(src_conn, schema, table)
-    dst_info = _column_info(dst_conn, schema, table)
+    dst_info = _column_info(dst_conn, dst_schema, dst_table)
     distinct = None
 
     if not key_columns:

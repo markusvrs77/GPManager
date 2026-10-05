@@ -22,6 +22,11 @@ try:
 except ImportError:
     from connections import get_connection_by_id
 
+try:
+    from modules.sync_targets import is_mapped, target_of
+except ImportError:
+    from sync_targets import is_mapped, target_of
+
 
 # формат format_type(): 'integer', 'character varying(255)', 'numeric(10,2)',
 # 'timestamp without time zone', 'text[]' и т.п.
@@ -517,11 +522,195 @@ def fetch_object_ddl(src_conn, schema, table, with_partitions=True):
     return {"kind": kind, "statements": statements}
 
 
-def create_missing_objects(source_connection_id, dest_connection_id, tables):
+# ------------------------------------------------------------------
+# цель под другим именем (карта targets, modules/sync_targets.py)
+# ------------------------------------------------------------------
+
+def fetch_target_ddl(src_conn, schema, table, dst_schema, dst_table):
+    """
+    CREATE TABLE для цели с другим именем — по структуре источника:
+    колонки, типы, NOT NULL, способ хранения и распределение
+    (DISTRIBUTED BY / RANDOMLY).
+
+    Партиции, DEFAULT'ы и вьюхи намеренно не переносятся: имена партиций
+    и последовательностей в DEFAULT принадлежат таблице источника, и в
+    приёмнике они столкнулись бы с одноимённой копией. Цель — обычная
+    таблица. Источник только читается.
+    -> {"kind": "table", "statements": [...]} или None, если в источнике нет.
+    """
+    with src_conn.cursor() as cur:
+        meta = _table_meta(cur, schema, table)
+
+        if not meta:
+            return None
+
+        columns = [dict(c, default=None)
+                   for c in _table_columns(cur, meta["oid"])]
+
+    statements = [build_create_table_sql(
+        dst_schema, dst_table, columns,
+        options=meta["options"] if meta["relkind"] not in ("v", "m") else None,
+        distributed_by=meta["distributed_by"],
+        access_method=meta["access_method"],
+    )]
+
+    return {"kind": "table", "statements": statements}
+
+
+def relation_exists(conn, schema, table):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s AND c.relname = %s
+            """,
+            (schema, table),
+        )
+        return cur.fetchone() is not None
+
+
+def _ensure_schema(cur, schema):
+    """
+    Схема в приёмнике. Сначала проверка: CREATE SCHEMA IF NOT EXISTS
+    требует права CREATE на базу даже тогда, когда схема уже есть.
+    """
+    cur.execute("SELECT 1 FROM pg_namespace WHERE nspname = %s", (schema,))
+
+    if cur.fetchone() is None:
+        cur.execute("CREATE SCHEMA IF NOT EXISTS {}".format(quote_ident(schema)))
+
+
+def create_target_table(src_conn, dst_conn, schema, table,
+                        dst_schema, dst_table):
+    """
+    Создаёт цель dst_schema.dst_table по структуре schema.table источника.
+    DDL выполняется только на dst_conn; commit — на вызывающем, если
+    соединение не в autocommit. -> сколько операторов DDL таблицы
+    выполнено (создание схемы не считается — как в create_missing_objects).
+    """
+    ddl = fetch_target_ddl(src_conn, schema, table, dst_schema, dst_table)
+
+    if not ddl:
+        raise ValueError("{}.{} нет в источнике".format(schema, table))
+
+    done = 0
+
+    with dst_conn.cursor() as cur:
+        _ensure_schema(cur, dst_schema)
+
+        for sql_text in ddl["statements"]:
+            cur.execute(sql_text)
+            done += 1
+
+    return done
+
+
+def ensure_target_table(src_conn, dst_conn, schema, table,
+                        dst_schema, dst_table):
+    """Цель есть — False; не было и создана — True; не вышло — исключение."""
+    if relation_exists(dst_conn, dst_schema, dst_table):
+        return False
+
+    create_target_table(src_conn, dst_conn, schema, table,
+                        dst_schema, dst_table)
+    return True
+
+
+def ensure_mapped_targets(source_connection_id, dest_connection_id,
+                          targets, pairs):
+    """
+    Перед загрузкой: для каждой таблицы из pairs, у которой есть карта,
+    цель в приёмнике должна существовать — нет, создаём по источнику.
+    Таблицы без карты не трогаем.
+
+    -> {(schema, table): текст ошибки} — по тем, чью цель не удалось
+    проверить или создать. Пустой словарь — всё на месте.
+    """
+    mapped = []
+
+    for schema, table in pairs or []:
+        if is_mapped(targets, schema, table) and (schema, table) not in mapped:
+            mapped.append((schema, table))
+
+    if not mapped:
+        return {}
+
+    errors = {}
+    src_conn = dst_conn = None
+
+    try:
+        src_cfg = get_connection_by_id(int(source_connection_id))
+        dst_cfg = get_connection_by_id(int(dest_connection_id))
+
+        if not src_cfg or not dst_cfg:
+            raise ValueError("Подключение не найдено")
+
+        src_conn = open_psycopg2_connection_by_cfg(src_cfg)
+
+        try:
+            src_conn.set_session(readonly=True)
+        except Exception:
+            pass
+
+        dst_conn = open_psycopg2_connection_by_cfg(dst_cfg)
+        dst_conn.autocommit = True
+    except Exception as e:
+        for pair in mapped:
+            errors[pair] = "Цель {}.{}: не удалось проверить — {}".format(
+                *(target_of(targets, *pair) + (str(e)[:300],)))
+
+        for c in (src_conn, dst_conn):
+            try:
+                if c is not None:
+                    c.close()
+            except Exception:
+                pass
+
+        return errors
+
+    try:
+        for schema, table in mapped:
+            dst_schema, dst_table = target_of(targets, schema, table)
+
+            try:
+                if ensure_target_table(src_conn, dst_conn, schema, table,
+                                       dst_schema, dst_table):
+                    print("[targets] создана цель {}.{} по {}.{}".format(
+                        dst_schema, dst_table, schema, table))
+            except Exception as e:
+                errors[(schema, table)] = (
+                    "Цели {}.{} нет в приёмнике, и создать её по {}.{} "
+                    "не удалось: {}".format(dst_schema, dst_table, schema,
+                                            table, str(e)[:400]))
+    finally:
+        for c in (src_conn, dst_conn):
+            try:
+                c.close()
+            except Exception:
+                pass
+
+    return errors
+
+
+def _target_label(targets, schema, table):
+    """«schema.table» цели для ответа API, None — грузится в одноимённую."""
+    if not is_mapped(targets, schema, table):
+        return None
+
+    return "{}.{}".format(*target_of(targets, schema, table))
+
+
+def create_missing_objects(source_connection_id, dest_connection_id, tables,
+                           targets=None):
     """
     Создать в приёмнике объекты, которых там нет: схему, таблицу (со всеми
     партициями) или вьюху — по DDL источника. Данные не трогаем, только
     структура. -> [{schema, table, kind, ok, error, statements}]
+
+    targets — карта «источник -> цель»: для таблицы с картой создаётся
+    цель под её именем (fetch_target_ddl), а не одноимённая таблица.
     """
     src_cfg = get_connection_by_id(int(source_connection_id))
     dst_cfg = get_connection_by_id(int(dest_connection_id))
@@ -567,6 +756,21 @@ def create_missing_objects(source_connection_id, dest_connection_id, tables):
         for schema, table in kept:
             row = {"schema": schema, "table": table, "kind": "table",
                    "ok": True, "error": "", "statements": 0}
+
+            if is_mapped(targets, schema, table):
+                dst_schema, dst_table = target_of(targets, schema, table)
+                row["target"] = _target_label(targets, schema, table)
+
+                try:
+                    row["statements"] = create_target_table(
+                        src_conn, dst_conn, schema, table,
+                        dst_schema, dst_table)
+                except Exception as e:
+                    row["ok"] = False
+                    row["error"] = str(e)[:500]
+
+                out.append(row)
+                continue
 
             try:
                 ddl = fetch_object_ddl(src_conn, schema, table)
@@ -860,10 +1064,11 @@ def build_rename_column_sql(schema, table, old_name, new_name):
     )
 
 
-def apply_column_renames(dest_connection_id, tables):
+def apply_column_renames(dest_connection_id, tables, targets=None):
     """
     Привести имена колонок приёмника к именам источника.
-    tables: [{schema, table, renames: [{from, to}]}]
+    tables: [{schema, table, renames: [{from, to}]}] — имена источника;
+    с картой targets переименование идёт в цели.
     -> [{schema, table, ok, error, renamed}]
     """
     dst_cfg = get_connection_by_id(int(dest_connection_id))
@@ -882,9 +1087,12 @@ def apply_column_renames(dest_connection_id, tables):
                        "ok": True, "error": "", "renamed": 0}
 
                 try:
+                    dst_schema, dst_table = target_of(
+                        targets, t["schema"], t["table"])
+
                     for r in t.get("renames") or []:
                         cur.execute(build_rename_column_sql(
-                            t["schema"], t["table"], r["from"], r["to"]))
+                            dst_schema, dst_table, r["from"], r["to"]))
                         row["renamed"] += 1
                 except Exception as e:
                     row["ok"] = False
@@ -900,11 +1108,13 @@ def apply_column_renames(dest_connection_id, tables):
     return out
 
 
-def recreate_tables(source_connection_id, dest_connection_id, tables):
+def recreate_tables(source_connection_id, dest_connection_id, tables,
+                    targets=None):
     """
     Пересоздать таблицы в приёмнике по DDL источника: DROP + CREATE.
     Единственный способ починить разошедшиеся типы и лишние колонки.
     ДАННЫЕ В ПРИЁМНИКЕ ТЕРЯЮТСЯ — вызывается только по явной команде.
+    С картой targets пересоздаётся цель, а не одноимённая таблица.
     """
     dst_cfg = get_connection_by_id(int(dest_connection_id))
 
@@ -919,8 +1129,10 @@ def recreate_tables(source_connection_id, dest_connection_id, tables):
         with conn.cursor() as cur:
             for t in tables:
                 try:
+                    dst_schema, dst_table = target_of(
+                        targets, t["schema"], t["table"])
                     cur.execute("DROP TABLE IF EXISTS {}.{} CASCADE".format(
-                        quote_ident(t["schema"]), quote_ident(t["table"])))
+                        quote_ident(dst_schema), quote_ident(dst_table)))
                     dropped.append(dict(t))
                 except Exception as e:
                     dropped.append(dict(t, drop_error=str(e)[:500]))
@@ -933,6 +1145,7 @@ def recreate_tables(source_connection_id, dest_connection_id, tables):
     results = create_missing_objects(
         source_connection_id, dest_connection_id,
         [t for t in dropped if not t.get("drop_error")],
+        targets=targets,
     )
 
     for t in dropped:
@@ -944,10 +1157,36 @@ def recreate_tables(source_connection_id, dest_connection_id, tables):
     return results
 
 
-def precheck_tables(source_connection_id, dest_connection_id, tables):
+def dest_columns_by_source(dst_conn, tables, targets=None):
+    """
+    Колонки приёмника под ключами источника: для таблицы с картой
+    читается цель, но в результате она лежит под (schema, table)
+    источника — так её и сравнивает compare_ddl.
+    """
+    pairs = [(t["schema"], t["table"]) for t in tables]
+    dst_pairs = [target_of(targets, s, t) for s, t in pairs]
+
+    raw = fetch_columns(
+        dst_conn, [{"schema": s, "table": t} for s, t in dst_pairs])
+
+    out = {}
+
+    for src_key, dst_key in zip(pairs, dst_pairs):
+        if dst_key in raw:
+            out[src_key] = raw[dst_key]
+
+    return out
+
+
+def precheck_tables(source_connection_id, dest_connection_id, tables,
+                    targets=None):
     """
     Полная предпроверка: сравнение колонок + отсутствующие в приёмнике
     зависимости (функции из DEFAULT'ов, sequences).
+
+    targets — карта «источник -> цель»: источник сравнивается с целью.
+    В строках результата имя источника и поле target («schema.table»
+    цели или None).
     """
     src_cfg = get_connection_by_id(int(source_connection_id))
     dst_cfg = get_connection_by_id(int(dest_connection_id))
@@ -960,7 +1199,7 @@ def precheck_tables(source_connection_id, dest_connection_id, tables):
 
     try:
         src_cols = fetch_columns(src_conn, tables)
-        dst_cols = fetch_columns(dst_conn, tables)
+        dst_cols = dest_columns_by_source(dst_conn, tables, targets)
 
         try:
             deps = analyze_dependencies(src_conn, dst_conn, tables)
@@ -974,6 +1213,9 @@ def precheck_tables(source_connection_id, dest_connection_id, tables):
                 pass
 
     results = compare_ddl(src_cols, dst_cols, tables)
+
+    for row in results:
+        row["target"] = _target_label(targets, row["schema"], row["table"])
 
     return {
         "results": results,
@@ -990,10 +1232,11 @@ def precheck_tables(source_connection_id, dest_connection_id, tables):
     }
 
 
-def add_missing_columns(dest_connection_id, tables):
+def add_missing_columns(dest_connection_id, tables, targets=None):
     """
     Досоздать колонки в приёмнике. tables: [{schema, table,
-    columns: [{name, type}]}]. -> [{schema, table, ok, error, added}]
+    columns: [{name, type}]}] — имена источника; с картой targets колонки
+    добавляются в цель. -> [{schema, table, ok, error, added}]
     """
     dst_cfg = get_connection_by_id(int(dest_connection_id))
 
@@ -1011,8 +1254,10 @@ def add_missing_columns(dest_connection_id, tables):
                        "ok": True, "error": "", "added": 0}
 
                 try:
+                    dst_schema, dst_table = target_of(
+                        targets, t["schema"], t["table"])
                     statements = build_add_column_sql(
-                        t["schema"], t["table"], t.get("columns") or [],
+                        dst_schema, dst_table, t.get("columns") or [],
                     )
 
                     for sql_text in statements:

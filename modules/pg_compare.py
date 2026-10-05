@@ -52,7 +52,8 @@ from modules.pg_sync_common import (
     table_column_types,
     table_columns,
 )
-from modules.sync_transport import job_config
+from modules.sync_targets import normalize_targets, target_of
+from modules.sync_transport import job_config, validated_targets
 
 
 STATUSES = ("same", "differs", "no_dest", "no_source", "structure_diff",
@@ -142,13 +143,18 @@ def _clean_name(value):
     return value.strip() if isinstance(value, str) else ""
 
 
-def expand_selection(src_conn, dst_conn, schemas, tables):
+def expand_selection(src_conn, dst_conn, schemas, tables, targets=None):
     """
     Выбор «схемы целиком + отдельные таблицы» → [{schema, table, in_src,
     in_dst}]. Схема раскрывается в r/p-таблицы обеих сторон (таблица только
     в приёмнике → in_src=False). Отдельные таблицы сверяются с каталогом
     источника. Листья выбранного партиционированного родителя и повторы
     убираются. Неизвестные имена — ValueError.
+
+    targets — карта {"schema.table": "schema.table"} (сырой ввод): ключи
+    проверяются по таблицам источника из выбора (normalize_targets), у
+    таблицы с картой in_dst — по цели, а в строке есть "target". Цель карты
+    не попадает в список «только в приёмнике».
     """
     schema_list = []
     for name in schemas or []:
@@ -170,14 +176,12 @@ def expand_selection(src_conn, dst_conn, schemas, tables):
 
     wanted = sorted(set(schema_list) | {s for s, _t in table_list})
     src_ns, src_rel, src_pairs = _catalog(src_conn, wanted)
-    dst_ns, dst_rel, dst_pairs = _catalog(dst_conn, wanted)
 
     unknown = [s for s in schema_list if s not in src_ns]
     if unknown:
         raise ValueError("Схема не найдена в источнике: %s" % ", ".join(unknown))
 
     src_set = set(src_rel)
-    dst_set = set(dst_rel)
 
     missing = ["%s.%s" % k for k in table_list if k not in src_set]
     if missing:
@@ -185,11 +189,24 @@ def expand_selection(src_conn, dst_conn, schemas, tables):
             "Таблица не найдена в источнике: %s" % ", ".join(missing)
         )
 
+    # карта проверяется по таблицам источника из выбора
+    chosen = [k for k in src_rel if k[0] in schema_list] + table_list
+    targets = normalize_targets(
+        targets, [{"schema": s, "table": t} for s, t in chosen])
+    dst_of = {k: target_of(targets, k[0], k[1]) for k in chosen}
+    mapped_to = {v for k, v in dst_of.items() if v != k}
+
+    dst_wanted = sorted(set(wanted) | {s for s, _t in mapped_to})
+    _dst_ns, dst_rel, dst_pairs = _catalog(dst_conn, dst_wanted)
+    dst_set = set(dst_rel)
+
     ordered = []
 
     for schema in schema_list:
         ordered.extend(k for k in src_rel if k[0] == schema)
-        ordered.extend(k for k in dst_rel if k[0] == schema and k not in src_set)
+        # цель карты — пара таблицы источника, а не «только в приёмнике»
+        ordered.extend(k for k in dst_rel if k[0] == schema
+                       and k not in src_set and k not in mapped_to)
 
     ordered.extend(table_list)
 
@@ -198,11 +215,24 @@ def expand_selection(src_conn, dst_conn, schemas, tables):
     kept, _covered = table_catalog.drop_covered_partitions(ordered,
                                                            child_parent)
 
-    return [
-        {"schema": s, "table": t, "in_src": (s, t) in src_set,
-         "in_dst": (s, t) in dst_set}
-        for s, t in kept
-    ]
+    dropped = sorted(k for k in targets
+                     if tuple(k.split(".", 1)) not in set(kept))
+    if dropped:
+        raise ValueError(
+            "Цель задана для партиции, которая сравнивается в составе "
+            "выбранного родителя: %s" % ", ".join(dropped))
+
+    out = []
+
+    for s, t in kept:
+        dst_name = target_of(targets, s, t)
+        row = {"schema": s, "table": t, "in_src": (s, t) in src_set,
+               "in_dst": dst_name in dst_set}
+        if dst_name != (s, t):
+            row["target"] = "%s.%s" % dst_name
+        out.append(row)
+
+    return out
 
 
 # ------------------------------------------------------------------
@@ -401,8 +431,21 @@ def _result(status, **values):
     return row
 
 
+def _dst_kw(dst):
+    """{"dst": (схема, таблица)} для таблицы с картой, иначе {} — вызовы
+    без карты остаются прежними."""
+    return {"dst": tuple(dst)} if dst else {}
+
+
+def _dst_or_none(schema, table, dst):
+    """Цель, если она не одноимённая; иначе None."""
+    if not dst or tuple(dst) == (schema, table):
+        return None
+    return tuple(dst)
+
+
 def compare_table(src_conn, dst_conn, schema, table, key_columns,
-                  key_source=None, work_mem=WORK_MEM, where=None):
+                  key_source=None, work_mem=WORK_MEM, where=None, dst=None):
     """
     Сравнение таблицы, которая есть в обеих базах.
     key_columns — [] для сравнения без ключа (мультимножество строк).
@@ -414,14 +457,17 @@ def compare_table(src_conn, dst_conn, schema, table, key_columns,
     WORK_MEM_TOTAL_MB между воркерами).
     where — необязательный предикат (Composable, алиас таблицы t): сравнение
     только строк диапазона — выборка источника, подсчёт и дубли приёмника.
+    dst — (схема, таблица) приёмника, если она не одноимённая (targets):
+    все запросы приёмника идут к ней.
     -> {status, src_rows, dst_rows, to_insert, to_update, to_delete, message}
     Приёмник не меняется: временная таблица уходит вместе с откатом.
     """
     key_columns = list(key_columns or [])
+    dst_schema, dst_table = dst or (schema, table)
 
     try:
         src_types = table_column_types(src_conn, schema, table)
-        dst_types = table_column_types(dst_conn, schema, table)
+        dst_types = table_column_types(dst_conn, dst_schema, dst_table)
         src_cols = list(src_types)
         dst_cols = list(dst_types)
 
@@ -479,10 +525,10 @@ def compare_table(src_conn, dst_conn, schema, table, key_columns,
                             % (", ".join(key_columns), duplicates),
                 )
 
-        if key_columns and not dest_key_is_unique(dst_conn, schema, table,
-                                                  key_columns):
-            cur.execute(build_dest_duplicate_sql(schema, table, key_columns,
-                                                 where))
+        if key_columns and not dest_key_is_unique(dst_conn, dst_schema,
+                                                  dst_table, key_columns):
+            cur.execute(build_dest_duplicate_sql(dst_schema, dst_table,
+                                                 key_columns, where))
             duplicates = int(cur.fetchone()[0] or 0)
 
             if duplicates:
@@ -493,8 +539,8 @@ def compare_table(src_conn, dst_conn, schema, table, key_columns,
                             % (", ".join(key_columns), duplicates),
                 )
 
-        cur.execute(build_count_sql(schema, table, key_columns, src_cols,
-                                    where))
+        cur.execute(build_count_sql(dst_schema, dst_table, key_columns,
+                                    src_cols, where))
         dst_rows, to_insert, to_update, to_delete = [
             int(v or 0) for v in cur.fetchone()
         ]
@@ -618,7 +664,8 @@ def pick_key(candidates, src_cols, dst_cols, valid_unique=None):
 
 def save_result(job_id, row):
     """Строка результата: schema, table, status, key_columns, key_source,
-    src_rows, dst_rows, to_insert, to_update, to_delete, message."""
+    src_rows, dst_rows, to_insert, to_update, to_delete, message,
+    target ("schema.table" цели с другим именем или None)."""
     status = row.get("status")
     if status not in STATUSES:
         raise ValueError("Неизвестный статус сравнения: %s" % status)
@@ -629,9 +676,9 @@ def save_result(job_id, row):
             INSERT INTO pg_compare_results (
                 job_id, schema_name, table_name, status, key_columns_json,
                 key_source, src_rows, dst_rows, to_insert, to_update,
-                to_delete, message, compared_at, chunked_json
+                to_delete, message, compared_at, chunked_json, target_name
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(job_id), row.get("schema"), row.get("table"), status,
@@ -643,6 +690,7 @@ def save_result(job_id, row):
                 (str(row["message"])[:1000] if row.get("message") else None),
                 now_str(),
                 (json.dumps(row["chunked"]) if row.get("chunked") else None),
+                row.get("target") or None,
             ),
         )
 
@@ -654,7 +702,7 @@ def get_results(job_id):
             SELECT id, job_id, schema_name, table_name, status,
                    key_columns_json, key_source, src_rows, dst_rows,
                    to_insert, to_update, to_delete, message, compared_at,
-                   chunked_json
+                   chunked_json, target_name
             FROM pg_compare_results
             WHERE job_id = ?
             ORDER BY id
@@ -674,6 +722,8 @@ def get_results(job_id):
         r["schema"] = r.pop("schema_name")
         r["table"] = r.pop("table_name")
         r["key_columns"] = key_columns
+        # цель с другим именем (карта targets): "schema.table", иначе None
+        r["target"] = r.pop("target_name") or None
         # сравнение по диапазонам: {checked, total, mismatched}, иначе None
         try:
             r["chunked"] = json.loads(r.pop("chunked_json") or "null")
@@ -842,18 +892,21 @@ def _duplicates(conn, schema, table, key_columns):
     return int((cur.fetchone() or (0,))[0] or 0)
 
 
-def _plan_chunks(src_conn, dst_conn, schema, table, key, src_cols, work_mem):
+def _plan_chunks(src_conn, dst_conn, schema, table, key, src_cols, work_mem,
+                 dst=None):
     """
     Подготовка таблицы к сравнению по диапазонам.
+    dst — (схема, таблица) приёмника с другим именем (targets) или None.
     -> None (сравнить как раньше), {"row": ...} (итог без нарезки) или
        {"column": ..., "ranges": [...]}.
     """
     key_columns = list(key["columns"]) if key else []
     key_source = key["source"] if key else None
+    dst_schema, dst_table = dst or (schema, table)
 
     try:
         src_types = table_column_types(src_conn, schema, table)
-        dst_types = table_column_types(dst_conn, schema, table)
+        dst_types = table_column_types(dst_conn, dst_schema, dst_table)
         if src_types != dst_types \
                 or any(k not in src_types for k in key_columns):
             # structure_diff / отказ по ключу даст compare_table
@@ -867,9 +920,9 @@ def _plan_chunks(src_conn, dst_conn, schema, table, key, src_cols, work_mem):
                     message="Ключ (%s) не уникален в источнике: повторяется "
                             "значений — %d" % (", ".join(key_columns), dup))}
 
-        if key_columns and not dest_key_is_unique(dst_conn, schema, table,
-                                                  key_columns):
-            dup = _duplicates(dst_conn, schema, table, key_columns)
+        if key_columns and not dest_key_is_unique(dst_conn, dst_schema,
+                                                  dst_table, key_columns):
+            dup = _duplicates(dst_conn, dst_schema, dst_table, key_columns)
             if dup:
                 return {"row": _result(
                     "duplicate_keys",
@@ -877,13 +930,14 @@ def _plan_chunks(src_conn, dst_conn, schema, table, key, src_cols, work_mem):
                             "значений — %d" % (", ".join(key_columns), dup))}
 
         column = pg_ranges.pick_chunk_column(src_conn, dst_conn, schema,
-                                             table, key_columns)
+                                             table, key_columns,
+                                             **_dst_kw(dst))
 
         if column is None:
             s = pg_ranges.range_checksum(src_conn, schema, table, src_cols,
                                          None)
-            d = pg_ranges.range_checksum(dst_conn, schema, table, src_cols,
-                                         None)
+            d = pg_ranges.range_checksum(dst_conn, dst_schema, dst_table,
+                                         src_cols, None)
             null_keys = (key_columns and key_source not in UNIQUE_KEY_SOURCES
                          and _has_null_keys(src_conn, schema, table,
                                             key_columns, None))
@@ -896,7 +950,7 @@ def _plan_chunks(src_conn, dst_conn, schema, table, key, src_cols, work_mem):
             _rollback([src_conn, dst_conn])
             row = compare_table(src_conn, dst_conn, schema, table,
                                 key_columns, key_source=key_source,
-                                work_mem=work_mem)
+                                work_mem=work_mem, **_dst_kw(dst))
             row["message"] = row.get("message") or (
                 "по диапазонам: колонки нарезки нет, контрольная сумма "
                 "не совпала — сравнено построчно")
@@ -909,7 +963,8 @@ def _plan_chunks(src_conn, dst_conn, schema, table, key, src_cols, work_mem):
                 else None
             return _compare_buckets(src_conn, dst_conn, schema, table,
                                     key_columns, key_source, src_cols,
-                                    column, work_mem, null_keys)
+                                    column, work_mem, null_keys,
+                                    **_dst_kw(dst))
 
         ranges = pg_ranges.top_ranges(src_conn, schema, table, column)
         return {"column": column, "ranges": ranges}
@@ -962,7 +1017,8 @@ def _both(on_src, on_dst, src_conn=None, dst_conn=None):
 
 
 def _compare_buckets(src_conn, dst_conn, schema, table, key_columns,
-                     key_source, src_cols, column, work_mem, null_keys=None):
+                     key_source, src_cols, column, work_mem, null_keys=None,
+                     dst=None):
     """
     Режим корзин: порядок строк сторон разный или неизвестен, колонка
     нарезки текстовая. Уровень — один проход GROUP BY по md5-префиксу на
@@ -970,8 +1026,10 @@ def _compare_buckets(src_conn, dst_conn, schema, table, key_columns,
     LEAF_ROWS дробятся следующим уровнем, остальные — листья. Все листья —
     одним построчным сравнением с предикатом корзин.
     -> {"row": итог с chunked, "leaves": [лист]} (листья — только differs).
+    dst — (схема, таблица) приёмника с другим именем (targets) или None.
     """
     name = column["name"]
+    dst_schema, dst_table = dst or (schema, table)
     length, parents = pg_ranges.BUCKET_START, None
     same_src = same_dst = total = 0
     leaves = []
@@ -983,7 +1041,7 @@ def _compare_buckets(src_conn, dst_conn, schema, table, key_columns,
                 src_conn, schema, table, src_cols, name, level, prev,
                 null_keys),
             lambda: pg_ranges.bucket_checksums(
-                dst_conn, schema, table, src_cols, name, level, prev),
+                dst_conn, dst_schema, dst_table, src_cols, name, level, prev),
             src_conn, dst_conn)
         _rollback([src_conn, dst_conn])
 
@@ -1008,7 +1066,8 @@ def _compare_buckets(src_conn, dst_conn, schema, table, key_columns,
 
     row = compare_table(src_conn, dst_conn, schema, table, key_columns,
                         key_source=key_source, work_mem=work_mem,
-                        where=pg_ranges.leaves_predicate("t", leaves, name))
+                        where=pg_ranges.leaves_predicate("t", leaves, name),
+                        **_dst_kw(dst))
 
     if row["status"] not in ("same", "differs"):
         return {"row": dict(row, chunked=chunked), "leaves": []}
@@ -1027,20 +1086,28 @@ def _compare_buckets(src_conn, dst_conn, schema, table, key_columns,
 
 
 def _compare_one(src_conn, dst_conn, schema, table, info, candidates,
-                 work_mem=WORK_MEM):
+                 work_mem=WORK_MEM, dst=None):
     """
     Итог таблицы ({"row": ...}) или план сравнения по диапазонам
     ({"key", "columns", "column", "ranges"}).
+    dst — (схема, таблица) приёмника с другим именем (targets) или None.
     """
+    dst = _dst_or_none(schema, table, dst)
+    dst_schema, dst_table = dst or (schema, table)
+
     if not info.get("in_src", True):
         return {"row": _result("no_source",
                                message="Таблицы нет в источнике — не изменяется")}
 
     if not info.get("in_dst", True):
+        if dst:
+            return {"row": _result(
+                "no_dest", message="Таблицы %s.%s нет в приёмнике"
+                                   % (dst_schema, dst_table))}
         return {"row": _result("no_dest", message="Таблицы нет в приёмнике")}
 
     src_cols = table_columns(src_conn, schema, table)
-    dst_cols = table_columns(dst_conn, schema, table)
+    dst_cols = table_columns(dst_conn, dst_schema, dst_table)
     valid_unique = None
 
     if any(c.get("source") == "unique_index" for c in candidates or []):
@@ -1056,20 +1123,20 @@ def _compare_one(src_conn, dst_conn, schema, table, info, candidates,
 
     if chunk:
         plan = _plan_chunks(src_conn, dst_conn, schema, table, key, src_cols,
-                            work_mem)
+                            work_mem, **_dst_kw(dst))
 
     if plan is None:
         row = compare_table(src_conn, dst_conn, schema, table,
                             key_fields["key_columns"],
                             key_source=key_fields["key_source"],
-                            work_mem=work_mem)
+                            work_mem=work_mem, **_dst_kw(dst))
         plan = {"row": row}
 
     if "row" in plan:
         plan["row"].update(key_fields)
         return plan
 
-    return dict(plan, key=key_fields, columns=src_cols)
+    return dict(plan, key=key_fields, columns=src_cols, dst=dst)
 
 
 def save_leaf(job_id, schema, table, column, leaf, row):
@@ -1162,7 +1229,8 @@ def _new_run(job_id, item, plan):
     run = {
         "job_id": job_id, "item": item, "schema": item["schema_name"],
         "table": item["table_name"], "key": key, "columns": plan["columns"],
-        "column": plan["column"], "lock": threading.Lock(),
+        "dst": plan.get("dst"), "column": plan["column"],
+        "lock": threading.Lock(),
         "pending": len(plan["ranges"]), "total": len(plan["ranges"]),
         "checked": 0, "mismatched": 0, "error": None, "override": None,
         "cancelled": False, "closed": False,
@@ -1186,11 +1254,22 @@ def _forget_run(run):
             _PROGRESS.pop(int(run["job_id"]), None)
 
 
+def _target_text(dst):
+    """(схема, таблица) цели с другим именем → "schema.table", иначе None."""
+    return "%s.%s" % tuple(dst) if dst else None
+
+
+def _run_base(run):
+    base = {"schema": run["schema"], "table": run["table"],
+            "target": _target_text(run.get("dst"))}
+    base.update(run["key"])
+    return base
+
+
 def _finish_run(run, shared):
     """Все диапазоны таблицы закрыты: итог в pg_compare_results, item."""
     job_id, item = run["job_id"], run["item"]
-    base = {"schema": run["schema"], "table": run["table"]}
-    base.update(run["key"])
+    base = _run_base(run)
     chunked = _chunked(run)
 
     if run["error"]:
@@ -1248,6 +1327,8 @@ def _compare_range(job_id, slot, conns, ids, work, run, rng, watch, shared,
                    work_mem):
     """Одна единица «диапазон таблицы». -> False, если пришёл стоп."""
     schema, table = run["schema"], run["table"]
+    dst = run.get("dst")
+    dst_schema, dst_table = dst or (schema, table)
     column = run["column"]
 
     try:
@@ -1259,8 +1340,8 @@ def _compare_range(job_id, slot, conns, ids, work, run, rng, watch, shared,
                                          column.get("collate_c", False))
         s = pg_ranges.range_checksum(src_conn, schema, table, run["columns"],
                                      pred)
-        d = pg_ranges.range_checksum(dst_conn, schema, table, run["columns"],
-                                     pred)
+        d = pg_ranges.range_checksum(dst_conn, dst_schema, dst_table,
+                                     run["columns"], pred)
         same = s == d and not (
             run["null_check"] and _has_null_keys(
                 src_conn, schema, table, run["key"]["key_columns"], pred))
@@ -1287,7 +1368,8 @@ def _compare_range(job_id, slot, conns, ids, work, run, rng, watch, shared,
             row = compare_table(src_conn, dst_conn, schema, table,
                                 run["key"]["key_columns"],
                                 key_source=run["key"]["key_source"],
-                                work_mem=work_mem, where=pred)
+                                work_mem=work_mem, where=pred,
+                                **_dst_kw(dst))
             with run["lock"]:
                 run["checked"] += 1
                 for name in run["sums"]:
@@ -1328,15 +1410,18 @@ def _compare_table_unit(job_id, slot, conns, ids, work, item, info,
     mark_item_running(item["id"])
     refresh_job_progress(job_id)
 
-    base = {"schema": schema, "table": table}
+    entry = info.get((schema, table), {})
+    dst = _dst_or_none(schema, table, entry.get("dst"))
+    base = {"schema": schema, "table": table, "target": _target_text(dst)}
     src_conn, dst_conn = conns[slot], conns[slot + 1]
 
     try:
         plan = _compare_one(
             src_conn, dst_conn, schema, table,
-            info.get((schema, table), {}),
+            entry,
             candidates.get((schema, table)),
             work_mem=work_mem,
+            **_dst_kw(dst)
         )
 
         if "row" in plan:
@@ -1442,8 +1527,7 @@ def _fail_runs(job_id, shared, message):
     for run in list(shared["runs"]):
         if run["closed"]:
             continue
-        base = {"schema": run["schema"], "table": run["table"]}
-        base.update(run["key"])
+        base = _run_base(run)
         save_result(job_id, dict(base, status="error", chunked=_chunked(run),
                                  message=message))
         mark_item_failed(run["item"]["id"], message)
@@ -1456,8 +1540,7 @@ def _cancel_runs(job_id, shared):
     for run in shared["runs"]:
         if run["closed"]:
             continue
-        base = {"schema": run["schema"], "table": run["table"]}
-        base.update(run["key"])
+        base = _run_base(run)
         save_result(job_id, dict(
             base, status="cancelled", chunked=_chunked(run),
             message="Сравнение остановлено пользователем",
@@ -1470,7 +1553,8 @@ def run_pg_compare_job(job_id):
     """
     Раннер job_type='pg_compare'. Config: source_connection_id,
     dest_connection_id, parallel (1..8, по умолчанию 4),
-    tables=[{schema, table, in_src, in_dst}].
+    tables=[{schema, table, in_src, in_dst}], targets (необязательно,
+    {"schema.table": "schema.table"} — с какой таблицей приёмника сравнивать).
     Item на таблицу; таблицы разбирают min(parallel, таблиц) воркеров,
     у каждого своя пара соединений; результат пишется сразу после таблицы.
     """
@@ -1495,6 +1579,12 @@ def run_pg_compare_job(job_id):
         info = {(t.get("schema"), t.get("table")): t
                 for t in config.get("tables") or []}
         items = get_job_items(job_id)
+        # карта targets: таблица приёмника по таблице источника; строки
+        # задачи и результаты — по имени источника. Конфигу не доверяем
+        # (перезапуск идёт из сохранённого) — проверка заново, до работы
+        targets = validated_targets(config, items)
+        info = {key: dict(entry, dst=target_of(targets, key[0], key[1]))
+                for key, entry in info.items()}
 
         both = [
             (it["schema_name"], it["table_name"]) for it in items

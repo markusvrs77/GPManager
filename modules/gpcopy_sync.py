@@ -112,7 +112,43 @@ except ImportError:
     )
 
 
+try:
+    from modules.sync_targets import is_mapped, normalize_targets, target_of
+except ImportError:
+    from sync_targets import is_mapped, normalize_targets, target_of
+
+
 DEFAULT_GPCOPY_PATH = "/usr/local/gpdb/greenplum-db/bin/gpcopy"
+
+
+def sync_config_pair(cfg):
+    """(schema, table) источника для sync-конфига таблицы."""
+    source_full, _target = resolve_sync_names(cfg)
+    return split_table_name(source_full)
+
+
+def apply_sync_targets(table_configs, raw_targets):
+    """
+    Карта «источник -> цель» в sync-конфигах: проверка на выборе задачи и
+    target у каждой таблицы с картой. Таблицы без карты не меняются (их
+    target — как прислали, по умолчанию одноимённый).
+    -> (новые table_configs, нормализованная карта). ValueError — карта
+    не годится.
+    """
+    configs = [dict(cfg) for cfg in table_configs or []]
+
+    if not raw_targets:
+        return configs, {}
+
+    pairs = [sync_config_pair(cfg) for cfg in configs]
+    targets = normalize_targets(
+        raw_targets, ["{}.{}".format(s, t) for s, t in pairs])
+
+    for cfg, (schema, table) in zip(configs, pairs):
+        if is_mapped(targets, schema, table):
+            cfg["target"] = "{}.{}".format(*target_of(targets, schema, table))
+
+    return configs, targets
 
 
 def copy_source_to_stage_via_gpcopy(source_connection_id, dest_connection_id,
@@ -199,6 +235,11 @@ def run_gpcopy_sync_job(job_id):
         if not table_configs:
             raise Exception("table_configs is empty")
 
+        # карта «источник -> цель»: заново проверяем и проставляем target
+        # (конфиг мог прийти из расписания, минуя маршрут)
+        table_configs, targets = apply_sync_targets(
+            table_configs, config.get("targets"))
+
         source_host = get_conn_host(source_connection_id)
         dest_host = get_conn_host(dest_connection_id)
         source_port = get_conn_port(source_connection_id)
@@ -265,6 +306,30 @@ def run_gpcopy_sync_job(job_id):
 
                     if not key_columns:
                         raise Exception(f"Key columns empty for {schema_name}.{table_name}")
+
+                    # цель с картой: нет в приёмнике — создаём по структуре
+                    # источника (DDL только на приёмнике). Не вышло —
+                    # таблица падает без загрузки.
+                    if is_mapped(targets, source_schema, source_table):
+                        try:
+                            from modules.ddl_check import ensure_target_table
+                        except ImportError:
+                            from ddl_check import ensure_target_table
+
+                        try:
+                            if ensure_target_table(
+                                    source_conn, target_conn,
+                                    source_schema, source_table,
+                                    target_schema, target_table):
+                                print(f"[gpcopy_sync] created target "
+                                      f"{target_schema}.{target_table}")
+                            target_conn.commit()
+                        except Exception as create_error:
+                            raise Exception(
+                                f"Цели {target_schema}.{target_table} нет в "
+                                f"приёмнике, и создать её по "
+                                f"{source_schema}.{source_table} не удалось: "
+                                f"{create_error}")
 
                     common_cols, compare_cols = normalize_columns(
                         source_conn,
@@ -711,6 +776,9 @@ def preview_gpcopy_sync(data):
         "total_delete": 0,
     }
 
+    table_configs, targets = apply_sync_targets(
+        table_configs, data.get("targets"))
+
     source_conn = open_conn(source_connection_id)
     target_conn = open_conn(dest_connection_id)
 
@@ -724,13 +792,21 @@ def preview_gpcopy_sync(data):
             compare_columns = cfg.get("compare_columns") or ["*"]
             delete_missing = bool(cfg.get("delete_missing"))
 
+            # цели с картой ещё может не быть: задача создаст её по
+            # источнику, поэтому структуру сверяем с самим источником
+            will_create = False
+
+            if is_mapped(targets, source_schema, source_table):
+                will_create = not get_table_columns(
+                    target_conn, target_schema, target_table)
+
             common_cols, compare_cols = normalize_columns(
                 source_conn,
-                target_conn,
+                source_conn if will_create else target_conn,
                 source_schema,
                 source_table,
-                target_schema,
-                target_table,
+                source_schema if will_create else target_schema,
+                source_table if will_create else target_table,
                 key_columns,
                 compare_columns,
             )
@@ -748,6 +824,11 @@ def preview_gpcopy_sync(data):
                 "delete_count": None,
                 "message": "Structure validated. Counts will be calculated during apply after staging load.",
             }
+
+            if will_create:
+                item["message"] = (
+                    "Цели {}.{} нет в приёмнике — задача создаст её по "
+                    "структуре источника.".format(target_schema, target_table))
 
             result["tables"].append(item)
 

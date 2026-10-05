@@ -311,6 +311,48 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 .gpp-search-res .hit.in { color: var(--ok); }
 .gpp-modal .foot { display: flex; justify-content: space-between; align-items: center;
   margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--hairline); }
+
+/* «Куда грузить»: таблица источника → таблица приёмника (пусто — одноимённая) */
+details.gpp-tgt { margin-top: 14px; background: var(--surface-2);
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm); }
+details.gpp-tgt > summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 9px 12px; font-size: 13.5px; font-weight: 600; cursor: pointer; list-style: none; }
+details.gpp-tgt > summary::-webkit-details-marker { display: none; }
+details.gpp-tgt > summary::before { content: "▸"; color: var(--text-muted); font-size: 12px; }
+details.gpp-tgt[open] > summary::before { content: "▾"; }
+details.gpp-tgt > summary .mut { color: var(--text-muted); font-weight: 400; }
+details.gpp-tgt > summary .bad { color: var(--crit); font-weight: 600; }
+details.gpp-tgt.off > summary { color: var(--text-muted); }
+.gpp-tgt-body { padding: 0 12px 12px; }
+.gpp-tgt-body .gpp-hint { margin-top: 0; }
+.gpp-tgt-off { font-size: 12.5px; margin: 0 0 8px; padding: 7px 9px; border-radius: 8px;
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 32%, transparent); }
+.gpp-tgt-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.gpp-tgt-bar .gpp-sc-filter { width: 260px; max-width: 100%; margin: 0; }
+.gpp-tgt-list { max-height: 320px; overflow-y: auto; background: var(--solid);
+  border: 1px solid var(--hairline); border-radius: 8px; }
+.gpp-tgt-head, .gpp-tgt-row { display: grid; gap: 8px; align-items: center;
+  grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr); padding: 4px 10px; }
+.gpp-tgt-head { position: sticky; top: 0; z-index: 1; padding: 6px 10px;
+  background: var(--surface); box-shadow: inset 0 -1px 0 var(--hairline);
+  font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); }
+.gpp-tgt-row { font-family: var(--font-mono); font-size: 12.5px;
+  border-bottom: 1px solid var(--hairline); }
+.gpp-tgt-row:last-child { border-bottom: none; }
+.gpp-tgt-row .src { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gpp-tgt-row .arr { color: var(--text-muted); text-align: center; }
+.gpp-tgt-row.mapped .arr { color: var(--a1); font-weight: 700; }
+.gpp-tgt-row input { width: 100%; min-width: 0; background: var(--surface-2);
+  border: 1px solid var(--hairline); color: var(--text); border-radius: 6px;
+  padding: 3px 8px; font-family: var(--font-mono); font-size: 12.5px; }
+.gpp-tgt-row input:focus { outline: none; border-color: var(--a1); }
+.gpp-tgt-row input.bad { border-color: var(--crit); }
+.gpp-tgt-row input:disabled { opacity: .55; }
+.gpp-tgt-row .err { grid-column: 3; color: var(--crit); font-size: 12px; white-space: normal; }
+.gpp-tgt-row .err:empty { display: none; }
+.gpp-tgt-more { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+.gpp-tgt-to { color: var(--a2); font-family: var(--font-mono); white-space: nowrap; }
 </style>
 
 <div class="gpp">
@@ -435,6 +477,25 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
         <input class="gpp-sc-filter" id="pgcmpSearch" type="search"
                placeholder="Поиск по имени схемы или таблицы…" autocomplete="off">
         <div class="pgcmp-tree" id="pgcmpTree"><div class="pgcmp-empty">Каталог не загружен.</div></div>
+        <details class="gpp-tgt" id="pgcmpTgt">
+            <summary>Куда грузить <span class="mut" id="pgcmpTgtCount">— в одноимённые таблицы</span></summary>
+            <div class="gpp-tgt-body">
+                <div class="gpp-hint">Список — только отдельно отмеченные таблицы. Схемы,
+                    отмеченные целиком, сравниваются и грузятся в одноимённые таблицы.
+                    Пустое поле — та же таблица; можно указать <code>schema.table</code> или
+                    <code>table</code> (схема источника). Только строчные латинские буквы,
+                    цифры, <code>_</code> и <code>$</code>. Сравнение идёт с указанной
+                    таблицей, загрузка разницы берёт карту из сравнения.</div>
+                <div class="gpp-tgt-bar">
+                    <input class="gpp-sc-filter" id="pgcmpTgtFilter" type="search" autocomplete="off"
+                           placeholder="Фильтр: схема.таблица…" aria-label="Фильтр списка «Куда грузить»">
+                    <label class="gpp-auto"><input type="checkbox" id="pgcmpTgtOnlyMapped"> только переназначенные</label>
+                    <button type="button" class="gpp-btn sm ghost" id="pgcmpTgtReset">Сбросить все</button>
+                </div>
+                <div class="gpp-tgt-list" id="pgcmpTgtList"></div>
+                <div class="gpp-tgt-more" id="pgcmpTgtMore"></div>
+            </div>
+        </details>
         <div class="gpp-actions" style="margin-top: 12px;">
             <button type="button" class="gpp-btn primary" id="pgcmpCompareBtn">Сравнить</button>
             <label for="pgcmpParallel" class="gpp-hint" style="display: inline-flex; align-items: center; gap: 6px; margin: 0;"
@@ -494,6 +555,27 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
             <button class="gpp-btn" id="gppOpenSel">＋ Выбрать таблицы</button>
             <button class="gpp-btn ghost" id="gppClearSel" style="color: var(--text-muted);">Очистить</button>
         </div>
+
+        <details class="gpp-tgt" id="gppTgt">
+            <summary>Куда грузить <span class="mut" id="gppTgtCount">— в одноимённые таблицы</span></summary>
+            <div class="gpp-tgt-body">
+                <div class="gpp-tgt-off" id="gppTgtOff" hidden>Для режима партиций загрузка
+                    в другую таблицу не поддерживается — таблицы грузятся в одноимённые.</div>
+                <div class="gpp-hint">Пустое поле — грузим в таблицу с тем же именем.
+                    Можно указать <code>schema.table</code> или просто <code>table</code>
+                    (схема — как у источника). Только строчные латинские буквы, цифры,
+                    <code>_</code> и <code>$</code>. Если такой таблицы в приёмнике нет —
+                    она создаётся по структуре источника.</div>
+                <div class="gpp-tgt-bar">
+                    <input class="gpp-sc-filter" id="gppTgtFilter" type="search" autocomplete="off"
+                           placeholder="Фильтр: схема.таблица…" aria-label="Фильтр списка «Куда грузить»">
+                    <label class="gpp-auto"><input type="checkbox" id="gppTgtOnlyMapped"> только переназначенные</label>
+                    <button type="button" class="gpp-btn sm ghost" id="gppTgtReset">Сбросить все</button>
+                </div>
+                <div class="gpp-tgt-list" id="gppTgtList"></div>
+                <div class="gpp-tgt-more" id="gppTgtMore"></div>
+            </div>
+        </details>
     </div>
 
     <!-- STEP 2: HOW -->
@@ -725,8 +807,8 @@ details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: p
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=18"></script>
+<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=20"></script>
 {% if (toolkit or 'gp') == 'pg' %}
-<script src="{{ url_for('static', filename='js/pg_compare.js') }}?v=6"></script>
+<script src="{{ url_for('static', filename='js/pg_compare.js') }}?v=8"></script>
 {% endif %}
 {% endblock %}

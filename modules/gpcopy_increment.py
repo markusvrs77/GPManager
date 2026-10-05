@@ -37,7 +37,8 @@ try:
         open_psycopg2_connection_by_cfg, get_conn_dbname, get_conn_host,
         get_conn_port, get_conn_user, safe_mark_job_failed,
         safe_mark_job_cancelled, safe_mark_item_failed, safe_mark_item_done,
-        get_item_value, DEFAULT_GPCOPY_PATH,
+        get_item_value, DEFAULT_GPCOPY_PATH, job_targets, gpcopy_full_name,
+        prepare_mapped_targets,
     )
 except ImportError:
     from gpcopy import (
@@ -45,8 +46,14 @@ except ImportError:
         open_psycopg2_connection_by_cfg, get_conn_dbname, get_conn_host,
         get_conn_port, get_conn_user, safe_mark_job_failed,
         safe_mark_job_cancelled, safe_mark_item_failed, safe_mark_item_done,
-        get_item_value, DEFAULT_GPCOPY_PATH,
+        get_item_value, DEFAULT_GPCOPY_PATH, job_targets, gpcopy_full_name,
+        prepare_mapped_targets,
     )
+
+try:
+    from modules.sync_targets import target_of
+except ImportError:
+    from sync_targets import target_of
 
 
 def _watermark_literal(value):
@@ -60,12 +67,14 @@ def _watermark_literal(value):
     return sql_literal(value)
 
 
-def build_increment_items(tables, watermarks, source_db, dest_db):
+def build_increment_items(tables, watermarks, source_db, dest_db,
+                          targets=None):
     """
     Чистая функция: строит include-table-json items.
 
     tables      — [{schema, table, watermark_column}]
-    watermarks  — {(schema, table): value | None}
+    watermarks  — {(schema, table): value | None} (ключ — имя источника)
+    targets     — карта «источник -> цель»; без неё dest одноимённый
     Возвращает [{source, dest, sql}].
     """
     if not tables:
@@ -96,9 +105,18 @@ def build_increment_items(tables, watermarks, source_db, dest_db):
                 full, quote_ident(column), _watermark_literal(watermark)
             )
 
+        dst_schema, dst_table = target_of(targets, schema, table)
+
+        if (dst_schema, dst_table) == (schema, table):
+            dest = "{}.{}.{}".format(dest_db, schema, table)
+        else:
+            # цель из карты: имя схемы источника может быть с заглавными —
+            # gpcopy понимает такое только в кавычках
+            dest = gpcopy_full_name(dest_db, dst_schema, dst_table)
+
         items.append({
             "source": "{}.{}.{}".format(source_db, schema, table),
-            "dest": "{}.{}.{}".format(dest_db, schema, table),
+            "dest": dest,
             "sql": sql,
         })
 
@@ -139,6 +157,7 @@ def build_increment_include_json_file(config):
     dest_db = config.get("dest_db") or get_conn_dbname(dest_cfg)
 
     tables = config.get("tables") or []
+    targets = config.get("targets") or {}
 
     watermarks = {}
     for entry in tables:
@@ -147,11 +166,14 @@ def build_increment_include_json_file(config):
         column = entry.get("watermark_column")
 
         if schema and table and column:
+            # отметку читаем там, куда грузим, — в цели
+            dst_schema, dst_table = target_of(targets, schema, table)
             watermarks[(schema, table)] = get_dest_watermark(
-                dest_cfg, schema, table, column
+                dest_cfg, dst_schema, dst_table, column
             )
 
-    items = build_increment_items(tables, watermarks, source_db, dest_db)
+    items = build_increment_items(tables, watermarks, source_db, dest_db,
+                                  targets)
 
     fd, path = tempfile.mkstemp(prefix="gpcopy_increment_", suffix=".json", text=True)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -180,6 +202,45 @@ def run_gpcopy_increment_job(job_id):
 
         clear_stop_flag(job_id)
         mark_job_running(job_id)
+
+        # карта «источник -> цель»: проверка на выборе задачи и цель в
+        # приёмнике до gpcopy (нет — создаём по источнику)
+        def _pair(entry):
+            return (entry.get("schema") or entry.get("schema_name"),
+                    entry.get("table") or entry.get("table_name"))
+
+        tables = config.get("tables") or []
+        targets = job_targets(config, [_pair(t) for t in tables])
+        config["targets"] = targets
+
+        if targets:
+            target_errors = prepare_mapped_targets(
+                config["source_connection_id"], config["dest_connection_id"],
+                targets, [_pair(t) for t in tables])
+
+            if target_errors:
+                kept_items = []
+
+                for item in items:
+                    pair = (get_item_value(item, "schema_name"),
+                            get_item_value(item, "table_name"))
+
+                    if pair in target_errors:
+                        safe_mark_item_failed(
+                            get_item_value(item, "id"),
+                            error_message=target_errors[pair][:2000])
+                    else:
+                        kept_items.append(item)
+
+                items = kept_items
+                config["tables"] = [
+                    t for t in tables if _pair(t) not in target_errors]
+                refresh_job_progress(job_id)
+
+                if not items or not config["tables"]:
+                    raise Exception(
+                        "Не удалось подготовить цели в приёмнике:\n{}".format(
+                            "\n".join(target_errors.values())))
 
         include_json_file = build_increment_include_json_file(config)
 

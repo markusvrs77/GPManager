@@ -371,6 +371,16 @@ def run_gpcopy_partition_diff_job(job_id):
         if not tables:
             raise Exception("tables is empty")
 
+        # партиции льются в одноимённые партиции приёмника — другой цели
+        # у этого режима нет (маршрут отказывает раньше, это для расписаний)
+        raw_targets = config.get("targets")
+
+        if raw_targets and (not isinstance(raw_targets, dict) or any(
+                str(v or "").strip() for v in raw_targets.values())):
+            raise Exception(
+                "Для режима партиций загрузка в другую таблицу "
+                "не поддерживается")
+
         clear_stop_flag(job_id)
         mark_job_running(job_id)
 

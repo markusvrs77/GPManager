@@ -475,6 +475,22 @@ def api_get_job(job_id):
         }
     )
 
+def _gpcopy_targets(raw, selected):
+    """
+    Карта «таблица источника -> таблица приёмника» из запроса (поле
+    targets), проверенная на выборе именно этого запроса. Пустая — {}.
+    ValueError с текстом для человека — маршрут отвечает 400.
+    """
+    from modules.sync_targets import normalize_targets
+
+    return normalize_targets(raw, selected)
+
+
+def _gpcopy_ddl_targets(data, tables):
+    """targets для подготовки приёмника: {} без карты, иначе — по tables."""
+    return _gpcopy_targets(data.get("targets"), tables)
+
+
 @app.route("/api/gpcopy/precheck", methods=["POST"])
 def api_gpcopy_precheck():
     """Предпроверка DDL: сравнение колонок источника и приёмника."""
@@ -491,8 +507,10 @@ def api_gpcopy_precheck():
     try:
         from modules.ddl_check import precheck_tables
 
+        targets = _gpcopy_ddl_targets(data, tables)
         result = precheck_tables(
             data["source_connection_id"], data["dest_connection_id"], tables,
+            **({"targets": targets} if targets else {})
         )
         return jsonify({"ok": True, **result})
     except ValueError as e:
@@ -514,7 +532,11 @@ def api_gpcopy_add_columns():
     try:
         from modules.ddl_check import add_missing_columns
 
-        results = add_missing_columns(data["dest_connection_id"], tables)
+        targets = _gpcopy_ddl_targets(data, tables)
+        results = add_missing_columns(
+            data["dest_connection_id"], tables,
+            **({"targets": targets} if targets else {})
+        )
         return jsonify({
             "ok": True,
             "results": results,
@@ -541,8 +563,10 @@ def api_gpcopy_create_tables():
     try:
         from modules.ddl_check import create_missing_objects
 
+        targets = _gpcopy_ddl_targets(data, tables)
         results = create_missing_objects(
             data["source_connection_id"], data["dest_connection_id"], tables,
+            **({"targets": targets} if targets else {})
         )
         return jsonify({
             "ok": True,
@@ -573,7 +597,11 @@ def api_gpcopy_rename_columns():
     try:
         from modules.ddl_check import apply_column_renames
 
-        results = apply_column_renames(data["dest_connection_id"], tables)
+        targets = _gpcopy_ddl_targets(data, tables)
+        results = apply_column_renames(
+            data["dest_connection_id"], tables,
+            **({"targets": targets} if targets else {})
+        )
         return jsonify({
             "ok": True,
             "results": results,
@@ -604,8 +632,10 @@ def api_gpcopy_recreate_tables():
     try:
         from modules.ddl_check import recreate_tables
 
+        targets = _gpcopy_ddl_targets(data, tables)
         results = recreate_tables(
             data["source_connection_id"], data["dest_connection_id"], tables,
+            **({"targets": targets} if targets else {})
         )
         return jsonify({
             "ok": True,
@@ -1595,6 +1625,13 @@ def api_gpcopy_start():
             "message": "После очистки дублей не осталось таблиц для gpcopy",
         }), 400
 
+    # куда грузить: карта «источник -> цель» (общая для gpcopy и copy_pipe;
+    # copy_pipe читает её из config["targets"] в sync_transport)
+    try:
+        targets = _gpcopy_targets(data.get("targets"), unique_tables)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
     try:
         config = {
             "source_connection_id": source_connection_id,
@@ -1619,6 +1656,10 @@ def api_gpcopy_start():
             "validate_count": validate_count,
         }
 
+        # без карты конфиг прежний — ключ появляется только с целями
+        if targets:
+            config["targets"] = targets
+
         # выбор транспорта по типам СУБД: gpcopy для GP→GP,
         # copy_pipe (COPY-стрим) для PG↔PG / PG↔GP
         from modules.connections import get_connection_by_id as _conn_cfg
@@ -1637,6 +1678,12 @@ def api_gpcopy_start():
             job_type = "gpcopy"
             runner = run_gpcopy_job
             action = "GPCOPY"
+
+            # цель с картой создаётся заранее: skip-existing дал бы done
+            # без данных, а без режима gpcopy упал бы — 400 до задачи
+            from modules.gpcopy import check_mapped_flags
+
+            check_mapped_flags(config, targets)
 
         job_id = create_job(
             job_type=job_type,
@@ -1846,13 +1893,22 @@ def api_pg_compare_start():
     except ValueError as e:
         return jsonify({"ok": False, "message": str(e)}), 400
 
+    # карта «таблица источника -> таблица приёмника»; ключи проверяются по
+    # раскрытому выбору в expand_selection (normalize_targets)
+    raw_targets = data.get("targets")
+    if raw_targets not in (None, "", {}) and not isinstance(raw_targets, dict):
+        return jsonify({"ok": False, "message": "targets должен быть объектом "
+                                                "{\"schema.table\": "
+                                                "\"schema.table\"}"}), 400
+    target_kw = {"targets": raw_targets} if raw_targets else {}
+
     # схема раскрывается в момент старта: состав сверяется с каталогом
     conns = []
     try:
         conns.append(pg_sync_common.open_pg(source_id, readonly=True))
         conns.append(pg_sync_common.open_pg(dest_id))
         expanded = pg_compare.expand_selection(conns[0], conns[1],
-                                               schemas, tables)
+                                               schemas, tables, **target_kw)
     except ValueError as e:
         return jsonify({"ok": False, "message": str(e)}), 400
     except Exception as e:
@@ -1869,19 +1925,27 @@ def api_pg_compare_start():
         return jsonify({"ok": False,
                         "message": "В выбранных схемах нет таблиц"}), 400
 
+    config = {
+        "source_connection_id": source_id,
+        "dest_connection_id": dest_id,
+        "schemas": schemas,
+        "selected_tables": tables,
+        "tables": expanded,
+        "parallel": parallel,
+        "item_action": "COMPARE",
+    }
+
+    # нормализованная карта — из строк выбора (без карты поля нет вовсе)
+    targets = {"%s.%s" % (t["schema"], t["table"]): t["target"]
+               for t in expanded if t.get("target")}
+    if targets:
+        config["targets"] = targets
+
     # строки задачи create_job заводит сам по config["tables"]
     job_id = create_job(
         job_type="pg_compare",
         connection_id=source_id,
-        config={
-            "source_connection_id": source_id,
-            "dest_connection_id": dest_id,
-            "schemas": schemas,
-            "selected_tables": tables,
-            "tables": expanded,
-            "parallel": parallel,
-            "item_action": "COMPARE",
-        },
+        config=config,
     )
 
     threading.Thread(
@@ -2053,19 +2117,85 @@ def _pg_diff_load_from_compare(compare_job_id, source_id, dest_id, tables):
                 "Таблица %s: статус сравнения «%s» — действие «%s» "
                 "недоступно" % (name, row["status"], t["action"]))
 
-        out.append(dict(
+        entry = dict(
             t,
             key_columns=(list(row.get("key_columns") or [])
                          if t["action"] == "diff" else []),
             key_source=row.get("key_source") if t["action"] == "diff" else None,
             in_dst=t["action"] != "create",
-        ))
+        )
+        # куда грузить — как сравнивали: карта targets задачи сравнения
+        target = _pg_compare_targets(config).get(name)
+        if target:
+            entry["target"] = target
+        out.append(entry)
         expected.append({"schema": t["schema"], "table": t["table"],
                          "to_insert": row.get("to_insert"),
                          "to_update": row.get("to_update"),
                          "to_delete": row.get("to_delete")})
 
     return out, expected
+
+
+def _pg_compare_targets(config):
+    """Карта targets из конфига задачи сравнения ({} — без карты)."""
+    targets = (config or {}).get("targets") or {}
+    return targets if isinstance(targets, dict) else {}
+
+
+def _pg_diff_load_targets(raw, tables, compare_job_id=None):
+    """
+    Карта targets загрузки. Со сравнением — его карта; пришедшая в запросе
+    карта должна с ней совпадать по выбранным таблицам, иначе ошибка.
+    Без сравнения — карта запроса (normalize_targets по выбранным таблицам).
+    -> {"schema.table": "schema.table"} или _PgDiffLoadError.
+    """
+    from modules.sync_targets import normalize_targets
+
+    if raw not in (None, "", {}) and not isinstance(raw, dict):
+        raise _PgDiffLoadError("targets должен быть объектом "
+                               "{\"schema.table\": \"schema.table\"}")
+
+    chosen = ["%s.%s" % (t["schema"], t["table"]) for t in tables]
+
+    if compare_job_id is None:
+        try:
+            return normalize_targets(raw, chosen)
+        except ValueError as e:
+            raise _PgDiffLoadError(str(e))
+
+    job = get_job(int(compare_job_id)) or {}
+    try:
+        config = _json.loads(job.get("config_json") or "{}")
+    except ValueError:
+        config = {}
+
+    own = {k: v for k, v in _pg_compare_targets(config).items()
+           if k in chosen}
+
+    # пустая карта запроса — «не прислали»: грузим туда, с чем сравнивали
+    if raw not in (None, "", {}):
+        # карта клиента может быть шире загрузки: ключи сверяются со всеми
+        # таблицами сравнения
+        compared = [{"schema": t.get("schema"), "table": t.get("table")}
+                    for t in config.get("tables") or []
+                    if isinstance(t, dict)]
+        try:
+            asked = normalize_targets(raw, compared + chosen)
+        except ValueError as e:
+            raise _PgDiffLoadError(str(e))
+
+        asked = {k: v for k, v in asked.items() if k in chosen}
+        if asked != own:
+            diff = sorted(k for k in set(asked) | set(own)
+                          if asked.get(k) != own.get(k))
+            raise _PgDiffLoadError(
+                "Карта «куда грузить» отличается от сравнения #%d (%s) — "
+                "загрузка идёт в те таблицы, с которыми сравнивали. "
+                "Повторите сравнение с новой картой."
+                % (int(compare_job_id), ", ".join(diff)))
+
+    return own
 
 
 @app.route("/api/pg/diff-load/start", methods=["POST"])
@@ -2096,6 +2226,11 @@ def api_pg_diff_load_start():
             raise _PgDiffLoadError(
                 "Без сравнения доступна только полная загрузка "
                 "(TRUNCATE + INSERT)")
+
+        # куда грузить: карта сравнения (запрос не может её подменить)
+        # или, без сравнения, карта запроса
+        targets = _pg_diff_load_targets(data.get("targets"), tables,
+                                        compare_job_id)
     except _PgDiffLoadError as e:
         return jsonify({"ok": False, "message": str(e)}), 400
 
@@ -2106,8 +2241,10 @@ def api_pg_diff_load_start():
         try:
             conns.append(pg_sync_common.open_pg(source_id, readonly=True))
             conns.append(pg_sync_common.open_pg(dest_id))
+            # in_dst — по цели карты, если она задана
+            target_kw = {"targets": targets} if targets else {}
             expanded = pg_compare.expand_selection(conns[0], conns[1], [],
-                                                   tables)
+                                                   tables, **target_kw)
         except ValueError as e:
             return jsonify({"ok": False, "message": str(e)}), 400
         except Exception as e:
@@ -2120,23 +2257,36 @@ def api_pg_diff_load_start():
                 except Exception:
                     pass
 
-        tables = [{"schema": t["schema"], "table": t["table"],
-                   "action": "full", "key_columns": [], "key_source": None,
-                   "in_dst": bool(t["in_dst"])} for t in expanded]
+        tables = []
+        for t in expanded:
+            entry = {"schema": t["schema"], "table": t["table"],
+                     "action": "full", "key_columns": [], "key_source": None,
+                     "in_dst": bool(t["in_dst"])}
+            if t.get("target"):
+                entry["target"] = t["target"]
+            tables.append(entry)
         expected = []
+
+        # карта — только по таблицам, что остались после раскрытия
+        kept = {"%s.%s" % (t["schema"], t["table"]) for t in tables}
+        targets = {k: v for k, v in targets.items() if k in kept}
+
+    config = {
+        "source_connection_id": source_id,
+        "dest_connection_id": dest_id,
+        "compare_job_id": compare_job_id,
+        "delete_missing": delete_missing,
+        "tables": tables,
+        "expected": expected,
+    }
+    if targets:
+        config["targets"] = targets
 
     # строки задачи create_job заводит сам по config["tables"] (action — свой)
     job_id = create_job(
         job_type="pg_diff_load",
         connection_id=source_id,
-        config={
-            "source_connection_id": source_id,
-            "dest_connection_id": dest_id,
-            "compare_job_id": compare_job_id,
-            "delete_missing": delete_missing,
-            "tables": tables,
-            "expected": expected,
-        },
+        config=config,
     )
 
     threading.Thread(
@@ -2285,6 +2435,26 @@ def api_gpcopy_start_date():
             "date_column": date_column,
         })
 
+    # куда грузить: у таблицы с картой dest — цель (по ней же идёт очистка
+    # окна); выбор для проверки — таблицы именно этого запроса
+    from modules.gpcopy import _config_table_pair
+
+    date_pairs = [_config_table_pair(t) for t in normalized_tables]
+
+    try:
+        date_targets = _gpcopy_targets(
+            data.get("targets"),
+            ["{}.{}".format(s, t) for s, t in date_pairs if s and t],
+        )
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    for item, (schema_name, table_name) in zip(normalized_tables, date_pairs):
+        target = date_targets.get("{}.{}".format(schema_name, table_name))
+
+        if target:
+            item["dest"] = target
+
     try:
         # gpcopy требует ровно один из флагов skip-existing/truncate/drop/append.
         # Для среза по датам дефолт — append (догрузка периода, остальные
@@ -2308,34 +2478,48 @@ def api_gpcopy_start_date():
                            "skip_existing: очищается окно, а не таблица",
             }), 400
 
+        date_config = {
+            # run_gpcopy_job включает JSON-срезы только на mode="date_filter"
+            "mode": "date_filter",
+            "source_connection_id": int(source_connection_id),
+            "dest_connection_id": int(dest_connection_id),
+            "destination_connection_id": int(dest_connection_id),
+
+            "table_configs": normalized_tables,
+
+            "date_from": date_from,
+            "date_to": date_to,
+            "window_cleanup": window_cleanup,
+
+            "jobs": data.get("jobs") or 4,
+            "on_segment_threshold": data.get("on_segment_threshold", -1),
+
+            "append": bool(data.get("append")) or window_cleanup
+                      or not flag_chosen,
+            "truncate": bool(data.get("truncate")),
+            "drop": bool(data.get("drop")),
+            "skip_existing": bool(data.get("skip_existing")),
+            "no_ownership": bool(data.get("no_ownership")),
+            "analyze": bool(data.get("analyze")),
+            "dry_run": bool(data.get("dry_run")),
+        }
+
+        # без карты конфиг прежний — ключ появляется только с целями
+        if date_targets:
+            date_config["targets"] = date_targets
+
+            # skip-existing пропустил бы заранее созданную цель без данных
+            from modules.gpcopy import check_mapped_flags
+
+            try:
+                check_mapped_flags(date_config, date_targets)
+            except ValueError as e:
+                return jsonify({"ok": False, "message": str(e)}), 400
+
         job_id = create_job(
             job_type="gpcopy",
             connection_id=int(source_connection_id),
-            config={
-                # run_gpcopy_job включает JSON-срезы только на mode="date_filter"
-                "mode": "date_filter",
-                "source_connection_id": int(source_connection_id),
-                "dest_connection_id": int(dest_connection_id),
-                "destination_connection_id": int(dest_connection_id),
-
-                "table_configs": normalized_tables,
-
-                "date_from": date_from,
-                "date_to": date_to,
-                "window_cleanup": window_cleanup,
-
-                "jobs": data.get("jobs") or 4,
-                "on_segment_threshold": data.get("on_segment_threshold", -1),
-
-                "append": bool(data.get("append")) or window_cleanup
-                          or not flag_chosen,
-                "truncate": bool(data.get("truncate")),
-                "drop": bool(data.get("drop")),
-                "skip_existing": bool(data.get("skip_existing")),
-                "no_ownership": bool(data.get("no_ownership")),
-                "analyze": bool(data.get("analyze")),
-                "dry_run": bool(data.get("dry_run")),
-            },
+            config=date_config,
         )
 
         create_job_items(
@@ -2573,6 +2757,16 @@ def api_export_skew_job_excel(job_id):
 def api_gpcopy_sync_preview():
     data = request.get_json(silent=True) or {}
 
+    # карта targets: ошибка — 400 до обращения к базам
+    if data.get("targets"):
+        try:
+            from modules.gpcopy_sync import apply_sync_targets
+
+            apply_sync_targets(data.get("table_configs") or [],
+                               data.get("targets"))
+        except Exception as e:
+            return jsonify({"ok": False, "message": str(e)}), 400
+
     try:
         result = preview_gpcopy_sync(data)
         return jsonify(result)
@@ -2603,18 +2797,38 @@ def api_gpcopy_sync_apply():
     if not table_configs:
         return jsonify({"ok": False, "message": "table_configs is empty"}), 400
 
+    # куда грузить: у таблицы с картой target — цель
     try:
+        from modules.gpcopy_sync import apply_sync_targets
+
+        if data.get("targets"):
+            table_configs, sync_targets = apply_sync_targets(
+                table_configs, data.get("targets"))
+        else:
+            sync_targets = {}
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    try:
+        sync_config = {
+            "mode": "sync_diff",
+            "source_connection_id": int(source_connection_id),
+            "dest_connection_id": int(dest_connection_id),
+            "table_configs": table_configs,
+            "gpcopy_path": data.get("gpcopy_path"),
+            "jobs": data.get("jobs") or 4,
+        }
+
+        # без карты конфиг прежний — ключ появляется только с целями
+        if sync_targets:
+            sync_config["targets"] = sync_targets
+
         job_id = create_job(
             job_type="gpcopy_sync",
             connection_id=int(source_connection_id),
-            config={
-                "mode": "sync_diff",
-                "source_connection_id": int(source_connection_id),
-                "dest_connection_id": int(dest_connection_id),
-                "table_configs": table_configs,
-                "gpcopy_path": data.get("gpcopy_path"),
-                "jobs": data.get("jobs") or 4,
-            },
+            config=sync_config,
         )
 
         create_job_items(
@@ -3660,18 +3874,74 @@ def api_gpcopy_window_preview():
         if not table_configs:
             return jsonify({"ok": False, "message": "tables is empty"}), 400
 
+        # очистка окна идёт по цели: у таблицы с картой считаем строки в ней
+        if data.get("targets"):
+            from modules.gpcopy import _config_table_pair
+
+            pairs = [_config_table_pair(tc) for tc in table_configs]
+            window_map = _gpcopy_targets(
+                data.get("targets"),
+                ["{}.{}".format(s, t) for s, t in pairs if s and t],
+            )
+            table_configs = [dict(tc) for tc in table_configs]
+
+            for tc, (schema_name, table_name) in zip(table_configs, pairs):
+                target = window_map.get("{}.{}".format(schema_name, table_name))
+
+                if target:
+                    tc["dest"] = target
+
+        # цели с картой может ещё не быть — задача создаст её пустой, и
+        # чистить там нечего. Без проверки подсчёт упал бы UndefinedTable.
+        pending_rows = []
+
+        if data.get("targets") and window_map:
+            from modules.gpcopy import (
+                missing_dest_tables, validate_window_bound,
+            )
+
+            mapped_dest = [
+                tuple(target.split(".", 1)) for target in window_map.values()
+            ]
+            missing = missing_dest_tables(dest_connection_id, mapped_dest)
+
+            if missing:
+                kept_configs = []
+
+                for tc in table_configs:
+                    dest = tuple(str(tc.get("dest") or "").split(".", 1))
+
+                    if dest in missing:
+                        pending_rows.append({
+                            "schema": dest[0], "table": dest[1], "rows": 0,
+                            "note": "Цели нет в приёмнике — задача создаст "
+                                    "её по структуре источника",
+                        })
+                    else:
+                        kept_configs.append(tc)
+
+                table_configs = kept_configs
+
+            # границы окна проверяются и тогда, когда считать нечего
+            bounds = (validate_window_bound(data.get("date_from"), "date_from"),
+                      validate_window_bound(data.get("date_to"), "date_to"))
+
+            if bounds[0] >= bounds[1]:
+                raise ValueError(
+                    "Пустое окно: from={} >= to={}".format(*bounds))
+
         report = clear_window_in_dest(
             dest_connection_id,
             table_configs,
             data.get("date_from"),
             data.get("date_to"),
             dry_run=True,
-        )
+        ) if table_configs else []
 
         rows = [
             {"schema": schema_name, "table": table_name, "rows": affected}
             for schema_name, table_name, affected in report
-        ]
+        ] + pending_rows
 
         return jsonify({
             "ok": True,
@@ -3767,6 +4037,11 @@ def api_gpcopy_increment_preview():
         if not tables:
             return jsonify({"ok": False, "message": "tables is empty"}), 400
 
+        # куда грузить: отметка читается из цели, dest в JSON — цель
+        from modules.sync_targets import target_of as _target_of
+
+        inc_targets = _gpcopy_targets(data.get("targets"), tables)
+
         watermarks = {}
         preview = []
 
@@ -3781,18 +4056,26 @@ def api_gpcopy_increment_preview():
                     "message": "schema/table/watermark_column обязательны",
                 }), 400
 
-            wm = get_dest_watermark(dest_cfg, schema, table, column)
+            dst_schema, dst_table = _target_of(inc_targets, schema, table)
+            wm = get_dest_watermark(dest_cfg, dst_schema, dst_table, column)
             watermarks[(schema, table)] = wm
-            preview.append({
+            row = {
                 "schema": schema,
                 "table": table,
                 "watermark_column": column,
                 "watermark": str(wm) if wm is not None else None,
-            })
+            }
+
+            if inc_targets:
+                row["target"] = inc_targets.get(
+                    "{}.{}".format(schema, table))
+
+            preview.append(row)
 
         items = build_increment_items(
             tables, watermarks,
             data.get("source_db") or "src", data.get("dest_db") or "dst",
+            inc_targets,
         )
 
         for row, item in zip(preview, items):
@@ -3816,10 +4099,18 @@ def api_gpcopy_increment_start():
         if not tables:
             return jsonify({"ok": False, "message": "tables is empty"}), 400
 
+        # куда грузить: проверенная карта вместо присланной как есть
+        inc_targets = _gpcopy_targets(data.get("targets"), tables)
+        inc_config = dict(data)
+        inc_config.pop("targets", None)
+
+        if inc_targets:
+            inc_config["targets"] = inc_targets
+
         job_id = create_job(
             job_type="gpcopy_increment",
             connection_id=int(data["source_connection_id"]),
-            config=data,
+            config=inc_config,
         )
 
         threading.Thread(
@@ -3935,10 +4226,22 @@ def api_gpcopy_partition_diff_start():
         if not tables:
             return jsonify({"ok": False, "message": "tables is empty"}), 400
 
+        # партиции льются только в одноимённые партиции приёмника
+        raw_targets = data.get("targets")
+
+        if raw_targets and (not isinstance(raw_targets, dict) or any(
+                str(v or "").strip() for v in raw_targets.values())):
+            return jsonify({
+                "ok": False,
+                "message": "Для режима партиций загрузка в другую таблицу "
+                           "не поддерживается",
+            }), 400
+
         job_id = create_job(
             job_type="gpcopy_partition_diff",
             connection_id=int(data["source_connection_id"]),
-            config=data,
+            # пустая карта (все цели пустые) в задачу не попадает
+            config={k: v for k, v in data.items() if k != "targets"},
         )
 
         threading.Thread(
