@@ -526,17 +526,44 @@ def fetch_object_ddl(src_conn, schema, table, with_partitions=True):
 # цель под другим именем (карта targets, modules/sync_targets.py)
 # ------------------------------------------------------------------
 
+def target_leaf_name(src_root, src_leaf, dst_root):
+    """
+    Имя партиции цели — такое, какое ждёт gpcopy.
+
+    gpcopy, копируя секционированную таблицу под другим именем, льёт
+    каждую партицию источника в партицию цели, у которой префикс корня
+    заменён: dm_stock_lot_prt_20260614 -> dm_stock_lot_new_prt_20260614
+    (так в его логе). Партиция с другим именем для него не существует.
+    """
+    if src_leaf.startswith(src_root):
+        name = dst_root + src_leaf[len(src_root):]
+    else:
+        name = "{}_{}".format(dst_root, src_leaf)
+
+    if len(name) > 63:
+        raise ValueError(
+            "Имя партиции цели {} длиннее 63 символов — Postgres его "
+            "обрежет, и gpcopy не найдёт партицию. Выберите имя цели "
+            "короче".format(name))
+
+    return name
+
+
 def fetch_target_ddl(src_conn, schema, table, dst_schema, dst_table):
     """
     CREATE TABLE для цели с другим именем — по структуре источника:
     колонки, типы, NOT NULL, способ хранения и распределение
     (DISTRIBUTED BY / RANDOMLY).
 
-    Партиции, DEFAULT'ы и вьюхи намеренно не переносятся: имена партиций
-    и последовательностей в DEFAULT принадлежат таблице источника, и в
-    приёмнике они столкнулись бы с одноимённой копией. Цель — обычная
-    таблица. Источник только читается.
-    -> {"kind": "table", "statements": [...]} или None, если в источнике нет.
+    Секционированный источник даёт секционированную цель с тем же ключом
+    и теми же границами; партиции названы по правилу gpcopy
+    (target_leaf_name). Без партиций gpcopy падал на каждой из них:
+    «relation ..._new_prt_... does not exist».
+
+    DEFAULT'ы не переносятся: последовательности в них принадлежат таблице
+    источника. Источник только читается.
+    -> {"kind": "table" | "partitioned", "statements": [...]} или None,
+    если в источнике нет.
     """
     with src_conn.cursor() as cur:
         meta = _table_meta(cur, schema, table)
@@ -547,14 +574,26 @@ def fetch_target_ddl(src_conn, schema, table, dst_schema, dst_table):
         columns = [dict(c, default=None)
                    for c in _table_columns(cur, meta["oid"])]
 
+        partitioned = meta["relkind"] == "p" and meta["partition_by"]
+        children = _partition_children(cur, meta["oid"]) if partitioned else []
+
     statements = [build_create_table_sql(
         dst_schema, dst_table, columns,
         options=meta["options"] if meta["relkind"] not in ("v", "m") else None,
+        partition_by=meta["partition_by"] if partitioned else None,
         distributed_by=meta["distributed_by"],
         access_method=meta["access_method"],
     )]
 
-    return {"kind": "table", "statements": statements}
+    for child in children:
+        statements.append(build_create_partition_sql(
+            dst_schema, target_leaf_name(table, child["table"], dst_table),
+            dst_schema, dst_table, child["bound"],
+            options=child["options"], access_method=child["access_method"],
+        ))
+
+    return {"kind": "partitioned" if partitioned else "table",
+            "statements": statements}
 
 
 def relation_exists(conn, schema, table):
@@ -607,15 +646,58 @@ def create_target_table(src_conn, dst_conn, schema, table,
     return done
 
 
+def _relkind(conn, schema, table):
+    """relkind таблицы ('r', 'p', ...) или None, если её нет."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.relkind
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s AND c.relname = %s
+            """,
+            (schema, table),
+        )
+        row = cur.fetchone()
+
+    return row[0] if row else None
+
+
 def ensure_target_table(src_conn, dst_conn, schema, table,
                         dst_schema, dst_table):
-    """Цель есть — False; не было и создана — True; не вышло — исключение."""
-    if relation_exists(dst_conn, dst_schema, dst_table):
+    """
+    Цель есть — False; не было и создана — True; не вышло — исключение.
+
+    У секционированного источника цель тоже должна быть секционированной
+    и иметь партиции с именами, которых ждёт gpcopy. Недостающие партиции
+    досоздаются (IF NOT EXISTS); обычная таблица на месте секционированной
+    цели — ошибка до запуска gpcopy, а не сотня упавших партиций в логе.
+    """
+    kind = _relkind(dst_conn, dst_schema, dst_table)
+
+    if kind is None:
+        create_target_table(src_conn, dst_conn, schema, table,
+                            dst_schema, dst_table)
+        return True
+
+    ddl = fetch_target_ddl(src_conn, schema, table, dst_schema, dst_table)
+
+    if not ddl or ddl["kind"] != "partitioned":
         return False
 
-    create_target_table(src_conn, dst_conn, schema, table,
-                        dst_schema, dst_table)
-    return True
+    if kind != "p":
+        raise ValueError(
+            "{}.{} в источнике секционирована, а цель {}.{} — обычная "
+            "таблица: gpcopy ищет в ней партиции и не находит. Удалите "
+            "цель или пересоздайте её («Подготовить приёмник» → "
+            "«Пересоздать») — она создастся с партициями".format(
+                schema, table, dst_schema, dst_table))
+
+    with dst_conn.cursor() as cur:
+        for sql_text in ddl["statements"][1:]:
+            cur.execute(sql_text)
+
+    return False
 
 
 def ensure_mapped_targets(source_connection_id, dest_connection_id,
