@@ -516,6 +516,26 @@ def find_owner_item(leaf_schema, leaf_table, item_keys):
     return prefix_hit
 
 
+def leaf_owner_keys(items, leaf_map):
+    """
+    Точные ключи атрибуции для партиций, ушедших в gpcopy попартиционно:
+    и имя партиции источника, и имя партиции цели — к строке корня.
+    Префикс «<таблица>_1_» в find_owner_item ловит не всякую схему имён.
+    """
+    keys = []
+
+    for item in items or []:
+        pair = (get_item_value(item, "schema_name"),
+                get_item_value(item, "table_name"))
+
+        for src_schema, src_leaf, dst_schema, dst_leaf in (
+                (leaf_map or {}).get(pair) or []):
+            keys.append((get_item_value(item, "id"), src_schema, src_leaf))
+            keys.append((get_item_value(item, "id"), dst_schema, dst_leaf))
+
+    return keys
+
+
 def owner_item_keys(items, targets=None):
     """
     Ключи для атрибуции партиций из лога — без пропущенных строк.
@@ -942,15 +962,21 @@ def make_include_table_file(items, dbname=None):
         raise
 
 
-def build_full_include_json(items, source_db, dest_db, targets=None):
+def build_full_include_json(items, source_db, dest_db, targets=None,
+                            leaf_map=None):
     """
     include-table-json полного копирования: [{source, dest}] без "sql" —
     gpcopy копирует таблицу целиком. Нужен, когда хоть одна таблица задачи
     грузится в другую таблицу (карта targets): include-table-file имени
     приёмника не задаёт. Таблицы без карты идут в одноимённую.
-    Чистая функция.
+
+    leaf_map — {(schema, table): [(src_schema, src_leaf, dst_schema,
+    dst_leaf)]} для секционированных таблиц с картой: они уходят
+    попартиционно, партиция в партицию с теми же границами
+    (ddl_check.mapped_partition_leaves). Чистая функция.
     """
     entries = []
+    leaf_map = leaf_map or {}
 
     for item in items:
         schema_name = (
@@ -963,6 +989,16 @@ def build_full_include_json(items, source_db, dest_db, targets=None):
         )
 
         if not schema_name or not table_name:
+            continue
+
+        leaves = leaf_map.get((schema_name, table_name))
+
+        if leaves:
+            for src_schema, src_leaf, dst_schema, dst_leaf in leaves:
+                entries.append({
+                    "source": gpcopy_full_name(source_db, src_schema, src_leaf),
+                    "dest": gpcopy_full_name(dest_db, dst_schema, dst_leaf),
+                })
             continue
 
         dst_schema, dst_table = target_of(targets, schema_name, table_name)
@@ -978,8 +1014,10 @@ def build_full_include_json(items, source_db, dest_db, targets=None):
     return entries
 
 
-def make_include_table_json_file(items, source_db, dest_db, targets=None):
-    entries = build_full_include_json(items, source_db, dest_db, targets)
+def make_include_table_json_file(items, source_db, dest_db, targets=None,
+                                 leaf_map=None):
+    entries = build_full_include_json(items, source_db, dest_db, targets,
+                                      leaf_map)
 
     fd, path = tempfile.mkstemp(
         prefix="gpcopy_include_full_",
@@ -1099,6 +1137,25 @@ def check_mapped_flags(config, targets):
         raise ValueError(
             "Для загрузки в другую таблицу выбери, что делать с "
             "существующей целью: truncate, drop или append")
+
+
+def mapped_partition_leaves(source_connection_id, dest_connection_id,
+                            targets, pairs):
+    try:
+        from modules.ddl_check import mapped_partition_leaves as _leaves
+    except ImportError:
+        from ddl_check import mapped_partition_leaves as _leaves
+
+    return _leaves(source_connection_id, dest_connection_id, targets, pairs)
+
+
+def truncate_targets(dest_connection_id, names):
+    try:
+        from modules.ddl_check import truncate_targets as _truncate
+    except ImportError:
+        from ddl_check import truncate_targets as _truncate
+
+    return _truncate(dest_connection_id, names)
 
 
 def prepare_mapped_targets(source_connection_id, dest_connection_id,
@@ -2612,6 +2669,9 @@ def run_gpcopy_job(job_id):
         # партиция, выбранная вместе с корнем, иначе ушла бы в gpcopy дважды
         items, covered = skip_covered_items(items, source_connection_id)
 
+        # партиции секционированных таблиц с картой (полная замена)
+        leaf_map = {}
+
         if mode == "date_filter" and covered:
             table_configs = [
                 tc for tc in table_configs
@@ -2692,11 +2752,56 @@ def run_gpcopy_job(job_id):
                              get_item_value(i, "schema_name"),
                              get_item_value(i, "table_name"))
                    for i in items):
+                leaf_map, leaf_errors = mapped_partition_leaves(
+                    source_connection_id, dest_connection_id, targets,
+                    [(get_item_value(i, "schema_name"),
+                      get_item_value(i, "table_name")) for i in items])
+
+                # drop пересоздал бы партицию цели отдельной таблицей,
+                # оторванной от корня
+                if leaf_map and drop:
+                    for pair in list(leaf_map):
+                        leaf_errors[pair] = (
+                            "Секционированная таблица в другую цель грузится "
+                            "по партициям — drop для неё не поддерживается, "
+                            "выбери truncate или append")
+                        leaf_map.pop(pair)
+
+                if leaf_errors:
+                    kept_items = []
+
+                    for item in items:
+                        pair = (get_item_value(item, "schema_name"),
+                                get_item_value(item, "table_name"))
+
+                        if pair in leaf_errors:
+                            safe_mark_item_failed(
+                                get_item_value(item, "id"),
+                                error_message=leaf_errors[pair][:2000],
+                            )
+                        else:
+                            kept_items.append(item)
+
+                    items = kept_items
+                    refresh_job_progress(job_id)
+
+                    if not items:
+                        raise Exception(
+                            "Не удалось подготовить цели в приёмнике:\n{}".format(
+                                "\n".join(leaf_errors.values())))
+
+                # полная замена: партиции цели без пары в источнике иначе
+                # сохранили бы старые строки — чистим цель целиком
+                if leaf_map and truncate and not dry_run:
+                    truncate_targets(
+                        dest_connection_id,
+                        [target_of(targets, *pair) for pair in leaf_map])
+
                 # include-table-file не умеет имя приёмника — для задачи,
                 # где хоть одна таблица идёт в другую, весь список уходит
                 # include-table-json с dest
                 include_json_file = make_include_table_json_file(
-                    items, source_db, dest_db, targets)
+                    items, source_db, dest_db, targets, leaf_map)
             else:
                 include_file = make_include_table_file(items, source_db)
 
@@ -2808,6 +2913,7 @@ def run_gpcopy_job(job_id):
         # ключи для атрибуции партиций из лога к таблицам задачи
         # (для таблиц с картой — и по имени цели)
         item_keys = owner_item_keys(items, targets)
+        item_keys += leaf_owner_keys(items, leaf_map)
 
         # сколько партиций у каждой таблицы — для пер-табличного индикатора
         try:

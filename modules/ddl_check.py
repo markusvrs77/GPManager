@@ -409,7 +409,7 @@ def _partition_children(cur, oid):
         """
         SELECT n.nspname, c.relname,
                pg_get_expr(c.relpartbound, c.oid),
-               c.reloptions, am.amname
+               c.reloptions, am.amname, c.relkind
         FROM pg_inherits i
         JOIN pg_class c ON c.oid = i.inhrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -422,7 +422,8 @@ def _partition_children(cur, oid):
 
     return [{"schema": r[0], "table": r[1], "bound": r[2],
              "options": list(r[3] or []),
-             "access_method": _access_method(r[4])} for r in cur.fetchall()]
+             "access_method": _access_method(r[4]),
+             "relkind": r[5]} for r in cur.fetchall()]
 
 
 def _partition_parent(cur, oid):
@@ -663,39 +664,100 @@ def _relkind(conn, schema, table):
     return row[0] if row else None
 
 
+def match_target_leaves(src_conn, dst_conn, schema, table,
+                        dst_schema, dst_table):
+    """
+    Партиции источника и цели, сопоставленные по границам, а не по имени.
+
+    Имя партиции цели может быть любым: после ALTER TABLE ... RENAME
+    партиции переименованной таблицы сохраняют старые имена
+    (dm_stock_lot_new -> dm_stock_lot_prt_20230101). Граница же у
+    партиции одна, и одинаковые границы — одна и та же партиция.
+
+    -> (pairs, missing): pairs — [(src_schema, src_leaf, dst_schema,
+    dst_leaf)], missing — партиции источника, которым в цели нет пары.
+    (None, []) — источник не секционирован. ValueError — цель не
+    секционирована или партиции многоуровневые.
+    """
+    with src_conn.cursor() as cur:
+        meta = _table_meta(cur, schema, table)
+
+        if not meta or meta["relkind"] != "p":
+            return None, []
+
+        src_children = _partition_children(cur, meta["oid"])
+
+    if any(c.get("relkind") == "p" for c in src_children):
+        raise ValueError(
+            "{}.{}: многоуровневые партиции при загрузке в другую таблицу "
+            "не поддерживаются".format(schema, table))
+
+    with dst_conn.cursor() as cur:
+        dst_meta = _table_meta(cur, dst_schema, dst_table)
+
+        if not dst_meta or dst_meta["relkind"] != "p":
+            raise ValueError(
+                "{}.{} в источнике секционирована, а цель {}.{} — нет: "
+                "gpcopy льёт по партициям и не найдёт их. Удалите цель или "
+                "пересоздайте её («Подготовить приёмник» → «Пересоздать») — "
+                "она создастся с партициями".format(
+                    schema, table, dst_schema, dst_table))
+
+        dst_by_bound = {}
+        for child in _partition_children(cur, dst_meta["oid"]):
+            dst_by_bound.setdefault((child["bound"] or "").strip(), child)
+
+    pairs, missing = [], []
+
+    for child in src_children:
+        hit = dst_by_bound.get((child["bound"] or "").strip())
+
+        if hit:
+            pairs.append((child["schema"], child["table"],
+                          hit["schema"], hit["table"]))
+        else:
+            missing.append(child)
+
+    return pairs, missing
+
+
 def ensure_target_table(src_conn, dst_conn, schema, table,
                         dst_schema, dst_table):
     """
     Цель есть — False; не было и создана — True; не вышло — исключение.
 
-    У секционированного источника цель тоже должна быть секционированной
-    и иметь партиции с именами, которых ждёт gpcopy. Недостающие партиции
-    досоздаются (IF NOT EXISTS); обычная таблица на месте секционированной
-    цели — ошибка до запуска gpcopy, а не сотня упавших партиций в логе.
+    У секционированного источника цель тоже должна быть секционированной.
+    Партиции сопоставляются по границам (match_target_leaves): в цели
+    досоздаются только те, чьих границ там нет, — партиция с другим
+    именем, но теми же границами, уже та самая. Обычная таблица на месте
+    секционированной цели — ошибка до запуска gpcopy.
     """
-    kind = _relkind(dst_conn, dst_schema, dst_table)
-
-    if kind is None:
+    if _relkind(dst_conn, dst_schema, dst_table) is None:
         create_target_table(src_conn, dst_conn, schema, table,
                             dst_schema, dst_table)
         return True
 
-    ddl = fetch_target_ddl(src_conn, schema, table, dst_schema, dst_table)
+    pairs, missing = match_target_leaves(src_conn, dst_conn, schema, table,
+                                         dst_schema, dst_table)
 
-    if not ddl or ddl["kind"] != "partitioned":
-        return False
+    for child in missing:
+        name = target_leaf_name(table, child["table"], dst_table)
 
-    if kind != "p":
-        raise ValueError(
-            "{}.{} в источнике секционирована, а цель {}.{} — обычная "
-            "таблица: gpcopy ищет в ней партиции и не находит. Удалите "
-            "цель или пересоздайте её («Подготовить приёмник» → "
-            "«Пересоздать») — она создастся с партициями".format(
-                schema, table, dst_schema, dst_table))
+        # IF NOT EXISTS молча пропустил бы занятое имя, и партиции с
+        # нужными границами так и не появилось бы
+        if _relkind(dst_conn, dst_schema, name) is not None:
+            raise ValueError(
+                "В цели {}.{} нет партиции с границами {} источника {}, а "
+                "имя {} уже занято".format(dst_schema, dst_table,
+                                           child["bound"], child["table"],
+                                           name))
 
-    with dst_conn.cursor() as cur:
-        for sql_text in ddl["statements"][1:]:
-            cur.execute(sql_text)
+        with dst_conn.cursor() as cur:
+            cur.execute(build_create_partition_sql(
+                dst_schema, name, dst_schema, dst_table, child["bound"],
+                options=child["options"],
+                access_method=child["access_method"],
+            ))
 
     return False
 
@@ -763,9 +825,9 @@ def ensure_mapped_targets(source_connection_id, dest_connection_id,
                         dst_schema, dst_table, schema, table))
             except Exception as e:
                 errors[(schema, table)] = (
-                    "Цели {}.{} нет в приёмнике, и создать её по {}.{} "
-                    "не удалось: {}".format(dst_schema, dst_table, schema,
-                                            table, str(e)[:400]))
+                    "Цель {}.{}: подготовить по {}.{} не удалось: "
+                    "{}".format(dst_schema, dst_table, schema, table,
+                                str(e)[:400]))
     finally:
         for c in (src_conn, dst_conn):
             try:
@@ -774,6 +836,113 @@ def ensure_mapped_targets(source_connection_id, dest_connection_id,
                 pass
 
     return errors
+
+
+def mapped_partition_leaves(source_connection_id, dest_connection_id,
+                            targets, pairs):
+    """
+    Для полной замены: партиции секционированных таблиц с картой.
+
+    gpcopy, получив корень под другим именем, сам выводит имена партиций
+    цели (замена префикса) и не находит их, если партиции названы иначе.
+    Поэтому такие таблицы уходят в gpcopy попартиционно: каждая партиция
+    источника — в партицию цели с теми же границами.
+
+    -> (leaves, errors): leaves — {(schema, table): [(src_schema, src_leaf,
+    dst_schema, dst_leaf)]} только для секционированных; errors —
+    {(schema, table): текст}. Только чтение каталогов обеих сторон.
+    """
+    mapped = [p for p in dict.fromkeys(pairs or [])
+              if is_mapped(targets, *p)]
+
+    if not mapped:
+        return {}, {}
+
+    leaves, errors = {}, {}
+    src_conn = dst_conn = None
+
+    try:
+        src_cfg = get_connection_by_id(int(source_connection_id))
+        dst_cfg = get_connection_by_id(int(dest_connection_id))
+
+        if not src_cfg or not dst_cfg:
+            raise ValueError("Подключение не найдено")
+
+        src_conn = open_psycopg2_connection_by_cfg(src_cfg)
+        dst_conn = open_psycopg2_connection_by_cfg(dst_cfg)
+
+        for conn in (src_conn, dst_conn):
+            try:
+                conn.set_session(readonly=True, autocommit=True)
+            except Exception:
+                pass
+
+        for schema, table in mapped:
+            dst_schema, dst_table = target_of(targets, schema, table)
+
+            try:
+                found, missing = match_target_leaves(
+                    src_conn, dst_conn, schema, table, dst_schema, dst_table)
+            except Exception as e:
+                errors[(schema, table)] = "Цель {}.{}: {}".format(
+                    dst_schema, dst_table, str(e)[:400])
+                continue
+
+            if found is None:
+                continue
+
+            if missing:
+                errors[(schema, table)] = (
+                    "Цель {}.{}: нет партиций с границами {}".format(
+                        dst_schema, dst_table,
+                        ", ".join(c["bound"] for c in missing[:3])
+                        + (" и ещё {}".format(len(missing) - 3)
+                           if len(missing) > 3 else "")))
+                continue
+
+            leaves[(schema, table)] = found
+    except Exception as e:
+        for pair in mapped:
+            errors.setdefault(pair, "Партиции цели проверить не удалось: "
+                                    "{}".format(str(e)[:300]))
+    finally:
+        for conn in (src_conn, dst_conn):
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
+
+    return leaves, errors
+
+
+def truncate_targets(dest_connection_id, names):
+    """
+    TRUNCATE целей с картой перед попартиционной полной заменой: партиции
+    цели, которых нет в источнике, иначе сохранили бы старые строки.
+    Только приёмник и только цели, выбранные пользователем с truncate.
+    """
+    if not names:
+        return
+
+    dst_cfg = get_connection_by_id(int(dest_connection_id))
+
+    if not dst_cfg:
+        raise ValueError("Подключение не найдено")
+
+    conn = open_psycopg2_connection_by_cfg(dst_cfg)
+
+    try:
+        with conn.cursor() as cur:
+            for schema, table in names:
+                cur.execute("TRUNCATE TABLE {}.{}".format(
+                    quote_ident(schema), quote_ident(table)))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _target_label(targets, schema, table):
