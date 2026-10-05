@@ -35,6 +35,9 @@ class _Cur:
     def execute(self, sql, params=None):
         self.log.append(sql)
 
+    def fetchone(self):
+        return (1,)                       # схема в приёмнике уже есть
+
 
 class _Conn:
     def __init__(self):
@@ -129,76 +132,16 @@ def test_plain_source_stays_plain(monkeypatch):
 
 # ------------------------------------------------------------ существующая цель
 
-def test_plain_target_for_partitioned_source_fails_early(monkeypatch):
-    """Цель уже создана обычной таблицей — ошибка до gpcopy, без DDL."""
-    _fake_catalog(monkeypatch, dst="r")
-    dst = _Conn()
-
-    with pytest.raises(ValueError) as err:
-        ddl_check.ensure_target_table(_Conn(), dst, "dwh_dm", "dm_stock_lot",
-                                      "dwh_dm", "dm_stock_lot_new")
-
-    assert "Пересоздать" in str(err.value)
-    assert dst.log == []
-
-
-def test_renamed_target_partitions_match_by_bound(monkeypatch):
+def test_existing_target_partitions_are_never_touched(monkeypatch):
     """
-    Случай из лога: партиции цели названы по-старому. Те же границы —
-    та же партиция; ничего не досоздаётся, пересечения нет.
+    Случай из лога: источник по неделям, цель по дням (и с другими
+    именами партиций). Существующую цель не трогаем — ни сопоставления,
+    ни досоздания партиций, ни пересечений.
     """
     _fake_catalog(monkeypatch, dst="p", dst_children=[
-        _leaf("dm_stock_lot_prt_20260614", B1),
-        _leaf("dm_stock_lot_prt_20230416", B2),
+        _leaf("dm_stock_lot_prt_20230101", "FOR VALUES FROM ('2023-01-01') "
+                                           "TO ('2023-01-02')"),
     ])
-    dst = _Conn()
-
-    created = ddl_check.ensure_target_table(
-        _Conn(), dst, "dwh_dm", "dm_stock_lot", "dwh_dm", "dm_stock_lot_new")
-
-    assert created is False
-    assert dst.log == []
-
-    pairs, missing = ddl_check.match_target_leaves(
-        _Conn(), _Conn(), "dwh_dm", "dm_stock_lot", "dwh_dm",
-        "dm_stock_lot_new")
-
-    assert missing == []
-    assert ("dwh_dm", "dm_stock_lot_prt_20260614",
-            "dwh_dm", "dm_stock_lot_prt_20260614") in pairs
-
-
-def test_only_partitions_with_new_bounds_are_created(monkeypatch):
-    _fake_catalog(monkeypatch, dst="p", dst_children=[
-        _leaf("old_name_for_b1", B1),
-    ])
-    dst = _Conn()
-
-    ddl_check.ensure_target_table(_Conn(), dst, "dwh_dm", "dm_stock_lot",
-                                  "dwh_dm", "dm_stock_lot_new")
-
-    assert len(dst.log) == 1
-    assert '"dm_stock_lot_new_prt_20230416" PARTITION OF' in dst.log[0]
-    assert "2023-04-16" in dst.log[0]
-
-
-def test_taken_leaf_name_is_reported_not_skipped(monkeypatch):
-    """IF NOT EXISTS молча пропустил бы занятое имя — это ошибка."""
-    _fake_catalog(monkeypatch, dst="p", dst_children=[])
-    monkeypatch.setattr(ddl_check, "_relkind", lambda conn, s, t: "p"
-                        if t == "dm_stock_lot_new" else "r")
-    dst = _Conn()
-
-    with pytest.raises(ValueError) as err:
-        ddl_check.ensure_target_table(_Conn(), dst, "dwh_dm", "dm_stock_lot",
-                                      "dwh_dm", "dm_stock_lot_new")
-
-    assert "уже занято" in str(err.value)
-    assert dst.log == []
-
-
-def test_existing_plain_target_for_plain_source_is_left_alone(monkeypatch):
-    _fake_catalog(monkeypatch, partitioned=False, dst="r")
     dst = _Conn()
 
     assert ddl_check.ensure_target_table(
@@ -207,24 +150,47 @@ def test_existing_plain_target_for_plain_source_is_left_alone(monkeypatch):
     assert dst.log == []
 
 
+def test_existing_plain_target_is_fine_too(monkeypatch):
+    """Через корень можно грузить и в обычную таблицу."""
+    _fake_catalog(monkeypatch, dst="r")
+    dst = _Conn()
+
+    assert ddl_check.ensure_target_table(
+        _Conn(), dst, "dwh_dm", "dm_stock_lot", "dwh_dm",
+        "dm_stock_lot_new") is False
+    assert dst.log == []
+
+
+def test_missing_target_is_created_partitioned(monkeypatch):
+    _fake_catalog(monkeypatch)
+    dst = _Conn()
+
+    assert ddl_check.ensure_target_table(
+        _Conn(), dst, "dwh_dm", "dm_stock_lot", "dwh_dm",
+        "dm_stock_lot_new") is True
+    assert any("PARTITION BY RANGE (d)" in sql for sql in dst.log)
+
+
 # ------------------------------------------------------------ gpcopy JSON
 
 ITEMS = [{"id": 7, "schema_name": "dwh_dm", "table_name": "dm_stock_lot"},
          {"id": 8, "schema_name": "dwh_dm", "table_name": "plain"}]
 TARGETS = {"dwh_dm.dm_stock_lot": "dwh_dm.dm_stock_lot_new"}
 LEAVES = {("dwh_dm", "dm_stock_lot"): [
-    ("dwh_dm", "dm_stock_lot_prt_20260614", "dwh_dm", "dm_stock_lot_prt_20260614"),
-    ("dwh_dm", "dm_stock_lot_prt_20230416", "dwh_dm", "old_name_for_b2"),
+    ("dwh_dm", "dm_stock_lot_prt_20260614"),
+    ("dwh_dm", "dm_stock_lot_prt_20230416"),
 ]}
 
 
-def test_partitioned_mapped_table_goes_leaf_to_leaf():
+def test_partitioned_mapped_table_goes_into_target_root():
     entries = gpcopy.build_full_include_json(ITEMS, "adb", "adb", TARGETS,
                                              LEAVES)
 
     assert {"source": "adb.dwh_dm.dm_stock_lot_prt_20230416",
-            "dest": "adb.dwh_dm.old_name_for_b2"} in entries
-    # корень целиком не отправляется — иначе gpcopy снова выведет имена сам
+            "dest": "adb.dwh_dm.dm_stock_lot_new",
+            "sql": 'SELECT * FROM "dwh_dm"."dm_stock_lot_prt_20230416"'}         in entries
+    # корень целиком не отправляется — иначе gpcopy снова выведет имена
+    # партиций цели сам
     assert not any(e["source"] == "adb.dwh_dm.dm_stock_lot" for e in entries)
     assert {"source": "adb.dwh_dm.plain", "dest": "adb.dwh_dm.plain"} in entries
 
@@ -239,6 +205,5 @@ def test_without_leaf_map_json_is_as_before():
 def test_log_lines_of_leaves_are_attributed_to_root():
     keys = gpcopy.leaf_owner_keys(ITEMS, LEAVES)
 
-    assert gpcopy.find_owner_item("dwh_dm", "old_name_for_b2", keys) == 7
     assert gpcopy.find_owner_item(
         "dwh_dm", "dm_stock_lot_prt_20230416", keys) == 7

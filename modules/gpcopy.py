@@ -518,9 +518,9 @@ def find_owner_item(leaf_schema, leaf_table, item_keys):
 
 def leaf_owner_keys(items, leaf_map):
     """
-    Точные ключи атрибуции для партиций, ушедших в gpcopy попартиционно:
-    и имя партиции источника, и имя партиции цели — к строке корня.
-    Префикс «<таблица>_1_» в find_owner_item ловит не всякую схему имён.
+    Точные ключи атрибуции для партиций, ушедших в корень цели срезами:
+    имя партиции источника — к строке корня. Префикс «<таблица>_1_» в
+    find_owner_item ловит не всякую схему имён (бывает «_prt_»).
     """
     keys = []
 
@@ -528,10 +528,8 @@ def leaf_owner_keys(items, leaf_map):
         pair = (get_item_value(item, "schema_name"),
                 get_item_value(item, "table_name"))
 
-        for src_schema, src_leaf, dst_schema, dst_leaf in (
-                (leaf_map or {}).get(pair) or []):
-            keys.append((get_item_value(item, "id"), src_schema, src_leaf))
-            keys.append((get_item_value(item, "id"), dst_schema, dst_leaf))
+        for leaf_schema, leaf_table in (leaf_map or {}).get(pair) or []:
+            keys.append((get_item_value(item, "id"), leaf_schema, leaf_table))
 
     return keys
 
@@ -970,10 +968,13 @@ def build_full_include_json(items, source_db, dest_db, targets=None,
     грузится в другую таблицу (карта targets): include-table-file имени
     приёмника не задаёт. Таблицы без карты идут в одноимённую.
 
-    leaf_map — {(schema, table): [(src_schema, src_leaf, dst_schema,
-    dst_leaf)]} для секционированных таблиц с картой: они уходят
-    попартиционно, партиция в партицию с теми же границами
-    (ddl_check.mapped_partition_leaves). Чистая функция.
+    leaf_map — {(schema, table): [(leaf_schema, leaf_table)]} для
+    секционированных таблиц с картой. Корень под другим именем gpcopy
+    льёт партиция-в-партицию и сам выводит имена партиций цели — их может
+    не быть: цель нарезана иначе (по дням вместо недель) или её партиции
+    названы по-старому. Поэтому каждая партиция источника уходит срезом
+    SELECT * прямо в корень цели, и строки раскладывает сама цель.
+    Чистая функция.
     """
     entries = []
     leaf_map = leaf_map or {}
@@ -993,15 +994,18 @@ def build_full_include_json(items, source_db, dest_db, targets=None,
 
         leaves = leaf_map.get((schema_name, table_name))
 
+        dst_schema, dst_table = target_of(targets, schema_name, table_name)
+
         if leaves:
-            for src_schema, src_leaf, dst_schema, dst_leaf in leaves:
+            for leaf_schema, leaf_table in leaves:
                 entries.append({
-                    "source": gpcopy_full_name(source_db, src_schema, src_leaf),
-                    "dest": gpcopy_full_name(dest_db, dst_schema, dst_leaf),
+                    "source": gpcopy_full_name(source_db, leaf_schema,
+                                               leaf_table),
+                    "dest": gpcopy_full_name(dest_db, dst_schema, dst_table),
+                    "sql": "SELECT * FROM {}.{}".format(
+                        quote_ident(leaf_schema), quote_ident(leaf_table)),
                 })
             continue
-
-        dst_schema, dst_table = target_of(targets, schema_name, table_name)
 
         entries.append({
             "source": gpcopy_full_name(source_db, schema_name, table_name),
@@ -1139,14 +1143,39 @@ def check_mapped_flags(config, targets):
             "существующей целью: truncate, drop или append")
 
 
-def mapped_partition_leaves(source_connection_id, dest_connection_id,
-                            targets, pairs):
-    try:
-        from modules.ddl_check import mapped_partition_leaves as _leaves
-    except ImportError:
-        from ddl_check import mapped_partition_leaves as _leaves
+def mapped_source_leaves(source_connection, targets, pairs):
+    """
+    Партиции источника у таблиц с картой: {(schema, table): [(schema,
+    leaf)]} — только для секционированных. Только чтение источника.
+    """
+    mapped = [p for p in dict.fromkeys(pairs or []) if is_mapped(targets, *p)]
 
-    return _leaves(source_connection_id, dest_connection_id, targets, pairs)
+    if not mapped:
+        return {}
+
+    try:
+        from modules.gpcopy_partition import list_leaf_partitions
+    except ImportError:
+        from gpcopy_partition import list_leaf_partitions
+
+    conn = open_psycopg2_connection_by_cfg(source_connection)
+    leaves = {}
+
+    try:
+        try:
+            conn.set_session(readonly=True, autocommit=True)
+        except Exception:
+            pass
+
+        for pair in mapped:
+            found = list_leaf_partitions(conn, *pair)
+
+            if found and found != [pair]:
+                leaves[pair] = found
+    finally:
+        conn.close()
+
+    return leaves
 
 
 def truncate_targets(dest_connection_id, names):
@@ -2752,20 +2781,43 @@ def run_gpcopy_job(job_id):
                              get_item_value(i, "schema_name"),
                              get_item_value(i, "table_name"))
                    for i in items):
-                leaf_map, leaf_errors = mapped_partition_leaves(
-                    source_connection_id, dest_connection_id, targets,
+                leaf_map = mapped_source_leaves(
+                    source_connection, targets,
                     [(get_item_value(i, "schema_name"),
                       get_item_value(i, "table_name")) for i in items])
+                leaf_errors = {}
 
-                # drop пересоздал бы партицию цели отдельной таблицей,
-                # оторванной от корня
+                # срезы партиций льются в один корень цели: drop удалял бы
+                # цель перед каждым срезом
                 if leaf_map and drop:
                     for pair in list(leaf_map):
                         leaf_errors[pair] = (
                             "Секционированная таблица в другую цель грузится "
-                            "по партициям — drop для неё не поддерживается, "
-                            "выбери truncate или append")
+                            "срезами по партициям — drop для неё не "
+                            "поддерживается, выбери truncate или append")
                         leaf_map.pop(pair)
+
+                # truncate: цель чистим сами один раз, gpcopy дописывает.
+                # Флаг у gpcopy один на всю команду — если в задаче есть
+                # и другие таблицы, им нужен настоящий --truncate
+                if leaf_map and truncate:
+                    others = [
+                        i for i in items
+                        if (get_item_value(i, "schema_name"),
+                            get_item_value(i, "table_name")) not in leaf_map
+                        and (get_item_value(i, "schema_name"),
+                             get_item_value(i, "table_name"))
+                        not in leaf_errors
+                    ]
+
+                    if others:
+                        for pair in list(leaf_map):
+                            leaf_errors[pair] = (
+                                "Секционированную таблицу в другую цель с "
+                                "truncate запусти отдельной задачей (или "
+                                "выбери append): gpcopy очищал бы цель перед "
+                                "каждой партицией")
+                            leaf_map.pop(pair)
 
                 if leaf_errors:
                     kept_items = []
@@ -2790,12 +2842,16 @@ def run_gpcopy_job(job_id):
                             "Не удалось подготовить цели в приёмнике:\n{}".format(
                                 "\n".join(leaf_errors.values())))
 
-                # полная замена: партиции цели без пары в источнике иначе
-                # сохранили бы старые строки — чистим цель целиком
-                if leaf_map and truncate and not dry_run:
-                    truncate_targets(
-                        dest_connection_id,
-                        [target_of(targets, *pair) for pair in leaf_map])
+                if leaf_map and truncate:
+                    if not dry_run:
+                        truncate_targets(
+                            dest_connection_id,
+                            [target_of(targets, *pair) for pair in leaf_map])
+
+                    # в задаче остались только такие таблицы — цель уже
+                    # пуста, gpcopy дописывает срезы
+                    truncate = False
+                    append = True
 
                 # include-table-file не умеет имя приёмника — для задачи,
                 # где хоть одна таблица идёт в другую, весь список уходит

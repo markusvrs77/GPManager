@@ -296,8 +296,8 @@ def full_run(monkeypatch):
 
     monkeypatch.setattr(gp, "prepare_mapped_targets", fake_prepare)
     # таблицы в этих тестах не секционированы — попартиционной карты нет
-    monkeypatch.setattr(gp, "mapped_partition_leaves",
-                        lambda s, d, t, p: ({}, {}))
+    monkeypatch.setattr(gp, "mapped_source_leaves",
+                        lambda c, t, p: {})
 
     def fake_command(**kwargs):
         seen["command"] = kwargs
@@ -358,8 +358,8 @@ def test_full_runner_target_failure(monkeypatch):
     monkeypatch.setattr(
         gp, "prepare_mapped_targets",
         lambda s, d, t, p: {("s", "a"): "Цели нет: permission denied"})
-    monkeypatch.setattr(gp, "mapped_partition_leaves",
-                        lambda s, d, t, p: ({}, {}))
+    monkeypatch.setattr(gp, "mapped_source_leaves",
+                        lambda c, t, p: {})
     seen = {}
 
     def fake_command(**kwargs):
@@ -859,40 +859,72 @@ def test_inherited_uppercase_schema_is_quoted_for_gpcopy():
 
 # ------------------------------------------------------------ секционированная цель
 
-PART_LEAVES = {("s", "a"): [("s", "a_prt_1", "arch", "a_prt_1"),
-                            ("s", "a_prt_2", "arch", "renamed_2")]}
+PART_LEAVES = {("s", "a"): [("s", "a_prt_1"), ("s", "a_prt_2")]}
 
 
-def test_full_runner_partitioned_target_goes_by_leaves(full_run, monkeypatch):
-    """Партиция в партицию; truncate чистит только цель и только её."""
+def _part_run(full_run, monkeypatch, config, leaves=None):
     truncated = []
-    monkeypatch.setattr(gp, "mapped_partition_leaves",
-                        lambda s, d, t, p: (dict(PART_LEAVES), {}))
+    monkeypatch.setattr(gp, "mapped_source_leaves",
+                        lambda c, t, p: dict(leaves or PART_LEAVES))
     monkeypatch.setattr(gp, "truncate_targets",
                         lambda dest_id, names: truncated.append(
                             (dest_id, list(names))))
-
-    seen = full_run({"targets": {"s.a": "arch.a_copy"}})
-
-    assert {"source": "adb.s.a_prt_2", "dest": "adb.arch.renamed_2"} \
-        in seen["json"]
-    assert {"source": "adb.s.c", "dest": "adb.s.c"} in seen["json"]
-    assert truncated == [(2, [("arch", "a_copy")])]
+    seen = full_run(config)
+    seen["truncated"] = truncated
+    return seen
 
 
-def test_full_runner_partitioned_target_refuses_drop(full_run, monkeypatch):
-    """drop пересоздал бы партицию цели отдельной таблицей — нельзя."""
-    truncated = []
-    monkeypatch.setattr(gp, "mapped_partition_leaves",
-                        lambda s, d, t, p: (dict(PART_LEAVES), {}))
-    monkeypatch.setattr(gp, "truncate_targets",
-                        lambda dest_id, names: truncated.append(names))
+def test_partitioned_alone_with_truncate_goes_through_root(full_run,
+                                                            monkeypatch):
+    """
+    Источник по неделям, цель по дням: каждая партиция источника —
+    срезом в корень цели. Цель чистится один раз, gpcopy дописывает.
+    """
+    seen = _part_run(full_run, monkeypatch, {
+        "tables": [{"schema": "s", "table": "a"}],
+        "targets": {"s.a": "arch.a_copy"}})
 
-    seen = full_run({"targets": {"s.a": "arch.a_copy"},
-                     "truncate": False, "drop": True})
+    assert seen["json"] == [
+        {"source": "adb.s.a_prt_1", "dest": "adb.arch.a_copy",
+         "sql": 'SELECT * FROM "s"."a_prt_1"'},
+        {"source": "adb.s.a_prt_2", "dest": "adb.arch.a_copy",
+         "sql": 'SELECT * FROM "s"."a_prt_2"'},
+    ]
+    assert seen["truncated"] == [(2, [("arch", "a_copy")])]
+    assert seen["command"]["truncate"] is False
+    assert seen["command"]["append"] is True
+
+
+def test_partitioned_with_others_and_truncate_is_refused(full_run,
+                                                          monkeypatch):
+    """Флаг gpcopy общий: другим таблицам нужен настоящий --truncate."""
+    seen = _part_run(full_run, monkeypatch,
+                     {"targets": {"s.a": "arch.a_copy"}})
+
+    items = {i["table_name"]: i for i in get_job_items(seen["job_id"])}
+    assert items["a"]["status"] == "failed"
+    assert "отдельной задачей" in items["a"]["error_message"]
+    assert seen["json"] == [{"source": "adb.s.c", "dest": "adb.s.c"}]
+    assert seen["command"]["truncate"] is True
+    assert seen["truncated"] == []
+
+
+def test_partitioned_with_append_mixes_fine(full_run, monkeypatch):
+    seen = _part_run(full_run, monkeypatch, {
+        "targets": {"s.a": "arch.a_copy"}, "truncate": False,
+        "append": True})
+
+    assert len(seen["json"]) == 3
+    assert seen["truncated"] == []
+    assert seen["command"]["append"] is True
+
+
+def test_partitioned_target_refuses_drop(full_run, monkeypatch):
+    seen = _part_run(full_run, monkeypatch, {
+        "targets": {"s.a": "arch.a_copy"}, "truncate": False, "drop": True})
 
     items = {i["table_name"]: i for i in get_job_items(seen["job_id"])}
     assert items["a"]["status"] == "failed"
     assert "drop" in items["a"]["error_message"]
     assert [e["source"] for e in seen["json"]] == ["adb.s.c"]
-    assert truncated == []
+    assert seen["truncated"] == []
