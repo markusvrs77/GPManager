@@ -635,6 +635,14 @@ def init_db():
         "ALTER TABLE job_items ADD COLUMN parts_done INTEGER DEFAULT 0"
     )
 
+    # карта «хост сегмента -> основной IP» для gpcopy, когда кластер —
+    # приёмник: JSON [{host, addresses?, ip}] (modules/gpcopy_ip_map.py)
+    ensure_column_exists(
+        "connections",
+        "segment_ip_map",
+        "ALTER TABLE connections ADD COLUMN segment_ip_map TEXT"
+    )
+
     # счётчики сравнения по диапазонам: {checked, total, mismatched} JSON
     ensure_column_exists(
         "pg_compare_results",

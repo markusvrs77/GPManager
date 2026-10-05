@@ -21,6 +21,10 @@ def list_connections():
                 END AS password_masked,
                 COALESCE(db_type, 'greenplum') AS db_type,
                 COALESCE(role, 'both') AS role,
+                CASE
+                    WHEN segment_ip_map IS NULL OR segment_ip_map = '' THEN 0
+                    ELSE 1
+                END AS has_segment_ip_map,
                 created_at,
                 updated_at
             FROM connections

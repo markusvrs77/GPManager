@@ -37,7 +37,7 @@ try:
     from modules.gpcopy import (
         owner_item_keys,
         skip_covered_items,
-        quote_ident, build_gpcopy_command, open_psycopg2_connection_by_cfg,
+        quote_ident, build_gpcopy_command, write_dest_mapping_file, open_psycopg2_connection_by_cfg,
         get_conn_dbname, get_conn_host, get_conn_port, get_conn_user,
         make_include_table_file, safe_mark_job_failed, get_item_value,
         DEFAULT_GPCOPY_PATH, _job_log_path, _watch_gpcopy_log,
@@ -47,7 +47,7 @@ except ImportError:
     from gpcopy import (
         owner_item_keys,
         skip_covered_items,
-        quote_ident, build_gpcopy_command, open_psycopg2_connection_by_cfg,
+        quote_ident, build_gpcopy_command, write_dest_mapping_file, open_psycopg2_connection_by_cfg,
         get_conn_dbname, get_conn_host, get_conn_port, get_conn_user,
         make_include_table_file, safe_mark_job_failed, get_item_value,
         DEFAULT_GPCOPY_PATH, _job_log_path, _watch_gpcopy_log,
@@ -474,6 +474,7 @@ def run_gpcopy_partition_diff_job(job_id):
             # следующее сравнение «по статистике» снова видит расхождение
             # там, где его нет, — режим вырождался в еженедельную заливку
             analyze=True,
+            dest_mapping_file=write_dest_mapping_file(dest_cfg),
         )
 
         # общий каркас gpcopy: detached-процесс + лог + live-статусы,

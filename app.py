@@ -8,7 +8,9 @@ from modules.connections import (
     create_connection,
     delete_connection,
     test_gp_connection,
+    open_gp_connection,
 )
+from modules.gpcopy_ip_map import get_ip_map, save_ip_map, list_segment_hosts
 
 from modules.gpcopy_sync import (
     preview_gpcopy_sync,
@@ -262,6 +264,45 @@ def api_connections():
 def api_test_connection(connection_id):
     result = test_gp_connection(connection_id)
     return jsonify(result)
+
+
+# Карта «хост сегмента -> основной IP» для gpcopy, когда этот кластер —
+# приёмник (modules/gpcopy_ip_map.py).
+@app.route("/api/connections/<int:connection_id>/segment-ip-map",
+           methods=["GET", "POST"])
+def api_segment_ip_map(connection_id):
+    if request.method == "GET":
+        return jsonify({"ok": True, "entries": get_ip_map(connection_id)})
+
+    data = request.get_json(silent=True) or {}
+
+    try:
+        entries = save_ip_map(connection_id, data.get("entries") or [])
+    except LookupError as e:
+        return jsonify({"ok": False, "message": str(e)}), 404
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    return jsonify({"ok": True, "entries": entries})
+
+
+@app.route("/api/connections/<int:connection_id>/segment-hosts")
+def api_segment_hosts(connection_id):
+    """Хосты сегментов из gp_segment_configuration — только чтение."""
+    try:
+        conn = open_gp_connection(connection_id)
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    try:
+        conn.set_session(readonly=True, autocommit=True)
+        hosts = list_segment_hosts(conn)
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    finally:
+        conn.close()
+
+    return jsonify({"ok": True, "hosts": hosts})
 
 
 @app.route("/api/objects/tree")

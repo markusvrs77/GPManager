@@ -61,6 +61,11 @@ try:
 except ImportError:
     from modules.connections import get_connection_by_id
 
+try:
+    from gpcopy_ip_map import write_dest_mapping_file
+except ImportError:
+    from modules.gpcopy_ip_map import write_dest_mapping_file
+
 
 DEFAULT_GPCOPY_PATH = "/usr/local/gpdb/greenplum-db/bin/gpcopy"
 
@@ -1514,6 +1519,7 @@ def build_gpcopy_command(
     analyze=False,
     dry_run=False,
     extra_args=None,
+    dest_mapping_file=None,
 ):
     cmd = [
         gpcopy_path,
@@ -1533,6 +1539,12 @@ def build_gpcopy_command(
     # Поэтому source_user не добавляем, чтобы не получить unknown flag.
     if dest_user:
         cmd.extend(["--dest-user", str(dest_user)])
+
+    # сегменты приёмника по основным IP, а не по адресам интерконнекта
+    # (modules/gpcopy_ip_map.py). Если флаг уже задан в доп. аргументах
+    # вручную, второй раз его не добавляем.
+    if dest_mapping_file and "--dest-mapping-file" not in str(extra_args or ""):
+        cmd.extend(["--dest-mapping-file", str(dest_mapping_file)])
 
     copy_mode_count = 0
 
@@ -2309,6 +2321,7 @@ def run_gpcopy_job(job_id):
             analyze=analyze,
             dry_run=dry_run,
             extra_args=extra_args,
+            dest_mapping_file=write_dest_mapping_file(dest_connection),
         )
 
         command_text = " ".join(cmd)

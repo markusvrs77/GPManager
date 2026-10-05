@@ -69,6 +69,9 @@ POLICY = {
     "connections_page": "connections.view",
     "api_connections": "connections.view",
     "api_test_connection": "connections.view",
+    "api_segment_ip_map": {"GET": "connections.view",
+                           "POST": "connections.edit"},
+    "api_segment_hosts": "connections.view",
     "add_connection": "connections.edit",
     "remove_connection": "connections.edit",
 

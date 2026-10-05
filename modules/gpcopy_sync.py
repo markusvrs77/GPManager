@@ -95,6 +95,7 @@ from db import get_connection_by_id
 try:
     from modules.gpcopy import (
         build_gpcopy_command,
+        write_dest_mapping_file,
         get_conn_host as cfg_conn_host,
         get_conn_port as cfg_conn_port,
         get_conn_user as cfg_conn_user,
@@ -103,6 +104,7 @@ try:
 except ImportError:
     from gpcopy import (
         build_gpcopy_command,
+        write_dest_mapping_file,
         get_conn_host as cfg_conn_host,
         get_conn_port as cfg_conn_port,
         get_conn_user as cfg_conn_user,
@@ -137,6 +139,7 @@ def copy_source_to_stage_via_gpcopy(source_connection_id, dest_connection_id,
             cfg_conn_dbname(dest_cfg), stage_schema, stage_table),
         jobs=int(jobs or 4),
         truncate=True,  # staging создан пустым, --truncate идемпотентен
+        dest_mapping_file=write_dest_mapping_file(dest_cfg),
     )
 
     print(f"[gpcopy_sync] gpcopy stage load: {' '.join(cmd)}")
