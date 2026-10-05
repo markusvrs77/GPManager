@@ -550,7 +550,8 @@ def target_leaf_name(src_root, src_leaf, dst_root):
     return name
 
 
-def fetch_target_ddl(src_conn, schema, table, dst_schema, dst_table):
+def fetch_target_ddl(src_conn, schema, table, dst_schema, dst_table,
+                     plain=False):
     """
     CREATE TABLE для цели с другим именем — по структуре источника:
     колонки, типы, NOT NULL, способ хранения и распределение
@@ -563,6 +564,9 @@ def fetch_target_ddl(src_conn, schema, table, dst_schema, dst_table):
 
     DEFAULT'ы не переносятся: последовательности в них принадлежат таблице
     источника. Источник только читается.
+
+    plain=True — всегда обычная таблица с колонками и распределением
+    источника (промежуточные таблицы gpcopy, modules/gpcopy_stage.py).
     -> {"kind": "table" | "partitioned", "statements": [...]} или None,
     если в источнике нет.
     """
@@ -575,7 +579,8 @@ def fetch_target_ddl(src_conn, schema, table, dst_schema, dst_table):
         columns = [dict(c, default=None)
                    for c in _table_columns(cur, meta["oid"])]
 
-        partitioned = meta["relkind"] == "p" and meta["partition_by"]
+        partitioned = (not plain and meta["relkind"] == "p"
+                       and meta["partition_by"])
         children = _partition_children(cur, meta["oid"]) if partitioned else []
 
     statements = [build_create_table_sql(
@@ -756,37 +761,6 @@ def ensure_mapped_targets(source_connection_id, dest_connection_id,
                 pass
 
     return errors
-
-
-def truncate_targets(dest_connection_id, names):
-    """
-    TRUNCATE целей с картой перед полной заменой через корень: gpcopy
-    льёт в цель по срезу на партицию источника, и его --truncate очищал
-    бы цель перед каждым срезом. Поэтому цель чистится один раз здесь,
-    а gpcopy дописывает. Только приёмник и только цели, для которых
-    пользователь выбрал truncate.
-    """
-    if not names:
-        return
-
-    dst_cfg = get_connection_by_id(int(dest_connection_id))
-
-    if not dst_cfg:
-        raise ValueError("Подключение не найдено")
-
-    conn = open_psycopg2_connection_by_cfg(dst_cfg)
-
-    try:
-        with conn.cursor() as cur:
-            for schema, table in names:
-                cur.execute("TRUNCATE TABLE {}.{}".format(
-                    quote_ident(schema), quote_ident(table)))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def _target_label(targets, schema, table):

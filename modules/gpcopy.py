@@ -1178,13 +1178,105 @@ def mapped_source_leaves(source_connection, targets, pairs):
     return leaves
 
 
-def truncate_targets(dest_connection_id, names):
+def stage_partitioned_targets(job_id, include_json_file, leaf_map, targets,
+                              dest_db, truncate, source_connection,
+                              dest_connection, create=True):
+    """
+    Переписывает include JSON: записи, идущие в корень цели секционированной
+    таблицы, получают по своей промежуточной таблице (modules/gpcopy_stage).
+    create — сразу создать их в приёмнике. -> merges для finalize.
+    """
     try:
-        from modules.ddl_check import truncate_targets as _truncate
+        from modules import gpcopy_stage
     except ImportError:
-        from ddl_check import truncate_targets as _truncate
+        import gpcopy_stage
 
-    return _truncate(dest_connection_id, names)
+    roots = {}
+
+    for pair in leaf_map:
+        target = target_of(targets, *pair)
+        roots[gpcopy_full_name(dest_db, *target)] = {
+            "item": list(pair), "target": list(target), "truncate": truncate,
+        }
+
+    with open(include_json_file, encoding="utf-8") as f:
+        entries = json.load(f)
+
+    entries, merges = gpcopy_stage.plan_stages(
+        entries, roots, job_id,
+        lambda schema, table: gpcopy_full_name(dest_db, schema, table))
+
+    with open(include_json_file, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+
+    if create and merges:
+        src_conn = open_psycopg2_connection_by_cfg(source_connection)
+        dst_conn = open_psycopg2_connection_by_cfg(dest_connection)
+
+        try:
+            try:
+                src_conn.set_session(readonly=True, autocommit=True)
+            except Exception:
+                pass
+
+            dst_conn.autocommit = True
+            gpcopy_stage.create_stages(src_conn, dst_conn, merges)
+        except Exception:
+            try:
+                gpcopy_stage.drop_stages(dst_conn, merges)
+            except Exception:
+                pass
+            raise
+        finally:
+            src_conn.close()
+            dst_conn.close()
+
+    return merges
+
+
+def drop_stages_quietly(config):
+    """Остановка или авария: промежуточные таблицы задачи — удалить."""
+    if not config or not config.get("stage_merges"):
+        return
+
+    try:
+        finish_stage_merges(config, apply=False)
+    except Exception:
+        pass
+
+
+def finish_stage_merges(config, apply):
+    """
+    Промежуточные таблицы задачи: apply=True — перелить в цели, затем
+    удалить; False — только удалить (gpcopy упал или задачу остановили).
+    -> {(schema, table) источника: ошибка}.
+    """
+    merges = config.get("stage_merges") or []
+
+    if not merges:
+        return {}
+
+    try:
+        from modules import gpcopy_stage
+    except ImportError:
+        import gpcopy_stage
+
+    dest_cfg = get_connection_by_id(int(
+        config.get("dest_connection_id")
+        or config.get("destination_connection_id")))
+    conn = open_psycopg2_connection_by_cfg(dest_cfg)
+    errors = {}
+
+    try:
+        if apply:
+            errors = gpcopy_stage.apply_merges(conn, merges)
+    finally:
+        try:
+            gpcopy_stage.drop_stages(conn, merges)
+        finally:
+            conn.close()
+
+    return errors
 
 
 def prepare_mapped_targets(source_connection_id, dest_connection_id,
@@ -2310,15 +2402,73 @@ def finalize_gpcopy_job(job_id, items, rc, stdout_data, stderr_data,
     (там rc неизвестен — ориентируемся на финальную сводку gpcopy).
     """
     summary = parse_gpcopy_summary(stdout_data)
+    ok = is_gpcopy_success(rc, summary)
 
-    if is_gpcopy_success(rc, summary):
+    # секционированные таблицы с картой: gpcopy залил промежуточные
+    # таблицы — в цель их переливаем только после его успеха. Таблица
+    # done лишь тогда, когда данные реально в цели
+    staged = {tuple(m["item"]) for m in config.get("stage_merges") or []}
+    stage_errors = {}
+
+    if staged:
+        try:
+            stage_errors = finish_stage_merges(config, apply=ok)
+        except Exception as e:
+            stage_errors = {
+                pair: "Промежуточные таблицы: {}".format(str(e)[:600])
+                for pair in staged
+            }
+
+        if not ok:
+            stage_errors = {
+                pair: stage_errors.get(pair) or (
+                    "gpcopy завершился с ошибкой — данные в цель не "
+                    "перенесены, цель не изменена")
+                for pair in staged
+            }
+
+        # перелито или удалено — повторно (переподхват) не трогаем
+        config.pop("stage_merges", None)
+
+        try:
+            update_job_config(job_id, config)
+        except Exception:
+            pass
+
+    if ok:
         for item in items:
             item_id = get_item_value(item, "id")
-            safe_mark_item_done(item_id, duration_seconds=duration)
+            pair = (get_item_value(item, "schema_name"),
+                    get_item_value(item, "table_name"))
+
+            if pair in stage_errors:
+                safe_mark_item_failed(item_id,
+                                      error_message=stage_errors[pair][:2000],
+                                      duration_seconds=duration)
+            else:
+                safe_mark_item_done(item_id, duration_seconds=duration)
 
         refresh_job_progress(job_id)
-        mark_job_done(job_id)
+
+        if stage_errors:
+            safe_mark_job_failed(job_id, "\n".join(stage_errors.values())[:12000])
+        else:
+            mark_job_done(job_id)
         return
+
+    if stage_errors:
+        for item in items:
+            pair = (get_item_value(item, "schema_name"),
+                    get_item_value(item, "table_name"))
+
+            if pair in stage_errors:
+                safe_mark_item_failed(get_item_value(item, "id"),
+                                      error_message=stage_errors[pair][:2000],
+                                      duration_seconds=duration)
+
+        items = [i for i in items
+                 if (get_item_value(i, "schema_name"),
+                     get_item_value(i, "table_name")) not in stage_errors]
 
     # по таблицам показываем выжимку строк с ошибками: слепой срез
     # начала stderr обрывал сообщение на полуслове
@@ -2453,6 +2603,7 @@ def _resume_watch(job_id, log_path, pid, items, item_keys, config):
     log_text = _watch_gpcopy_log(job_id, log_path, item_keys, pid=pid)
 
     if is_stop_requested(job_id):
+        drop_stages_quietly(config)
         safe_mark_job_cancelled(job_id, "Stop requested")
         refresh_job_progress(job_id)
         return
@@ -2787,37 +2938,15 @@ def run_gpcopy_job(job_id):
                       get_item_value(i, "table_name")) for i in items])
                 leaf_errors = {}
 
-                # срезы партиций льются в один корень цели: drop удалял бы
-                # цель перед каждым срезом
+                # партиции идут через промежуточные таблицы и переливаются
+                # в цель INSERT'ом — пересоздавать цель (drop) некому
                 if leaf_map and drop:
                     for pair in list(leaf_map):
                         leaf_errors[pair] = (
                             "Секционированная таблица в другую цель грузится "
-                            "срезами по партициям — drop для неё не "
+                            "через промежуточные таблицы — drop для неё не "
                             "поддерживается, выбери truncate или append")
                         leaf_map.pop(pair)
-
-                # truncate: цель чистим сами один раз, gpcopy дописывает.
-                # Флаг у gpcopy один на всю команду — если в задаче есть
-                # и другие таблицы, им нужен настоящий --truncate
-                if leaf_map and truncate:
-                    others = [
-                        i for i in items
-                        if (get_item_value(i, "schema_name"),
-                            get_item_value(i, "table_name")) not in leaf_map
-                        and (get_item_value(i, "schema_name"),
-                             get_item_value(i, "table_name"))
-                        not in leaf_errors
-                    ]
-
-                    if others:
-                        for pair in list(leaf_map):
-                            leaf_errors[pair] = (
-                                "Секционированную таблицу в другую цель с "
-                                "truncate запусти отдельной задачей (или "
-                                "выбери append): gpcopy очищал бы цель перед "
-                                "каждой партицией")
-                            leaf_map.pop(pair)
 
                 if leaf_errors:
                     kept_items = []
@@ -2842,17 +2971,6 @@ def run_gpcopy_job(job_id):
                             "Не удалось подготовить цели в приёмнике:\n{}".format(
                                 "\n".join(leaf_errors.values())))
 
-                if leaf_map and truncate:
-                    if not dry_run:
-                        truncate_targets(
-                            dest_connection_id,
-                            [target_of(targets, *pair) for pair in leaf_map])
-
-                    # в задаче остались только такие таблицы — цель уже
-                    # пуста, gpcopy дописывает срезы
-                    truncate = False
-                    append = True
-
                 # include-table-file не умеет имя приёмника — для задачи,
                 # где хоть одна таблица идёт в другую, весь список уходит
                 # include-table-json с dest
@@ -2860,6 +2978,28 @@ def run_gpcopy_job(job_id):
                     items, source_db, dest_db, targets, leaf_map)
             else:
                 include_file = make_include_table_file(items, source_db)
+
+        # секционированные таблицы с картой: gpcopy не пишет несколько
+        # таблиц источника в одну цель — каждая партиция идёт в свою
+        # промежуточную таблицу, в цель их переливает finalize_gpcopy_job
+        if targets and include_json_file:
+            if mode == "date_filter":
+                leaf_map = mapped_source_leaves(
+                    source_connection, targets,
+                    [_config_table_pair(tc) for tc in table_configs])
+
+            if leaf_map:
+                stage_merges = stage_partitioned_targets(
+                    job_id, include_json_file, leaf_map, targets, dest_db,
+                    truncate=truncate and mode != "date_filter",
+                    source_connection=source_connection,
+                    dest_connection=dest_connection,
+                    create=not dry_run,
+                )
+
+                if not dry_run:
+                    config["stage_merges"] = stage_merges
+                    update_job_config(job_id, config)
 
         source_host = (
                 source_connection.get("host")
@@ -2993,6 +3133,7 @@ def run_gpcopy_job(job_id):
             pass  # без totals покажем просто счётчик готовых
 
         if is_stop_requested(job_id):
+            drop_stages_quietly(config)
             safe_mark_job_cancelled(job_id, "Stop requested before gpcopy start")
             refresh_job_progress(job_id)
             return
@@ -3032,6 +3173,7 @@ def run_gpcopy_job(job_id):
         duration = time.time() - started
 
         if is_stop_requested(job_id):
+            drop_stages_quietly(config)
             safe_mark_job_cancelled(job_id, "Stop requested")
             refresh_job_progress(job_id)
             return
@@ -3043,6 +3185,11 @@ def run_gpcopy_job(job_id):
 
     except Exception as e:
         err = "{}\n{}".format(str(e), traceback.format_exc())
+
+        try:
+            drop_stages_quietly(config)
+        except Exception:
+            pass
 
         try:
             safe_mark_job_failed(job_id, err[:4000])

@@ -399,6 +399,7 @@ def test_date_runner_cleans_window_in_target_and_skips_failed(monkeypatch):
     monkeypatch.setattr(
         gp, "fetch_leaves_by_key",
         lambda conn, entries, date_from="", date_to="": {})
+    monkeypatch.setattr(gp, "mapped_source_leaves", lambda c, t, p: {})
     monkeypatch.setattr(
         gp, "prepare_mapped_targets",
         lambda s, d, t, p: {("s", "c"): "Цели нет: permission denied"})
@@ -862,61 +863,70 @@ def test_inherited_uppercase_schema_is_quoted_for_gpcopy():
 PART_LEAVES = {("s", "a"): [("s", "a_prt_1"), ("s", "a_prt_2")]}
 
 
+class _FakePg:
+    autocommit = False
+
+    def set_session(self, **kw):
+        pass
+
+    def close(self):
+        pass
+
+
 def _part_run(full_run, monkeypatch, config, leaves=None):
-    truncated = []
+    from modules import gpcopy_stage
+
+    created = []
     monkeypatch.setattr(gp, "mapped_source_leaves",
                         lambda c, t, p: dict(leaves or PART_LEAVES))
-    monkeypatch.setattr(gp, "truncate_targets",
-                        lambda dest_id, names: truncated.append(
-                            (dest_id, list(names))))
+    monkeypatch.setattr(gp, "open_psycopg2_connection_by_cfg",
+                        lambda cfg: _FakePg())
+    monkeypatch.setattr(gpcopy_stage, "create_stages",
+                        lambda src, dst, merges: created.append(merges))
     seen = full_run(config)
-    seen["truncated"] = truncated
+    seen["created"] = created
+    seen["config"] = json.loads(get_job(seen["job_id"])["config_json"])
     return seen
 
 
-def test_partitioned_alone_with_truncate_goes_through_root(full_run,
-                                                            monkeypatch):
+def test_partitioned_target_goes_through_stage_tables(full_run, monkeypatch):
     """
-    Источник по неделям, цель по дням: каждая партиция источника —
-    срезом в корень цели. Цель чистится один раз, gpcopy дописывает.
+    gpcopy 2.7: «Multiple source tables ... cannot be transferred to the
+    same dest table». Каждая партиция — в свою промежуточную таблицу.
     """
     seen = _part_run(full_run, monkeypatch, {
-        "tables": [{"schema": "s", "table": "a"}],
         "targets": {"s.a": "arch.a_copy"}})
 
+    job = seen["job_id"]
+    stage = "adb.opsentri_gpcopy_stage.j{}_0000".format(job)
     assert seen["json"] == [
-        {"source": "adb.s.a_prt_1", "dest": "adb.arch.a_copy",
+        {"source": "adb.s.a_prt_1", "dest": stage + "1",
          "sql": 'SELECT * FROM "s"."a_prt_1"'},
-        {"source": "adb.s.a_prt_2", "dest": "adb.arch.a_copy",
+        {"source": "adb.s.a_prt_2", "dest": stage + "2",
          "sql": 'SELECT * FROM "s"."a_prt_2"'},
+        {"source": "adb.s.c", "dest": "adb.s.c"},
     ]
-    assert seen["truncated"] == [(2, [("arch", "a_copy")])]
-    assert seen["command"]["truncate"] is False
-    assert seen["command"]["append"] is True
+    dests = [e["dest"] for e in seen["json"]]
+    assert len(dests) == len(set(dests))      # ни одной общей цели
 
-
-def test_partitioned_with_others_and_truncate_is_refused(full_run,
-                                                          monkeypatch):
-    """Флаг gpcopy общий: другим таблицам нужен настоящий --truncate."""
-    seen = _part_run(full_run, monkeypatch,
-                     {"targets": {"s.a": "arch.a_copy"}})
-
-    items = {i["table_name"]: i for i in get_job_items(seen["job_id"])}
-    assert items["a"]["status"] == "failed"
-    assert "отдельной задачей" in items["a"]["error_message"]
-    assert seen["json"] == [{"source": "adb.s.c", "dest": "adb.s.c"}]
+    merges = seen["config"]["stage_merges"]
+    assert merges == [{
+        "item": ["s", "a"], "target": ["arch", "a_copy"], "truncate": True,
+        "stages": [["opsentri_gpcopy_stage", "j{}_00001".format(job)],
+                   ["opsentri_gpcopy_stage", "j{}_00002".format(job)]],
+    }]
+    assert seen["created"] == [merges]
+    # общий --truncate остаётся: другим таблицам он нужен, промежуточные пусты
     assert seen["command"]["truncate"] is True
-    assert seen["truncated"] == []
 
 
-def test_partitioned_with_append_mixes_fine(full_run, monkeypatch):
+def test_partitioned_target_with_append_does_not_truncate(full_run,
+                                                          monkeypatch):
     seen = _part_run(full_run, monkeypatch, {
         "targets": {"s.a": "arch.a_copy"}, "truncate": False,
         "append": True})
 
-    assert len(seen["json"]) == 3
-    assert seen["truncated"] == []
-    assert seen["command"]["append"] is True
+    assert seen["config"]["stage_merges"][0]["truncate"] is False
 
 
 def test_partitioned_target_refuses_drop(full_run, monkeypatch):
@@ -927,4 +937,112 @@ def test_partitioned_target_refuses_drop(full_run, monkeypatch):
     assert items["a"]["status"] == "failed"
     assert "drop" in items["a"]["error_message"]
     assert [e["source"] for e in seen["json"]] == ["adb.s.c"]
-    assert seen["truncated"] == []
+    assert seen["created"] == []
+
+
+# ------------------------------------------------------------ перелив в цель
+
+def _staged_job(monkeypatch, merge_errors=None):
+    calls = []
+
+    def fake_finish(config, apply):
+        calls.append(apply)
+        return dict(merge_errors or {}) if apply else {}
+
+    monkeypatch.setattr(gp, "finish_stage_merges", fake_finish)
+
+    cfg = {"source_connection_id": 1, "dest_connection_id": 2,
+           "tables": [{"schema": "s", "table": "a"},
+                      {"schema": "s", "table": "c"}],
+           "targets": {"s.a": "arch.a_copy"},
+           "stage_merges": [{"item": ["s", "a"], "target": ["arch", "a_copy"],
+                             "truncate": True, "stages": [["st", "j1_00001"]]}]}
+    job_id = create_job("gpcopy", 1, cfg)
+    return job_id, cfg, calls
+
+
+def test_success_merges_then_marks_done(monkeypatch):
+    job_id, cfg, calls = _staged_job(monkeypatch)
+
+    gp.finalize_gpcopy_job(job_id, get_job_items(job_id), 0, "", "", "cmd",
+                           1, cfg)
+
+    assert calls == [True]
+    assert {i["status"] for i in get_job_items(job_id)} == {"done"}
+    assert "stage_merges" not in json.loads(get_job(job_id)["config_json"])
+
+
+def test_failed_merge_fails_only_that_table(monkeypatch):
+    job_id, cfg, calls = _staged_job(
+        monkeypatch, {("s", "a"): "перенести не удалось: no partition"})
+
+    gp.finalize_gpcopy_job(job_id, get_job_items(job_id), 0, "", "", "cmd",
+                           1, cfg)
+
+    by_name = {i["table_name"]: i for i in get_job_items(job_id)}
+    assert by_name["a"]["status"] == "failed"
+    assert "no partition" in by_name["a"]["error_message"]
+    assert by_name["c"]["status"] == "done"
+    assert get_job(job_id)["status"] == "failed"
+
+
+def test_gpcopy_failure_drops_stages_without_merge(monkeypatch):
+    job_id, cfg, calls = _staged_job(monkeypatch)
+
+    gp.finalize_gpcopy_job(job_id, get_job_items(job_id), 1, "boom", "",
+                           "cmd", 1, cfg)
+
+    assert calls == [False]
+    by_name = {i["table_name"]: i for i in get_job_items(job_id)}
+    assert by_name["a"]["status"] == "failed"
+    assert "цель не изменена" in by_name["a"]["error_message"]
+
+
+def test_date_runner_partitioned_target_uses_stage_tables(monkeypatch):
+    """Окно дат: срезы партиций тоже идут в свои промежуточные таблицы."""
+    from modules import gpcopy_stage
+
+    monkeypatch.setattr(catalog, "fetch_partition_pairs", lambda cid: {})
+    monkeypatch.setattr(gp, "get_connection_by_id",
+                        lambda cid: dict(CONN, database="adb"))
+    monkeypatch.setattr(gp, "write_dest_mapping_file", lambda cfg: None)
+    monkeypatch.setattr(
+        gp, "fetch_leaves_by_key",
+        lambda conn, entries, date_from="", date_to="": {
+            ("s", "a"): [("s", "a_prt_1"), ("s", "a_prt_2")]})
+    monkeypatch.setattr(gp, "mapped_source_leaves",
+                        lambda c, t, p: dict(PART_LEAVES))
+    monkeypatch.setattr(gp, "prepare_mapped_targets", lambda s, d, t, p: {})
+    monkeypatch.setattr(gp, "open_psycopg2_connection_by_cfg",
+                        lambda cfg: _FakePg())
+    monkeypatch.setattr(gpcopy_stage, "create_stages",
+                        lambda src, dst, merges: None)
+    seen = {}
+
+    def fake_command(**kwargs):
+        with open(kwargs["include_json_file"], encoding="utf-8") as f:
+            seen["json"] = json.load(f)
+        raise Stop()
+
+    monkeypatch.setattr(gp, "build_gpcopy_command", fake_command)
+
+    job_id = create_job("gpcopy", 1, {
+        "mode": "date_filter",
+        "source_connection_id": 1, "dest_connection_id": 2,
+        "tables": [{"schema": "s", "table": "a"}],
+        "table_configs": [{"schema": "s", "table": "a", "date_column": "d",
+                           "sql": "SELECT 1"}],
+        "targets": {"s.a": "arch.a_copy"},
+        "date_from": "2026-09-01", "date_to": "2026-09-02",
+        "append": True, "gpcopy_path": "/usr/local/bin/gpcopy",
+    })
+
+    gp.run_gpcopy_job(job_id)
+
+    dests = [e["dest"] for e in seen["json"]]
+    assert len(dests) == 2 and len(set(dests)) == 2
+    assert all(".opsentri_gpcopy_stage.j{}_".format(job_id) in d
+               for d in dests)
+    merges = json.loads(get_job(job_id)["config_json"])["stage_merges"]
+    assert merges[0]["target"] == ["arch", "a_copy"]
+    assert merges[0]["truncate"] is False      # окно чистится своим DELETE
