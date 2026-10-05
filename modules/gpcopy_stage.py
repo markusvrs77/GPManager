@@ -106,8 +106,106 @@ def create_stages(src_conn, dst_conn, merges):
                 cur.execute("DROP TABLE IF EXISTS {}.{}".format(
                     quote_ident(stage_schema), quote_ident(stage_table)))
 
-                for sql_text in ddl["statements"]:
-                    cur.execute(sql_text)
+            for sql_text in ddl["statements"]:
+                create_unlogged(dst_conn, sql_text)
+
+
+def unlogged_sql(sql_text):
+    """
+    CREATE TABLE -> CREATE UNLOGGED TABLE. Чистая функция.
+
+    Промежуточная таблица живёт минуты и переливается в цель: журнал WAL
+    и копия на зеркалах ей не нужны, а запись без них на проде легче.
+    Упадёт кластер посреди задачи — содержимое пропадёт, задачу просто
+    перезапускают.
+    """
+    head = "CREATE TABLE "
+    start = sql_text.upper().find(head)
+
+    if start < 0 or sql_text[:start].strip():
+        return sql_text
+
+    return (sql_text[:start] + "CREATE UNLOGGED TABLE "
+            + sql_text[start + len(head):])
+
+
+def create_unlogged(dst_conn, sql_text):
+    """
+    Создать промежуточную таблицу UNLOGGED, а если такой способ хранения
+    кластер для неё не принимает — обычной (соединение в autocommit).
+    """
+    try:
+        with dst_conn.cursor() as cur:
+            cur.execute(unlogged_sql(sql_text))
+    except Exception as e:
+        print("[gpcopy_stage] UNLOGGED не принят ({}), создаю обычную".format(
+            (str(e).splitlines() or [""])[0][:200]))
+
+        with dst_conn.cursor() as cur:
+            cur.execute(sql_text)
+
+
+def stale_stage_tables(names, is_active, current_job_id=None):
+    """
+    Остатки прошлых задач в схеме промежуточных таблиц: имена j<задача>_N,
+    чья задача уже не идёт. Таблицы идущих задач и текущей не трогаем,
+    чужие имена (не j<число>_<число>) — тоже. Чистая функция.
+    """
+    import re
+
+    pattern = re.compile(r"^j(\d+)_\d+$")
+    stale = []
+
+    for name in names:
+        m = pattern.match(name)
+
+        if not m:
+            continue
+
+        job_id = int(m.group(1))
+
+        if job_id == current_job_id or is_active(job_id):
+            continue
+
+        stale.append(name)
+
+    return stale
+
+
+def sweep_stale_stages(dst_conn, is_active, current_job_id=None):
+    """
+    Удалить в STAGE_SCHEMA промежуточные таблицы завершённых задач —
+    на случай, если процесс приложения убили между копированием и уборкой.
+    -> сколько удалено. Ошибки уборки задачу не останавливают.
+    """
+    with dst_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s AND c.relkind IN ('r', 'p')
+            """,
+            (STAGE_SCHEMA,),
+        )
+        names = [r[0] for r in cur.fetchall()]
+
+    dropped = 0
+
+    for name in stale_stage_tables(names, is_active, current_job_id):
+        try:
+            with dst_conn.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS {}.{}".format(
+                    quote_ident(STAGE_SCHEMA), quote_ident(name)))
+            dropped += 1
+        except Exception:
+            pass
+
+    if dropped:
+        print("[gpcopy_stage] удалено остатков прошлых задач: {}".format(
+            dropped))
+
+    return dropped
 
 
 def _stage_columns(cur, schema, table):

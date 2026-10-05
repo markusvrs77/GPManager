@@ -122,3 +122,59 @@ def test_drop_stages_drops_only_stage_tables():
 
     assert conn.log == ['DROP TABLE IF EXISTS "stg"."j1_00001"',
                         'DROP TABLE IF EXISTS "stg"."j1_00002"']
+
+
+# ------------------------------------------------------------ UNLOGGED
+
+def test_stage_is_created_unlogged():
+    sql = 'CREATE TABLE IF NOT EXISTS "stg"."j1_00001" (\n    "id" bigint\n)'
+
+    assert st.unlogged_sql(sql).startswith(
+        'CREATE UNLOGGED TABLE IF NOT EXISTS "stg"."j1_00001"')
+
+
+def test_non_create_sql_is_left_alone():
+    assert st.unlogged_sql("ALTER TABLE x") == "ALTER TABLE x"
+
+
+def test_falls_back_to_regular_table_when_unlogged_refused():
+    conn = _Conn(fail_on="UNLOGGED")
+
+    st.create_unlogged(conn, 'CREATE TABLE "stg"."j1_1" ("id" int)')
+
+    assert conn.log == ['CREATE UNLOGGED TABLE "stg"."j1_1" ("id" int)',
+                        'CREATE TABLE "stg"."j1_1" ("id" int)']
+
+
+# ------------------------------------------------------------ уборка остатков
+
+def test_only_finished_jobs_stages_are_stale():
+    names = ["j10_00001", "j10_00002", "j11_00001", "j12_00001",
+             "user_table", "j_x"]
+    active = {11}
+
+    stale = st.stale_stage_tables(names, lambda job: job in active,
+                                  current_job_id=12)
+
+    assert stale == ["j10_00001", "j10_00002"]
+
+
+class _SweepCur(_Cur):
+    def fetchall(self):
+        return [("j10_00001",), ("j11_00001",), ("keep_me",)]
+
+
+class _SweepConn(_Conn):
+    def cursor(self):
+        return _SweepCur(self)
+
+
+def test_sweep_drops_stale_stages_in_stage_schema_only():
+    conn = _SweepConn()
+
+    dropped = st.sweep_stale_stages(conn, lambda job: job == 11,
+                                    current_job_id=12)
+
+    assert dropped == 1
+    drops = [s for s in conn.log if s.startswith("DROP")]
+    assert drops == ['DROP TABLE IF EXISTS "opsentri_gpcopy_stage"."j10_00001"']

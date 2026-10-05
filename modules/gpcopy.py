@@ -1178,6 +1178,19 @@ def mapped_source_leaves(source_connection, targets, pairs):
     return leaves
 
 
+_ACTIVE_JOB_STATUSES = ("queued", "pending", "running", "stopping")
+
+
+def _job_is_active(job_id):
+    """Задача ещё идёт (её промежуточные таблицы трогать нельзя)."""
+    try:
+        job = get_job(int(job_id))
+    except Exception:
+        return True                   # не знаем — не трогаем
+
+    return bool(job) and get_item_value(job, "status") in _ACTIVE_JOB_STATUSES
+
+
 def stage_partitioned_targets(job_id, include_json_file, leaf_map, targets,
                               dest_db, truncate, source_connection,
                               dest_connection, create=True):
@@ -1220,6 +1233,15 @@ def stage_partitioned_targets(job_id, include_json_file, leaf_map, targets,
                 pass
 
             dst_conn.autocommit = True
+
+            # остатки задач, чей процесс убили между копированием и
+            # уборкой: идущие задачи (и эту) не трогаем
+            try:
+                gpcopy_stage.sweep_stale_stages(
+                    dst_conn, _job_is_active, current_job_id=int(job_id))
+            except Exception as e:
+                print("[gpcopy_stage] уборка остатков не удалась: {}".format(e))
+
             gpcopy_stage.create_stages(src_conn, dst_conn, merges)
         except Exception:
             try:
