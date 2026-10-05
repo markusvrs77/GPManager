@@ -61,6 +61,7 @@ from modules.gpcopy import (
     clear_window_in_dest,
     get_date_columns_for_table,
     get_gpcopy_date_columns,
+    validate_window_bound,
 )
 
 from modules.dashboard import get_session_limits_stats
@@ -2147,6 +2148,27 @@ def api_gpcopy_start_date():
             "ok": False,
             "message": "table_configs is empty",
         }), 400
+
+    # Перевёрнутое окно раньше доходило до задания и падало уже там
+    # («Пустое окно» в clear_window_in_dest). Отказываем до создания задачи.
+    # Заодно граница проходит формат YYYY-MM-DD[ HH:MM[:SS]] до того, как
+    # попадёт в текст SELECT ниже.
+    if date_from or date_to:
+        try:
+            date_from = validate_window_bound(date_from, "«С»")
+            date_to = validate_window_bound(date_to, "«По»")
+        except ValueError as e:
+            return jsonify({"ok": False, "message": str(e)}), 400
+
+        if date_from >= date_to:
+            return jsonify({
+                "ok": False,
+                "message": (
+                    "Пустое окно дат: «С» ({}) должна быть раньше «По» ({}). "
+                    "«По» не включается — для одного дня укажи следующий "
+                    "день.".format(date_from, date_to)
+                ),
+            }), 400
 
     normalized_tables = []
 

@@ -1965,6 +1965,18 @@
         return [$("gppDateFrom").value, $("gppDateTo").value];
     }
 
+    // Текст ошибки для диапазона или null. «По» не включается, поэтому
+    // равные даты — тоже пустое окно: задание с ним падает уже на сервере.
+    function dateRangeError(range) {
+        if (!range[0] || !range[1]) { return "Укажи диапазон дат"; }
+        if (range[0] >= range[1]) {
+            return "Дата «С» (" + range[0] + ") должна быть раньше «По» ("
+                + range[1] + "). «По» не включается — для одного дня "
+                + "укажи следующий день.";
+        }
+        return null;
+    }
+
     function dateWindowSpec() {
         var preset = $("gppDatePreset").value;
         if (preset === "yesterday") {
@@ -2109,10 +2121,10 @@
 
         if (fb.date.length) {
             var range = dateRange();
+            var rangeErr = dateRangeError(range);
 
-            if (!range[0] || !range[1]) {
-                toast("Для «по датам» укажи диапазон на шаге «По датам»",
-                      "warning");
+            if (rangeErr) {
+                toast("По датам: " + rangeErr, "warning");
             } else {
                 calls.push(api("/api/catalog/resolve-columns", "POST", {
                     connection_id: srcId(),
@@ -2227,8 +2239,9 @@
 
         if (state.mode === "date") {
             var range = dateRange();
-            if (!range[0] || !range[1]) {
-                return Promise.resolve({ ok: false, message: "Укажи диапазон дат" });
+            var rangeErr = dateRangeError(range);
+            if (rangeErr) {
+                return Promise.resolve({ ok: false, message: rangeErr });
             }
             var preD = state.dateResolved
                 ? Promise.resolve(true)

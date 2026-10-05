@@ -64,6 +64,41 @@ def test_without_flag_nothing_is_deleted(client, monkeypatch):
     assert box["config"]["window_cleanup"] is False
 
 
+def test_reversed_window_is_rejected_before_job(client, monkeypatch):
+    """
+    «С» позже «По» раньше доходило до задания и падало в нём
+    («Пустое окно» из clear_window_in_dest). Задание не создаётся вовсе.
+    """
+    box = _capture_job(monkeypatch)
+
+    r = _start(client, date_from="2026-10-20", date_to="2026-10-05",
+               window_cleanup=True)
+
+    assert r.status_code == 400
+    assert "должна быть раньше" in r.get_json()["message"]
+    assert box == {}
+
+
+def test_equal_bounds_are_an_empty_window(client, monkeypatch):
+    """«По» не включается: одинаковые даты — пустое окно."""
+    box = _capture_job(monkeypatch)
+
+    r = _start(client, date_from=FROM, date_to=FROM)
+
+    assert r.status_code == 400
+    assert box == {}
+
+
+def test_malformed_bound_never_reaches_sql(client, monkeypatch):
+    """Граница уходит в текст SELECT — посторонний текст отсекается."""
+    box = _capture_job(monkeypatch)
+
+    r = _start(client, date_to="2026-09-02' OR '1'='1")
+
+    assert r.status_code == 400
+    assert box == {}
+
+
 def test_cleanup_rejects_truncate(client, monkeypatch):
     """
     truncate стёр бы таблицу целиком, а не окно, и очистка теряет смысл.
