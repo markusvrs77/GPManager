@@ -3016,53 +3016,42 @@
             };
         });
 
+        // Открытый лог переживает перерисовку: пока задача идёт, карточка
+        // перерисовывается на каждом опросе, и лог закрывался сам через
+        // секунду. Закрывает его только повторное нажатие.
         box.querySelectorAll("button[data-run-log]").forEach(function (btn) {
+            var id = btn.getAttribute("data-run-log");
+
+            gppLogButton(btn, id);
+
+            if (state.openLogs[id]) {
+                if (state.logCache[id]) { gppLogRender(id, state.logCache[id]); }
+
+                // у идущей задачи лог растёт — обновляем на каждом опросе
+                if (!state.logCache[id] || btn.getAttribute("data-run-active")) {
+                    gppLogFetch(id);
+                }
+            }
+
             btn.onclick = function (ev) {
                 ev.stopPropagation();
 
-                var id = btn.getAttribute("data-run-log");
-                var out = $("gppLogBox" + id);
-                var hint = $("gppLogHint" + id);
+                if (state.openLogs[id]) {
+                    delete state.openLogs[id];
+                    delete state.logCache[id];
+                    delete state.logScroll[id];
 
-                if (out && out.innerHTML) {   // повторный клик — свернуть
-                    out.innerHTML = "";
+                    var out = $("gppLogBox" + id);
+                    var hint = $("gppLogHint" + id);
+                    if (out) { out.innerHTML = ""; }
                     if (hint) { hint.textContent = ""; }
+                    gppLogButton(btn, id);
                     return;
                 }
 
-                btn.disabled = true;
-
-                api("/api/jobs/" + id + "/log").then(function (d) {
-                    btn.disabled = false;
-
-                    if (!d.ok) {
-                        if (hint) { hint.textContent = d.message || "лога нет"; }
-                        return;
-                    }
-
-                    if (hint) {
-                        hint.textContent =
-                            (d.truncated ? "последние 200 КБ · " : "") +
-                            Math.round((d.size || 0) / 1024) + " КБ · " + d.path;
-                    }
-
-                    var cause = (d.cause || []).length
-                        ? '<div class="gpp-err" style="margin-bottom: 6px;">' +
-                          "<b>Причина из лога:</b><pre>" +
-                          esc(d.cause.join("\n")) + "</pre></div>"
-                        : "";
-
-                    out.innerHTML = cause +
-                        '<pre class="gpp-log-full">' + esc(d.text) + "</pre>";
-
-                    // лог читают с конца — прокручиваем туда сразу
-                    var pre = out.querySelector(".gpp-log-full");
-
-                    if (pre) { pre.scrollTop = pre.scrollHeight; }
-                }).catch(function (e) {
-                    btn.disabled = false;
-                    if (hint) { hint.textContent = String(e); }
-                });
+                state.openLogs[id] = true;
+                gppLogButton(btn, id);
+                gppLogFetch(id);
             };
         });
 
@@ -3087,6 +3076,71 @@
                         .then(function (yes) { if (yes) { doStop(); } });
                 } else if (confirm("Остановить задачу #" + id + "?")) { doStop(); }
             };
+        });
+    }
+
+    /* ---------------- полный лог запуска ---------------- */
+
+    // открытые логи по id задачи, последний ответ и позиция прокрутки
+    // (null — у конца) — живут между перерисовками карточек
+    state.openLogs = state.openLogs || {};
+    state.logCache = state.logCache || {};
+    state.logScroll = state.logScroll || {};
+
+    function gppLogButton(btn, id) {
+        btn.textContent = state.openLogs[id]
+            ? "✕ Закрыть лог" : "📄 Полный лог";
+    }
+
+    function gppLogRender(id, d) {
+        var out = $("gppLogBox" + id);
+        var hint = $("gppLogHint" + id);
+
+        if (!out) { return; }
+
+        if (!d.ok) {
+            out.innerHTML = "";
+            if (hint) { hint.textContent = d.message || "лога нет"; }
+            return;
+        }
+
+        if (hint) {
+            hint.textContent =
+                (d.truncated ? "последние 200 КБ · " : "") +
+                Math.round((d.size || 0) / 1024) + " КБ · " + d.path;
+        }
+
+        var cause = (d.cause || []).length
+            ? '<div class="gpp-err" style="margin-bottom: 6px;">' +
+              "<b>Причина из лога:</b><pre>" +
+              esc(d.cause.join("\n")) + "</pre></div>"
+            : "";
+
+        out.innerHTML = cause +
+            '<pre class="gpp-log-full">' + esc(d.text) + "</pre>";
+
+        var pre = out.querySelector(".gpp-log-full");
+
+        if (!pre) { return; }
+
+        // лог читают с конца; кто прокрутил вверх — остаётся на месте
+        var keep = state.logScroll[id];
+        pre.scrollTop = typeof keep === "number" ? keep : pre.scrollHeight;
+
+        pre.onscroll = function () {
+            var atEnd = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24;
+            state.logScroll[id] = atEnd ? null : pre.scrollTop;
+        };
+    }
+
+    function gppLogFetch(id) {
+        return api("/api/jobs/" + id + "/log").then(function (d) {
+            if (!state.openLogs[id]) { return; }   // закрыли, пока грузился
+            state.logCache[id] = d;
+            gppLogRender(id, d);
+        }).catch(function (e) {
+            var hint = $("gppLogHint" + id);
+            if (hint) { hint.textContent = String(e); }
         });
     }
 
@@ -3171,7 +3225,8 @@
         // сам gpcopy пишет причину падения в свой лог — даём его открыть
         html += '<div style="margin: 6px 0 10px; display: flex; gap: 8px;' +
             ' align-items: center; flex-wrap: wrap;">' +
-            '<button class="gpp-btn sm" data-run-log="' + j.id + '">' +
+            '<button class="gpp-btn sm" data-run-log="' + j.id + '"' +
+            (isActiveStatus(j.status) ? ' data-run-active="1"' : "") + ">" +
             "\ud83d\udcc4 Полный лог</button>" +
             '<a class="gpp-btn sm" href="/api/jobs/' + j.id + '/log.txt"' +
             ' download>\u2b07 Скачать лог</a>' +
