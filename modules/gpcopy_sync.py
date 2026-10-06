@@ -96,6 +96,7 @@ try:
     from modules.gpcopy import (
         build_gpcopy_command,
         write_dest_mapping_file,
+        pick_rpc_port,
         get_conn_host as cfg_conn_host,
         get_conn_port as cfg_conn_port,
         get_conn_user as cfg_conn_user,
@@ -105,6 +106,7 @@ except ImportError:
     from gpcopy import (
         build_gpcopy_command,
         write_dest_mapping_file,
+        pick_rpc_port,
         get_conn_host as cfg_conn_host,
         get_conn_port as cfg_conn_port,
         get_conn_user as cfg_conn_user,
@@ -176,6 +178,7 @@ def copy_source_to_stage_via_gpcopy(source_connection_id, dest_connection_id,
         jobs=int(jobs or 4),
         truncate=True,  # staging создан пустым, --truncate идемпотентен
         dest_mapping_file=write_dest_mapping_file(dest_cfg),
+        rpc_port=pick_rpc_port(),
     )
 
     print(f"[gpcopy_sync] gpcopy stage load: {' '.join(cmd)}")

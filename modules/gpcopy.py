@@ -67,6 +67,11 @@ except ImportError:
     from modules.gpcopy_ip_map import write_dest_mapping_file
 
 try:
+    from gpcopy_ports import pick_rpc_port
+except ImportError:
+    from modules.gpcopy_ports import pick_rpc_port
+
+try:
     from modules.sync_targets import is_mapped, normalize_targets, target_of
 except ImportError:
     from sync_targets import is_mapped, normalize_targets, target_of
@@ -2260,6 +2265,7 @@ def build_gpcopy_command(
     dry_run=False,
     extra_args=None,
     dest_mapping_file=None,
+    rpc_port=None,
 ):
     cmd = [
         gpcopy_path,
@@ -2285,6 +2291,12 @@ def build_gpcopy_command(
     # вручную, второй раз его не добавляем.
     if dest_mapping_file and "--dest-mapping-file" not in str(extra_args or ""):
         cmd.extend(["--dest-mapping-file", str(dest_mapping_file)])
+
+    # свой RPC-порт на каждый запуск: два gpcopy на одном хосте иначе
+    # дерутся за 7667 (modules/gpcopy_ports.py). Заданный руками в доп.
+    # аргументах — главнее
+    if rpc_port and "--rpc-port" not in str(extra_args or ""):
+        cmd.extend(["--rpc-port", str(int(rpc_port))])
 
     copy_mode_count = 0
 
@@ -3315,6 +3327,7 @@ def run_gpcopy_job(job_id):
             dry_run=dry_run,
             extra_args=extra_args,
             dest_mapping_file=write_dest_mapping_file(dest_connection),
+            rpc_port=pick_rpc_port(),
         )
 
         command_text = " ".join(cmd)

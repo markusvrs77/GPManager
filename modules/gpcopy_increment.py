@@ -33,7 +33,7 @@ except ImportError:
 
 try:
     from modules.gpcopy import (
-        quote_ident, sql_literal, build_gpcopy_command, write_dest_mapping_file,
+        quote_ident, sql_literal, build_gpcopy_command, write_dest_mapping_file, pick_rpc_port,
         open_psycopg2_connection_by_cfg, get_conn_dbname, get_conn_host,
         get_conn_port, get_conn_user, safe_mark_job_failed,
         safe_mark_job_cancelled, safe_mark_item_failed, safe_mark_item_done,
@@ -42,7 +42,7 @@ try:
     )
 except ImportError:
     from gpcopy import (
-        quote_ident, sql_literal, build_gpcopy_command, write_dest_mapping_file,
+        quote_ident, sql_literal, build_gpcopy_command, write_dest_mapping_file, pick_rpc_port,
         open_psycopg2_connection_by_cfg, get_conn_dbname, get_conn_host,
         get_conn_port, get_conn_user, safe_mark_job_failed,
         safe_mark_job_cancelled, safe_mark_item_failed, safe_mark_item_done,
@@ -261,6 +261,7 @@ def run_gpcopy_increment_job(job_id):
             jobs=int(config.get("jobs") or 4),
             append=True,
             dest_mapping_file=write_dest_mapping_file(dest_cfg),
+            rpc_port=pick_rpc_port(),
         )
 
         for item in items:
