@@ -118,6 +118,7 @@ POLICY = {
     "api_gpcopy_start": "sync.run",
     "api_gpcopy_start_date": "sync.run",
     "api_gpcopy_retry_failed": "sync.run",
+    "api_gpcopy_drop_stages": "sync.run",
     "api_gpcopy_increment_start": "sync.run",
     "api_gpcopy_partition_diff_start": "sync.run",
     "api_gpcopy_sync_apply": "sync.run",

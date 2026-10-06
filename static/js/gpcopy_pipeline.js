@@ -3055,6 +3055,32 @@
             };
         });
 
+        // скопированное в промежуточные таблицы занимает место в
+        // приёмнике — если дозагрузка не нужна, его удаляют явно
+        box.querySelectorAll("button[data-run-drop-stages]").forEach(function (btn) {
+            btn.onclick = function (ev) {
+                ev.stopPropagation();
+                var id = btn.getAttribute("data-run-drop-stages");
+                var doDrop = function () {
+                    btn.disabled = true;
+                    api("/api/gpcopy/jobs/" + id + "/drop-stages", "POST")
+                        .then(function (r) {
+                            btn.disabled = false;
+                            toast(r.message || (r.ok ? "Удалено" : "Ошибка"),
+                                  r.ok ? "success" : "error");
+                            loadRuns();
+                        });
+                };
+                var question = "Удалить сохранённые промежуточные таблицы " +
+                    "задачи #" + id + "? Скопированное пропадёт, дозагрузить " +
+                    "упавшие будет нельзя — только перезапуск целиком.";
+                if (window.gpConfirm) {
+                    window.gpConfirm(question)
+                        .then(function (yes) { if (yes) { doDrop(); } });
+                } else if (confirm(question)) { doDrop(); }
+            };
+        });
+
         box.querySelectorAll("button[data-run-stop]").forEach(function (btn) {
             btn.onclick = function (ev) {
                 ev.stopPropagation();
@@ -3213,9 +3239,15 @@
         if (j.status === "failed" &&
                 (j.job_type === "gpcopy" ||
                  j.job_type === "gpcopy_partition_diff")) {
-            html += '<div style="margin: 6px 0 10px;">' +
+            html += '<div style="margin: 6px 0 10px; display: flex; gap: 8px;' +
+                ' flex-wrap: wrap;">' +
                 '<button class="gpp-btn sm" data-run-retry="' + j.id + '">' +
-                "⟳ Дозагрузить упавшие</button></div>";
+                "⟳ Дозагрузить упавшие</button>" +
+                (j.stage_kept
+                    ? '<button class="gpp-btn sm" data-run-drop-stages="' +
+                      j.id + '">\ud83d\uddd1 Удалить промежуточные</button>'
+                    : "") +
+                "</div>";
         }
 
         if (j.error_message) {

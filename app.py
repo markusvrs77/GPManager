@@ -25,6 +25,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from modules.vacuum_analyze import run_vacuum_analyze_job
 from job_manager import (
+    update_job_config,
     create_job,
     create_job_items,
     get_active_jobs,
@@ -56,10 +57,13 @@ from modules.reorganize import (
 )
 
 
+from modules.gpcopy_stage import staged_source_leaves
 from modules.gpcopy import (
     run_gpcopy_job,
     build_gpcopy_date_include_json_preview,
     build_retry_config,
+    build_stage_resume_config,
+    drop_kept_stages,
     clear_window_in_dest,
     get_date_columns_for_table,
     get_gpcopy_date_columns,
@@ -703,6 +707,59 @@ def api_gpcopy_retry_failed():
     config = _json.loads(job.get("config_json") or "{}")
     failed_leaves = [tuple(p) for p in (config.get("failed_leaves") or [])]
 
+    # партиции, шедшие через промежуточные таблицы, дозагружаются в них же,
+    # а потом всё переливается в цель
+    kept = config.get("stage_kept") or []
+
+    if kept:
+        staged = staged_source_leaves(kept)
+        others = [p for p in failed_leaves if p not in staged]
+        started = []
+
+        resume_id = create_job(
+            job_type="gpcopy",
+            connection_id=job.get("connection_id"),
+            config=dict(build_stage_resume_config(config, kept),
+                        retry_of_job_id=int(job_id)),
+        )
+        started.append(resume_id)
+
+        # промежуточные таблицы теперь принадлежат дозагрузке
+        config.pop("stage_kept", None)
+        update_job_config(int(job_id), config)
+
+        threading.Thread(target=run_gpcopy_job, args=(resume_id,),
+                         daemon=True).start()
+
+        message = ("Дозагрузка через сохранённые промежуточные таблицы "
+                   "запущена: #{}".format(resume_id))
+
+        if others:
+            try:
+                retry_config = build_retry_config(
+                    config, others,
+                    existing_mode=data.get("existing_mode") or "truncate",
+                )
+                retry_config["retry_of_job_id"] = int(job_id)
+                other_id = create_job(job_type="gpcopy",
+                                      connection_id=job.get("connection_id"),
+                                      config=retry_config)
+                create_job_items(job_id=other_id, items=[
+                    {"schema_name": t["schema"], "table_name": t["table"],
+                     "action": "GPCOPY RETRY"}
+                    for t in retry_config.get("selected_tables") or []
+                ])
+                threading.Thread(target=run_gpcopy_job, args=(other_id,),
+                                 daemon=True).start()
+                started.append(other_id)
+                message += "; остальные упавшие — #{}".format(other_id)
+            except ValueError as e:
+                message += "; остальные упавшие не дозагружены: {}".format(e)
+
+        return jsonify({"ok": True, "job_id": resume_id,
+                        "job_ids": started,
+                        "total_items": len(kept), "message": message})
+
     if not failed_leaves:
         return jsonify({
             "ok": False,
@@ -755,6 +812,31 @@ def api_gpcopy_retry_failed():
         "message": "Дозагрузка {} объектов запущена (из {} упавших записей "
                    "в логе)".format(len(retry_tables), len(failed_leaves)),
     })
+
+
+@app.route("/api/gpcopy/jobs/<int:job_id>/drop-stages", methods=["POST"])
+def api_gpcopy_drop_stages(job_id):
+    """«Удалить промежуточные»: отказаться от дозагрузки упавшей задачи."""
+    job = get_job(job_id)
+
+    if not job or not job_in_scope(job):
+        return jsonify({"ok": False, "message": "Задача не найдена"}), 404
+
+    config = _json.loads(job.get("config_json") or "{}")
+
+    if not config.get("stage_kept"):
+        return jsonify({"ok": False,
+                        "message": "Сохранённых промежуточных таблиц нет"}), 400
+
+    try:
+        count = drop_kept_stages(config)
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+    update_job_config(job_id, config)
+
+    return jsonify({"ok": True, "message":
+                    "Промежуточные таблицы удалены ({} целей)".format(count)})
 
 
 @app.route("/api/jobs/<int:job_id>/status")
@@ -1031,6 +1113,9 @@ def api_jobs_recent():
 
         # операция задачи (VACUUM / ANALYZE / …) — для ленты запусков
         j["action"] = cfg.get("action")
+
+        # сохранённые промежуточные таблицы (дозагрузка или удаление)
+        j["stage_kept"] = len(cfg.get("stage_kept") or [])
 
         sides = []
         for side in (src, dst):

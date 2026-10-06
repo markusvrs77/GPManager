@@ -64,13 +64,124 @@ def plan_stages(entries, roots, job_id, full_name):
             merges[key] = {"item": list(meta["item"]),
                            "target": list(meta["target"]),
                            "truncate": bool(meta.get("truncate")),
-                           "stages": []}
+                           "stages": [],
+                           "entries": []}
             order.append(key)
 
+        staged = dict(entry, dest=full_name(STAGE_SCHEMA, name))
         merges[key]["stages"].append([STAGE_SCHEMA, name])
-        out.append(dict(entry, dest=full_name(STAGE_SCHEMA, name)))
+        # какая партиция источника в какую промежуточную таблицу: по нему
+        # после частичного сбоя дозагружаются только недоехавшие
+        merges[key]["entries"].append(
+            dict(staged, leaf=list(split_full_name(entry.get("source")))))
+        out.append(staged)
 
     return out, [merges[k] for k in order]
+
+
+def split_full_name(name):
+    """
+    'db.schema.table' (части могут быть в кавычках) -> (schema, table).
+    Чистая функция.
+    """
+    import re
+
+    part = r'(?:"((?:[^"]|"")*)"|([^."]+))'
+    m = re.match(r"^{0}\.{0}\.{0}$".format(part), str(name or ""))
+
+    if not m:
+        return (None, None)
+
+    groups = m.groups()
+
+    def pick(i):
+        quoted, plain = groups[2 * i], groups[2 * i + 1]
+        return quoted.replace('""', '"') if quoted is not None else plain
+
+    return pick(1), pick(2)
+
+
+def kept_after_failure(merges, finished):
+    """
+    gpcopy упал: какие промежуточные таблицы сохранить для дозагрузки.
+
+    finished — {(schema, table)} партиций источника, которые gpcopy
+    отчитал как скопированные. Если у цели доехала хоть одна партиция,
+    её промежуточные таблицы сохраняются целиком, а в «pending» уходят
+    записи недоехавших — дозагрузка перельёт только их. Если не доехало
+    ничего, сохранять нечего. Чистая функция.
+    -> (kept, dropped)
+    """
+    kept, dropped = [], []
+    finished = set(tuple(p) for p in (finished or []))
+
+    for merge in merges or []:
+        # done — доехало в прошлых попытках (дозагрузка их не повторяет,
+        # и в её логе их нет)
+        entries = [
+            dict(e, done=bool(e.get("done"))
+                 or tuple(e.get("leaf") or ()) in finished)
+            for e in merge.get("entries") or []
+        ]
+        pending = [e for e in entries if not e["done"]]
+
+        if entries and len(pending) < len(entries):
+            kept.append(dict(merge, entries=entries, pending=pending))
+        else:
+            dropped.append(merge)
+
+    return kept, dropped
+
+
+def resume_plan(kept):
+    """
+    План дозагрузки по сохранённым промежуточным таблицам. Чистая функция.
+    -> (merges для перелива — без «pending», записи gpcopy только по
+    недоехавшим партициям — без служебных полей).
+    """
+    merges, entries = [], []
+
+    for merge in kept or []:
+        clean = {k: v for k, v in merge.items() if k != "pending"}
+        merges.append(clean)
+
+        for entry in clean.get("entries") or []:
+            if not entry.get("done"):
+                entries.append({k: v for k, v in entry.items()
+                                if k not in ("leaf", "done")})
+
+    return merges, entries
+
+
+def staged_source_leaves(kept):
+    """{(schema, partition)} источника, которые идут через промежуточные."""
+    return {
+        tuple(e.get("leaf") or ())
+        for merge in kept or []
+        for e in merge.get("entries") or []
+    }
+
+
+def missing_stage_tables(dst_conn, merges):
+    """Какие промежуточные таблицы из планов уже исчезли из приёмника."""
+    missing = []
+
+    with dst_conn.cursor() as cur:
+        for merge in merges or []:
+            for schema, table in merge.get("stages") or []:
+                cur.execute(
+                    """
+                    SELECT 1 FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = %s AND c.relname = %s
+                    """,
+                    (schema, table),
+                )
+
+                if cur.fetchone() is None:
+                    missing.append((schema, table))
+
+    return missing
 
 
 def create_stages(src_conn, dst_conn, merges):

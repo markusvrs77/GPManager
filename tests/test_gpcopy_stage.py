@@ -68,10 +68,13 @@ def test_each_leaf_gets_its_own_stage():
         "adb.s.c",
     ]
     assert out[0]["sql"] == "q1"
-    assert merges == [{"item": ["s", "a"], "target": ["arch", "a_copy"],
-                       "truncate": True,
-                       "stages": [["opsentri_gpcopy_stage", "j42_00001"],
-                                  ["opsentri_gpcopy_stage", "j42_00002"]]}]
+    assert [{k: m[k] for k in ("item", "target", "truncate", "stages")}
+            for m in merges] == [{
+        "item": ["s", "a"], "target": ["arch", "a_copy"], "truncate": True,
+        "stages": [["opsentri_gpcopy_stage", "j42_00001"],
+                   ["opsentri_gpcopy_stage", "j42_00002"]]}]
+    assert merges[0]["entries"][1]["leaf"] == ["s", "a_prt_2"]
+    assert merges[0]["entries"][1]["dest"] ==         "adb.opsentri_gpcopy_stage.j42_00002"
 
 
 def test_merge_is_one_transaction_truncate_then_inserts():

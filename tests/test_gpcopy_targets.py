@@ -748,10 +748,28 @@ def test_retry_refuses_leaves_of_mapped_tables():
 
 def test_retry_of_unmapped_leaves_drops_targets():
     retry = gp.build_retry_config(
-        {"targets": {"s.f": "arch.f2"}}, [("s", "g_1_prt_3")])
+        {"targets": {"s.f": "arch.f2"},
+         "tables": [{"schema": "s", "table": "f"},
+                    {"schema": "s", "table": "g"}]},
+        [("s", "g_1_prt_3")])
 
     assert "targets" not in retry
     assert retry["selected_tables"] == [{"schema": "s", "table": "g_1_prt_3"}]
+
+
+def test_retry_refuses_leaf_it_cannot_attribute():
+    """
+    Случай из лога: партиция «_prt_» таблицы с картой. Признак «_1_prt_»
+    её не узнаёт, и дозагрузка ушла бы в одноимённую партицию приёмника
+    с --truncate. Такую дозагрузку не запускаем.
+    """
+    with pytest.raises(ValueError) as err:
+        gp.build_retry_config(
+            {"targets": {"dwh_dm.dm_stock_lot": "dwh_dm.dm_stock_lot_new"},
+             "tables": [{"schema": "dwh_dm", "table": "dm_stock_lot"}]},
+            [("dwh_dm", "dm_stock_lot_prt_20270124")])
+
+    assert "одноимённую" in str(err.value)
 
 
 # ------------------------------------------------------------ ревью: режимы и окно
@@ -910,11 +928,14 @@ def test_partitioned_target_goes_through_stage_tables(full_run, monkeypatch):
     assert len(dests) == len(set(dests))      # ни одной общей цели
 
     merges = seen["config"]["stage_merges"]
-    assert merges == [{
+    assert [{k: m[k] for k in ("item", "target", "truncate", "stages")}
+            for m in merges] == [{
         "item": ["s", "a"], "target": ["arch", "a_copy"], "truncate": True,
         "stages": [["opsentri_gpcopy_stage", "j{}_00001".format(job)],
                    ["opsentri_gpcopy_stage", "j{}_00002".format(job)]],
     }]
+    assert [e["leaf"] for e in merges[0]["entries"]] == [["s", "a_prt_1"],
+                                                       ["s", "a_prt_2"]]
     assert seen["created"] == [merges]
     # общий --truncate остаётся: другим таблицам он нужен, промежуточные пусты
     assert seen["command"]["truncate"] is True
@@ -945,7 +966,7 @@ def test_partitioned_target_refuses_drop(full_run, monkeypatch):
 def _staged_job(monkeypatch, merge_errors=None):
     calls = []
 
-    def fake_finish(config, apply):
+    def fake_finish(config, apply, merges=None):
         calls.append(apply)
         return dict(merge_errors or {}) if apply else {}
 

@@ -706,12 +706,48 @@ def dedupe_failed_leaves(failed_leaves, finished=None):
             if (schema, table) not in with_parts]
 
 
-def build_retry_config(config, failed_leaves, existing_mode="truncate"):
+def build_stage_resume_config(config, kept):
+    """
+    Дозагрузка таблиц, чьи партиции шли через промежуточные таблицы:
+    недоехавшие партиции — в те же промежуточные таблицы (--truncate
+    действует только на них), затем перелив всех в цель. Чистая функция.
+    """
+    if not kept:
+        raise ValueError("Сохранённых промежуточных таблиц нет")
+
+    items = [tuple(m["item"]) for m in kept]
+    keys = {"{}.{}".format(*pair) for pair in items}
+
+    resume = {
+        key: config[key]
+        for key in ("source_connection_id", "dest_connection_id",
+                    "gpcopy_path", "jobs", "on_segment_threshold",
+                    "extra_args")
+        if config.get(key) not in (None, "")
+    }
+    resume["tables"] = [{"schema": s, "table": t} for s, t in items]
+    resume["targets"] = {k: v for k, v in (config.get("targets") or {}).items()
+                         if k in keys}
+    resume["stage_resume"] = kept
+    resume["truncate"] = True
+
+    return resume
+
+
+def build_retry_config(config, failed_leaves, existing_mode="truncate",
+                       exclude=None):
     """
     Конфиг новой задачи «дозагрузить упавшие»: перезаливка только
     упавших партиций/таблиц. Режим существующих таблиц выбирается
     пользователем (--truncate по умолчанию). Чистая функция.
+
+    exclude — партиции, которые дозагружаются иначе (через промежуточные
+    таблицы, build_stage_resume_config).
     """
+    exclude = set(tuple(p) for p in (exclude or []))
+    failed_leaves = [tuple(p) for p in failed_leaves or []
+                     if tuple(p) not in exclude]
+
     if not failed_leaves:
         raise ValueError("Список упавших партиций пуст")
 
@@ -757,6 +793,35 @@ def build_retry_config(config, failed_leaves, existing_mode="truncate"):
             "другую таблицу ({}) — перезапусти их копирование целиком".format(
                 ", ".join(mapped_roots[:5]))
         )
+
+    # Партиции названы не всегда по «_1_prt_» (бывает «_prt_»), и признак
+    # выше их не узнаёт. Дозагрузка такой партиции ушла бы в одноимённую
+    # таблицу приёмника с --truncate. Поэтому при карте дозагружаем только
+    # то, что точно принадлежит таблице без карты.
+    if targets:
+        plain_items = []
+
+        for t in (config.get("tables") or config.get("selected_tables")
+                  or []):
+            schema = t.get("schema") or t.get("schema_name")
+            table = t.get("table") or t.get("table_name")
+
+            if schema and table and not is_mapped(targets, schema, table):
+                plain_items.append((schema, table))
+
+        unknown = [
+            "{}.{}".format(ls, lt) for ls, lt in leaves
+            if not any(leaf_belongs_to_item(ls, lt, s, t)
+                       for s, t in plain_items)
+        ]
+
+        if unknown:
+            raise ValueError(
+                "Не удалось определить, к какой таблице относятся упавшие "
+                "партиции ({}) — у задачи есть загрузка в другую таблицу, и "
+                "дозагрузка могла бы попасть в одноимённую таблицу приёмника. "
+                "Перезапусти копирование целиком".format(
+                    ", ".join(unknown[:5])))
 
     tables = [
         {"schema": schema, "table": table}
@@ -1182,13 +1247,27 @@ _ACTIVE_JOB_STATUSES = ("queued", "pending", "running", "stopping")
 
 
 def _job_is_active(job_id):
-    """Задача ещё идёт (её промежуточные таблицы трогать нельзя)."""
+    """
+    Промежуточные таблицы задачи трогать нельзя: она идёт или сохранила
+    скопированное для «Дозагрузить упавшие» (stage_kept).
+    """
     try:
         job = get_job(int(job_id))
     except Exception:
         return True                   # не знаем — не трогаем
 
-    return bool(job) and get_item_value(job, "status") in _ACTIVE_JOB_STATUSES
+    if not job:
+        return False
+
+    if get_item_value(job, "status") in _ACTIVE_JOB_STATUSES:
+        return True
+
+    try:
+        config = json.loads(get_item_value(job, "config_json") or "{}")
+    except Exception:
+        return True
+
+    return bool(config.get("stage_kept"))
 
 
 def stage_partitioned_targets(job_id, include_json_file, leaf_map, targets,
@@ -1267,13 +1346,121 @@ def drop_stages_quietly(config):
         pass
 
 
-def finish_stage_merges(config, apply):
+def prepare_stage_resume(job_id, config, dest_connection):
+    """
+    Задача-дозагрузка: промежуточные таблицы должны быть на месте; в
+    config["stage_merges"] — полный план перелива, gpcopy получает только
+    недоехавшие партиции. -> путь include JSON или None, если gpcopy не
+    нужен (всё доехало, осталось перелить).
+    """
+    try:
+        from modules import gpcopy_stage
+    except ImportError:
+        import gpcopy_stage
+
+    merges, entries = gpcopy_stage.resume_plan(config.get("stage_resume"))
+
+    conn = open_psycopg2_connection_by_cfg(dest_connection)
+
+    try:
+        missing = gpcopy_stage.missing_stage_tables(conn, merges)
+    finally:
+        conn.close()
+
+    if missing:
+        raise Exception(
+            "Сохранённых промежуточных таблиц уже нет в приёмнике ({}) — "
+            "перезапусти копирование целиком".format(
+                ", ".join("{}.{}".format(*m) for m in missing[:3])))
+
+    config["stage_merges"] = merges
+    config.pop("stage_resume", None)
+    update_job_config(job_id, config)
+
+    if not entries:
+        return None
+
+    fd, path = tempfile.mkstemp(prefix="gpcopy_include_resume_",
+                                suffix=".json", text=True)
+
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+
+    return path
+
+
+def drop_kept_stages(config):
+    """«Удалить промежуточные»: сохранённое для дозагрузки — удалить."""
+    kept = config.get("stage_kept") or []
+
+    if kept:
+        finish_stage_merges(config, apply=False, merges=kept)
+
+    config.pop("stage_kept", None)
+    return len(kept)
+
+
+def keep_stages_after_failure(config, stdout_data):
+    """
+    gpcopy упал. Доехавшее не выбрасываем: у целей, где скопирована хоть
+    одна партиция, промежуточные таблицы сохраняются (config["stage_kept"])
+    и «Дозагрузить упавшие» догрузит только недоехавшие. Остальные
+    удаляются. -> {(schema, table) источника: текст для строки задачи}.
+    """
+    try:
+        from modules import gpcopy_stage
+    except ImportError:
+        import gpcopy_stage
+
+    merges = config.get("stage_merges") or []
+    kept, dropped = gpcopy_stage.kept_after_failure(
+        merges, parse_finished_tables(stdout_data))
+
+    try:
+        finish_stage_merges(config, apply=False, merges=dropped)
+    except Exception:
+        pass
+
+    errors = {}
+
+    for merge in dropped:
+        errors[tuple(merge["item"])] = (
+            "gpcopy завершился с ошибкой — данные в цель не перенесены, "
+            "цель не изменена")
+
+    for merge in kept:
+        pending = merge["pending"]
+        names = ", ".join(e["leaf"][1] or "?" for e in pending[:5])
+
+        if len(pending) > 5:
+            names += " …ещё {}".format(len(pending) - 5)
+
+        errors[tuple(merge["item"])] = (
+            "В промежуточные таблицы скопировано {} из {} партиций, не "
+            "удалось {}: {}. В цель {}.{} ничего не перенесено, она не "
+            "изменена. Скопированное сохранено: «Дозагрузить упавшие» "
+            "догрузит только эти партиции и перельёт всё в цель; не нужно — "
+            "«Удалить промежуточные».".format(
+                len(merge["entries"]) - len(pending), len(merge["entries"]),
+                len(pending), names, merge["target"][0], merge["target"][1]))
+
+    if kept:
+        config["stage_kept"] = kept
+    else:
+        config.pop("stage_kept", None)
+
+    return errors
+
+
+def finish_stage_merges(config, apply, merges=None):
     """
     Промежуточные таблицы задачи: apply=True — перелить в цели, затем
     удалить; False — только удалить (gpcopy упал или задачу остановили).
+    merges — какие именно (по умолчанию все из config["stage_merges"]).
     -> {(schema, table) источника: ошибка}.
     """
-    merges = config.get("stage_merges") or []
+    if merges is None:
+        merges = config.get("stage_merges") or []
 
     if not merges:
         return {}
@@ -2433,23 +2620,19 @@ def finalize_gpcopy_job(job_id, items, rc, stdout_data, stderr_data,
     stage_errors = {}
 
     if staged:
-        try:
-            stage_errors = finish_stage_merges(config, apply=ok)
-        except Exception as e:
-            stage_errors = {
-                pair: "Промежуточные таблицы: {}".format(str(e)[:600])
-                for pair in staged
-            }
+        if ok:
+            try:
+                stage_errors = finish_stage_merges(config, apply=True)
+            except Exception as e:
+                stage_errors = {
+                    pair: "Промежуточные таблицы: {}".format(str(e)[:600])
+                    for pair in staged
+                }
+        else:
+            stage_errors = keep_stages_after_failure(config, stdout_data)
 
-        if not ok:
-            stage_errors = {
-                pair: stage_errors.get(pair) or (
-                    "gpcopy завершился с ошибкой — данные в цель не "
-                    "перенесены, цель не изменена")
-                for pair in staged
-            }
-
-        # перелито или удалено — повторно (переподхват) не трогаем
+        # перелито или удалено (сохранённое — уже в stage_kept): повторно,
+        # при переподхвате, не трогаем
         config.pop("stage_merges", None)
 
         try:
@@ -2933,7 +3116,20 @@ def run_gpcopy_job(job_id):
                         "Не удалось подготовить цели в приёмнике:\n{}".format(
                             "\n".join(target_errors.values())))
 
-        if mode == "date_filter":
+        if config.get("stage_resume"):
+            # дозагрузка через сохранённые промежуточные таблицы
+            include_json_file = prepare_stage_resume(
+                job_id, config, dest_connection)
+
+            if include_json_file is None:
+                # доехало всё, осталось только перелить
+                finalize_gpcopy_job(
+                    job_id, items, 0, "", "",
+                    "перелив сохранённых промежуточных таблиц (без gpcopy)",
+                    time.time() - started, config,
+                )
+                return
+        elif mode == "date_filter":
             if not table_configs:
                 raise Exception("table_configs is empty")
 
