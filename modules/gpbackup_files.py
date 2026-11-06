@@ -17,11 +17,12 @@ gpbackup_manager в неинтерактивном запуске ждёт те�
 читается локально. Модуль ничего на диске не меняет: только чтение.
 """
 
-import glob
 import json
 import os
+import posixpath
 import re
 import sqlite3
+import tempfile
 
 from db import sqlite_cursor
 
@@ -275,13 +276,45 @@ def parse_toc(text):
 # где лежат файлы
 # ------------------------------------------------------------------
 
-def coordinator_data_dir(connection_id):
-    """Каталог данных координатора: переменная окружения или каталог GP."""
-    for var in ("COORDINATOR_DATA_DIRECTORY", "MASTER_DATA_DIRECTORY"):
-        value = (os.environ.get(var) or "").strip()
+def _fs(connection_id, fs=None):
+    """Где читать файлы копии: здесь или на координаторе по SSH."""
+    if fs is not None:
+        return fs
 
-        if value:
-            return value
+    from modules.gp_remote import fs_for
+
+    return fs_for(connection_id)
+
+
+def _local_fs():
+    from modules.gp_remote import LocalFS
+
+    return LocalFS()
+
+
+def _join(fs, *parts):
+    return posixpath.join(*parts) if getattr(fs, "remote", False) else os.path.join(*parts)
+
+
+def _dirname(fs, path):
+    return posixpath.dirname(path) if getattr(fs, "remote", False) else os.path.dirname(path)
+
+
+def _basename(fs, path):
+    return posixpath.basename(path) if getattr(fs, "remote", False) else os.path.basename(path)
+
+
+def coordinator_data_dir(connection_id, fs=None):
+    """
+    Каталог данных координатора: переменная окружения (только когда
+    gpbackup запускается здесь же) или gp_segment_configuration.
+    """
+    if not getattr(fs, "remote", False):
+        for var in ("COORDINATOR_DATA_DIRECTORY", "MASTER_DATA_DIRECTORY"):
+            value = (os.environ.get(var) or "").strip()
+
+            if value:
+                return value
 
     key = int(connection_id or 0)
 
@@ -327,36 +360,36 @@ def _clean_dir(path):
     return path.rstrip("/\\") or path
 
 
-def backup_roots(connection_id, backup_dirs=()):
+def backup_roots(connection_id, backup_dirs=(), fs=None):
     """Каталоги …/backups, где gpbackup координатора держит копии."""
+    fs = _fs(connection_id, fs)
     roots = []
 
-    datadir = coordinator_data_dir(connection_id)
+    datadir = coordinator_data_dir(connection_id, fs)
 
     if datadir:
-        roots.append(os.path.join(datadir, "backups"))
+        roots.append(_join(fs, datadir, "backups"))
 
     for d in backup_dirs:
         d = _clean_dir(d)
 
         if d:
             # <префикс>-1: gpseg-1, seg-1 — зависит от кластера
-            roots += sorted(glob.glob(os.path.join(glob.escape(d), "*-1",
-                                                   "backups")))
+            roots += fs.glob(d, "*-1", "backups")
 
     seen = []
 
     for r in roots:
-        if r not in seen and os.path.isdir(r):
+        if r not in seen and fs.isdir(r):
             seen.append(r)
 
     return seen
 
 
-def backup_files_dir(record):
+def backup_files_dir(record, fs=None):
     """
     Каталог файлов копии на координаторе (…/backups/<YYYYMMDD>/<ts>)
-    или None, если его не видно отсюда.
+    или None, если его не видно.
     """
     record = record or {}
     ts = str(record.get("backup_timestamp") or "")
@@ -364,37 +397,29 @@ def backup_files_dir(record):
     if not _TS_RE.match(ts):
         return None
 
+    fs = _fs(record.get("connection_id"), fs)
     candidates = []
 
     skipped_file = _clean_dir(record.get("skipped_file"))
 
     if skipped_file:
-        candidates.append(os.path.dirname(skipped_file))
+        candidates.append(_dirname(fs, skipped_file))
 
     backup_dir = _clean_dir(record.get("backup_dir"))
 
     if backup_dir:
-        candidates += sorted(glob.glob(os.path.join(
-            glob.escape(backup_dir), "*-1", "backups", ts[:8], ts)))
+        candidates += fs.glob(backup_dir, "*-1", "backups", ts[:8], ts)
     else:
-        datadir = coordinator_data_dir(record.get("connection_id"))
+        datadir = coordinator_data_dir(record.get("connection_id"), fs)
 
         if datadir:
-            candidates.append(os.path.join(datadir, "backups", ts[:8], ts))
+            candidates.append(_join(fs, datadir, "backups", ts[:8], ts))
 
     for path in candidates:
-        if os.path.isdir(path):
+        if fs.isdir(path):
             return path
 
     return None
-
-
-def _read(path):
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
-    except OSError:
-        return None
 
 
 # ------------------------------------------------------------------
@@ -405,17 +430,7 @@ def _truthy(value):
     return str(value if value is not None else "").strip().lower() in ("1", "true", "t")
 
 
-def read_history_db(datadir):
-    """
-    gpbackup_history.db -> [{timestamp, dbname, backup_type, status,
-    backup_dir}], без удалённых. Только чтение; колонки берутся по
-    факту (схема менялась между версиями gpbackup).
-    """
-    path = os.path.join(datadir or "", "gpbackup_history.db")
-
-    if not datadir or not os.path.isfile(path):
-        return []
-
+def _history_rows(path):
     try:
         conn = sqlite3.connect("file:{}?mode=ro".format(path), uri=True,
                                timeout=5)
@@ -429,11 +444,48 @@ def read_history_db(datadir):
         if "timestamp" not in cols:
             return []
 
-        rows = [dict(r) for r in conn.execute("SELECT * FROM backups")]
+        return [dict(r) for r in conn.execute("SELECT * FROM backups")]
     except sqlite3.Error:
         return []
     finally:
         conn.close()
+
+
+def read_history_db(datadir, fs=None):
+    """
+    gpbackup_history.db -> [{timestamp, dbname, backup_type, status,
+    backup_dir}], без удалённых. Только чтение; колонки берутся по
+    факту (схема менялась между версиями gpbackup). С координатора
+    файл копируется во временный и открывается там.
+    """
+    if not datadir:
+        return []
+
+    fs = fs or _local_fs()
+    path = _join(fs, datadir, "gpbackup_history.db")
+
+    if getattr(fs, "remote", False):
+        data = fs.read_bytes(path)
+
+        if not data:
+            return []
+
+        handle, tmp = tempfile.mkstemp(suffix=".db")
+
+        try:
+            with os.fdopen(handle, "wb") as f:
+                f.write(data)
+
+            rows = _history_rows(tmp)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    elif fs.isfile(path):
+        rows = _history_rows(path)
+    else:
+        return []
 
     out = []
 
@@ -463,37 +515,35 @@ def read_history_db(datadir):
     return out
 
 
-def scan_backup_dirs(roots):
+def scan_backup_dirs(roots, fs=None):
     """
     Обход …/backups/<YYYYMMDD>/<ts>/gpbackup_<ts>_config.yaml ->
     [{timestamp, dbname, backup_type, status, backup_dir, files_dir,
     skipped_file}].
     """
+    fs = fs or _local_fs()
     found = {}
 
     for root in roots:
-        pattern = os.path.join(root, "*", "*", "gpbackup_*_config.yaml")
-
-        for path in glob.glob(pattern):
-            ts_dir = os.path.dirname(path)
-            ts = os.path.basename(ts_dir)
-            day = os.path.basename(os.path.dirname(ts_dir))
+        for path in fs.glob(root, "*", "*", "gpbackup_*_config.yaml"):
+            ts_dir = _dirname(fs, path)
+            ts = _basename(fs, ts_dir)
+            day = _basename(fs, _dirname(fs, ts_dir))
 
             if not _TS_RE.match(ts) or not _DATE_RE.match(day) or ts in found:
                 continue
 
-            if os.path.basename(path) != "gpbackup_{}_config.yaml".format(ts):
+            if _basename(fs, path) != "gpbackup_{}_config.yaml".format(ts):
                 continue
 
-            cfg = parse_backup_config(_read(path))
+            cfg = parse_backup_config(fs.read(path))
             status = config_status(cfg.get("status"))
 
             if status is None:
                 continue
 
-            skipped = os.path.join(ts_dir,
-                                   "gpbackup_{}_skipped_tables".format(ts))
-            has_skipped = os.path.isfile(skipped)
+            skipped = _join(fs, ts_dir, "gpbackup_{}_skipped_tables".format(ts))
+            has_skipped = fs.isfile(skipped)
 
             if status == "done" and has_skipped:
                 status = "partial"
@@ -513,18 +563,19 @@ def scan_backup_dirs(roots):
     return [found[k] for k in sorted(found)]
 
 
-def list_disk_backups(connection_id, backup_dirs=()):
+def list_disk_backups(connection_id, backup_dirs=(), fs=None):
     """
-    Копии кластера на диске: история gpbackup плюс обход каталогов
-    (находятся и копии, которых нет в истории).
+    Копии кластера на диске координатора: история gpbackup плюс обход
+    каталогов (находятся и копии, которых нет в истории).
     """
-    datadir = coordinator_data_dir(connection_id)
-    history = read_history_db(datadir)
+    fs = _fs(connection_id, fs)
+    datadir = coordinator_data_dir(connection_id, fs)
+    history = read_history_db(datadir, fs)
 
     dirs = list(backup_dirs) + [h["backup_dir"] for h in history
                                 if h.get("backup_dir")]
-    roots = backup_roots(connection_id, dirs)
-    result = {b["timestamp"]: b for b in scan_backup_dirs(roots)}
+    roots = backup_roots(connection_id, dirs, fs)
+    result = {b["timestamp"]: b for b in scan_backup_dirs(roots, fs)}
 
     for h in history:
         if h["timestamp"] not in result:
@@ -535,18 +586,20 @@ def list_disk_backups(connection_id, backup_dirs=()):
         "datadir": datadir,
         "roots": roots,
         "history": bool(history),
+        "remote": bool(getattr(fs, "remote", False)),
     }
 
 
-def read_report_text(record):
-    """Текст отчёта копии с диска или None."""
-    files_dir = backup_files_dir(record)
+def read_report_text(record, fs=None):
+    """Текст отчёта копии с координатора или None."""
+    fs = _fs((record or {}).get("connection_id"), fs)
+    files_dir = backup_files_dir(record, fs)
 
     if not files_dir:
         return None
 
-    return _read(os.path.join(
-        files_dir, "gpbackup_{}_report".format(record["backup_timestamp"])))
+    return fs.read(_join(
+        fs, files_dir, "gpbackup_{}_report".format(record["backup_timestamp"])))
 
 
 # ------------------------------------------------------------------
@@ -636,7 +689,7 @@ def _scope_schemas(record):
 
 
 def backup_contents(record, report_loader=None, use_catalog=True,
-                    refresh=False):
+                    refresh=False, fs=None):
     """
     Состав копии: сводка (кэшируется в backups.details_json) и список
     таблиц для выбора при восстановлении.
@@ -645,18 +698,17 @@ def backup_contents(record, report_loader=None, use_catalog=True,
     когда файлов копии отсюда не видно.
     """
     ts = record.get("backup_timestamp")
-    files_dir = backup_files_dir(record)
+    fs = _fs(record.get("connection_id"), fs)
+    files_dir = backup_files_dir(record, fs)
 
     toc = None
     report = None
 
     if files_dir:
-        toc_text = _read(os.path.join(files_dir,
-                                      "gpbackup_{}_toc.yaml".format(ts)))
+        toc_text = fs.read(_join(fs, files_dir, "gpbackup_{}_toc.yaml".format(ts)))
         toc = parse_toc(toc_text) if toc_text else None
 
-        report_text = _read(os.path.join(files_dir,
-                                         "gpbackup_{}_report".format(ts)))
+        report_text = fs.read(_join(fs, files_dir, "gpbackup_{}_report".format(ts)))
         report = parse_backup_report(report_text) if report_text else None
 
     summary = None if refresh else _cached_summary(record)

@@ -320,6 +320,22 @@ def init_db():
             """
         )
 
+        # где запускать gpbackup/gprestore кластера: на этом хосте или по
+        # SSH на его координаторе (gpbackup работает только оттуда)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS backup_hosts (
+                connection_id INTEGER PRIMARY KEY,
+                mode TEXT NOT NULL DEFAULT 'auto',
+                ssh_host TEXT,
+                ssh_user TEXT,
+                ssh_port INTEGER,
+                gphome TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+
         # кому и о чём писать по бэкапам кластера
         cur.execute(
             """

@@ -155,6 +155,8 @@ POLICY = {
     "api_backup_overview": "backups.view",
     "api_backup_details": "backups.view",
     "api_backup_progress": "backups.view",
+    "api_backup_host": {"GET": "backups.view", "POST": "connections.edit"},
+    "api_backup_host_check": "backups.run",
     "api_backup_notify": {"GET": "backups.view", "POST": "backups.run"},
     "api_backup_notify_test": "backups.run",
     "api_mail_settings": {"GET": "users.manage", "POST": "users.manage"},

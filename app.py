@@ -2983,7 +2983,8 @@ def api_backup_overview():
 
     from modules.gpbackup import backup_dir_usage, list_connection_backups
     from modules.gpbackup import duration_seconds, error_reason
-    from modules.gpbackup import error_hint, failed_statements
+    from modules.gpbackup import admin_log_errors, error_hint, failed_statements
+    from modules.gp_remote import describe, remote_disk_usage, resolve_target
     from modules.web_auth import user_can
 
     connection_id = request.args.get("connection_id", type=int)
@@ -3058,15 +3059,30 @@ def api_backup_overview():
                     item["failed"] = failed
                     item["reason"] = "Не выполнено {}: {}".format(
                         len(failed), failed[0]["error"])
-                item["hint"] = error_hint(item["reason"] or item["error"])
+                else:
+                    # ошибки по сегментам и т.п. — сохранённые из gpAdminLogs
+                    details = admin_log_errors(j.get("error_message"), limit=20)
+                    if details:
+                        item["details"] = details
+                item["hint"] = error_hint(" ".join(
+                    [item["reason"] or item["error"]] + item.get("details", [])[:3]))
             if len(history) == 8:
                 break
+
+    # диск каталога — там, где работает gpbackup (здесь или на координаторе)
+    target = resolve_target(connection_id)
+
+    if target and disk_dir:
+        disk = remote_disk_usage(connection_id, target, disk_dir)
+    else:
+        disk = backup_dir_usage(disk_dir)
 
     return jsonify({
         "ok": True,
         "backups": backups,
         "stats": {"total": len(alive), "last_week": last_week},
-        "disk": backup_dir_usage(disk_dir),
+        "disk": disk,
+        "run_where": describe(target),
         "disk_dir": disk_dir,
         "schedules": schedules,
         "can_edit_schedules": user_can("schedules.edit"),
@@ -3536,6 +3552,74 @@ def api_backup_notify_test():
             type(e).__name__, str(e)[:500])}), 502
 
     return jsonify({"ok": True, "sent_to": sent})
+
+
+@app.route("/api/backup/host", methods=["GET", "POST"])
+def api_backup_host():
+    """Где запускать gpbackup/gprestore кластера: здесь или по SSH."""
+    from modules import gp_remote
+    from modules.connections import get_connection_by_id as _conn
+    from modules.web_auth import user_can
+
+    if request.method == "GET":
+        connection_id = request.args.get("connection_id", type=int)
+    else:
+        data = request.get_json(silent=True) or {}
+        connection_id = data.get("connection_id")
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    if not in_scope([int(connection_id)]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    conn = _conn(int(connection_id))
+
+    if not conn:
+        return jsonify({"ok": False, "message": "Подключение не найдено"}), 404
+
+    if request.method == "POST":
+        try:
+            gp_remote.save_host_settings(int(connection_id), data)
+        except ValueError as e:
+            return jsonify({"ok": False, "message": str(e)}), 400
+
+    target = gp_remote.resolve_target(int(connection_id))
+
+    return jsonify({
+        "ok": True,
+        "settings": gp_remote.get_host_settings(int(connection_id)),
+        "connection_host": conn.get("host"),
+        "effective": "ssh" if target else "local",
+        "run_where": gp_remote.describe(target),
+        "can_edit": user_can("connections.edit"),
+    })
+
+
+@app.route("/api/backup/host/check", methods=["POST"])
+def api_backup_host_check():
+    """Проверка SSH до координатора и наличия gpbackup/gprestore там."""
+    from modules import gp_remote
+
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    if not in_scope([int(connection_id)]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    target = gp_remote.resolve_target(int(connection_id))
+
+    if not target:
+        return jsonify({"ok": True, "local": True,
+                        "message": "gpbackup запускается на этом сервере Opsentri"})
+
+    ok, output = gp_remote.check(target)
+
+    return jsonify({"ok": ok, "local": False, "output": output,
+                    "run_where": gp_remote.describe(target)})
 
 
 @app.route("/api/mail-settings", methods=["GET", "POST"])

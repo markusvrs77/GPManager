@@ -631,6 +631,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                 <button class="bk-btn bk-btn-primary bk-btn-block bk-span" id="gpbStart" type="button">
                     {{ ic('play') }}Создать бэкап
                 </button>
+                <div class="bk-hint bk-span" id="gpbWhere" style="margin-top: -8px;"></div>
 
                 {% if can('schedules.edit') %}
                 <div class="bk-plan bk-span" id="gpbPlan">
@@ -730,6 +731,15 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                     </div>
                     <div class="bk-body" id="gpbNotify"><div class="bk-skel" style="height: 120px;"></div></div>
                 </section>
+
+                <!-- где запускать gpbackup -->
+                <section class="bk-panel" aria-labelledby="gpbHostTitle">
+                    <div class="bk-hd">
+                        <span class="bk-hd-ico">{{ ic('cpu') }}</span>
+                        <h2 id="gpbHostTitle">Где запускать gpbackup</h2>
+                    </div>
+                    <div class="bk-body" id="gpbHost"><div class="bk-skel" style="height: 90px;"></div></div>
+                </section>
                 </div>
 
                 <!-- история -->
@@ -776,6 +786,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         rs: null,            // форма восстановления (переживает перерисовку)
         notify: null,        // /api/backup/notify
         mailOpen: false,     // открыта форма SMTP
+        host: null,          // /api/backup/host — где запускать gpbackup
+        hostCheck: null,     // результат «Проверить связь»
         histOpen: null,      // id задачи, у которой раскрыт текст ошибки
     };
 
@@ -973,6 +985,11 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         $("gpbNotifySwitch").innerHTML = "";
         $("gpbNotify").innerHTML = '<div class="bk-skel" style="height: 120px;"></div>';
         loadNotify();
+        state.host = null;
+        state.hostCheck = null;
+        $("gpbWhere").innerHTML = "";
+        $("gpbHost").innerHTML = '<div class="bk-skel" style="height: 90px;"></div>';
+        loadHost();
     }
 
     /* ------------------------------------------------------------ данные */
@@ -1548,6 +1565,12 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
     }
 
     function failedHtml(j) {
+        if ((!j.failed || !j.failed.length) && j.details && j.details.length) {
+            return '<div class="bk-failed"><div class="bk-sub-h">Из лога gpAdminLogs (' + j.details.length + ")</div>" +
+                j.details.map(function (line) {
+                    return '<div class="bk-failed-it"><code>' + esc(line) + "</code></div>";
+                }).join("") + "</div>";
+        }
         if (!j.failed || !j.failed.length) { return ""; }
         return '<div class="bk-failed"><div class="bk-sub-h">Не выполнено (' + j.failed.length + ")</div>" +
             j.failed.map(function (s) {
@@ -2113,6 +2136,107 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         });
     });
 
+    /* ------------------------------------------------------------ где запускать */
+    // gpbackup работает только с координатора своего кластера: для кластера
+    // на другом хосте Opsentri запускает его там по SSH
+    var hostSeq = 0;
+
+    function loadHost() {
+        var seq = ++hostSeq, cid = state.cid;
+        api("/api/backup/host?connection_id=" + cid).then(function (d) {
+            if (seq !== hostSeq || cid !== state.cid) { return; }
+            if (!d.ok) {
+                $("gpbHost").innerHTML = '<div class="bk-ntf-stat err">' + esc(d.message || "Не удалось загрузить") + "</div>";
+                return;
+            }
+            state.host = d;
+            state.hostCheck = null;
+            renderHost();
+        });
+    }
+
+    function renderWhere() {
+        var el = $("gpbWhere");
+        var d = state.host;
+        el.innerHTML = d ? icon(d.effective === "ssh" ? "link" : "cpu") +
+            "<span>gpbackup запустится " + esc(d.run_where) + "</span>" : "";
+    }
+
+    function renderHost() {
+        var d = state.host, s = d.settings, edit = d.can_edit;
+        var modes = [["auto", "Авто"], ["local", "Здесь"], ["ssh", "По SSH"]];
+        var dis = edit ? "" : " disabled";
+        var html = '<div class="bk-ntf">' +
+            '<div class="bk-note" style="background: var(--surface-2); color: var(--text);">' +
+            icon(d.effective === "ssh" ? "link" : "cpu") + "<span>Сейчас: <b>" + esc(d.run_where) + "</b>. " +
+            "gpbackup и gprestore работают только с координатора бэкапируемого кластера — оттуда они создают каталоги на сегментах и пишут файлы копии.</span></div>" +
+            '<fieldset><legend class="bk-lbl">Режим</legend><div class="bk-seg gpr-scope">' + modes.map(function (m) {
+                return '<label><input type="radio" name="gphMode" value="' + m[0] + '"' + (s.mode === m[0] ? " checked" : "") + dis +
+                    '><span class="dot"></span>' + m[1] + "</label>";
+            }).join("") + "</div>" +
+            '<div class="bk-hint">' + icon("alert") + "<span>Авто: здесь, если координатор кластера — этот же сервер, иначе по SSH.</span></div></fieldset>" +
+            '<div class="bk-smtp-form" style="background: none; padding: 0; border: 0;">' +
+            '<div><label class="bk-lbl" for="gphHost">Хост координатора</label><input id="gphHost" class="bk-input" autocomplete="off" placeholder="' +
+            esc(d.connection_host || "") + '" value="' + esc(s.ssh_host) + '"' + dis + "></div>" +
+            '<div><label class="bk-lbl" for="gphUser">Пользователь</label><input id="gphUser" class="bk-input" autocomplete="off" value="' + esc(s.ssh_user) + '"' + dis + "></div>" +
+            '<div><label class="bk-lbl" for="gphPort">Порт SSH</label><input id="gphPort" class="bk-input" inputmode="numeric" value="' + esc(s.ssh_port) + '"' + dis + "></div>" +
+            '<div class="s3"><label class="bk-lbl" for="gphHome">GPHOME на координаторе</label><input id="gphHome" class="bk-input" autocomplete="off" value="' + esc(s.gphome) + '"' + dis + "></div>" +
+            "</div>" +
+            '<div class="bk-hint">' + icon("key") + "<span>Нужен SSH-ключ без пароля от пользователя сервиса Opsentri: <code>ssh-copy-id " +
+            esc((s.ssh_user || "gpadmin") + "@" + (s.ssh_host || d.connection_host || "координатор")) + "</code>. Пароль БД по SSH не передаётся в командной строке.</span></div>" +
+            '<div class="bk-ntf-act">' +
+            (edit ? '<button class="bk-btn bk-btn-primary bk-btn-sm" type="button" id="gphSave">Сохранить</button>' : "") +
+            (CAN_RUN ? '<button class="bk-btn bk-btn-outline bk-btn-sm" type="button" id="gphCheck">' + icon("link") + "Проверить связь</button>" : "") +
+            "</div>";
+
+        var c = state.hostCheck;
+        if (c) {
+            html += c.pending ? '<div class="bk-skel" style="height: 60px;"></div>'
+                : '<div class="bk-' + (c.ok ? "note" : "err") + '"' + (c.ok ? ' style="background: var(--ok-tint); color: var(--ok);"' : "") + ">" +
+                  icon(c.ok ? "check" : "alert") + "<span>" + esc(c.text) + "</span></div>" +
+                  (c.output ? '<pre class="bk-report" style="max-height: 160px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2);">' + esc(c.output) + "</pre>" : "");
+        }
+
+        $("gpbHost").innerHTML = html + "</div>";
+        renderWhere();
+    }
+
+    $("gpbHost").addEventListener("click", function (e) {
+        var t = e.target.closest("button");
+        if (!t) { return; }
+        if (t.id === "gphSave") {
+            var mode = document.querySelector('input[name="gphMode"]:checked');
+            t.disabled = true;
+            api("/api/backup/host", {
+                connection_id: state.cid, mode: mode ? mode.value : "auto",
+                ssh_host: $("gphHost").value.trim(), ssh_user: $("gphUser").value.trim(),
+                ssh_port: $("gphPort").value.trim(), gphome: $("gphHome").value.trim(),
+            }).then(function (d) {
+                t.disabled = false;
+                if (!d.ok) { toast(d.message || "Ошибка", "error"); return; }
+                state.host = d;
+                state.hostCheck = null;
+                renderHost();
+                toast("Сохранено: gpbackup запустится " + d.run_where, "success");
+            }).catch(function (err) { t.disabled = false; toast(String(err), "error"); });
+        }
+        if (t.id === "gphCheck") {
+            state.hostCheck = { pending: true };
+            renderHost();
+            api("/api/backup/host/check", { connection_id: state.cid }).then(function (d) {
+                state.hostCheck = d.local
+                    ? { ok: true, text: d.message }
+                    : { ok: d.ok, output: d.output || d.message || "",
+                        text: d.ok ? "Связь есть: " + d.run_where + ", gpbackup и gprestore найдены."
+                                   : "Не получилось " + (d.run_where || "") + ". Проверьте ключ SSH, хост и GPHOME." };
+                renderHost();
+            }).catch(function (err) {
+                state.hostCheck = { ok: false, text: String(err) };
+                renderHost();
+            });
+        }
+    });
+
     /* ------------------------------------------------------------ форма */
     function msg(text, cls) {
         var el = $("gpbMsg");
@@ -2151,7 +2275,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         api("/api/backup/start", formConfig()).then(function (d) {
             btn.disabled = false;
             if (!d.ok) { msg(d.message || "Ошибка", "err"); return; }
-            msg("Бэкап запущен — задача #" + d.job_id + ". Ход — над списком копий.", "ok");
+            msg("Бэкап запущен — задача #" + d.job_id + (state.host ? ", " + state.host.run_where : "") +
+                ". Ход — над списком копий.", "ok");
             setTimeout(pollRun, 1200);
         }).catch(function (e) {
             btn.disabled = false;

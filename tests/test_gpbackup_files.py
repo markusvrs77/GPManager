@@ -295,7 +295,10 @@ def test_sync_disk_from_files_and_history(tmp_path, monkeypatch):
                              "database_name": "adb", "username": "gpadmin"})
     datadir = tmp_path / "coord"
     datadir.mkdir()
-    monkeypatch.setattr(gf, "coordinator_data_dir", lambda _cid: str(datadir))
+    monkeypatch.setattr(gf, "coordinator_data_dir", lambda *_a: str(datadir))
+    # координатор этого кластера — здесь же (иначе файлы читались бы по SSH)
+    from modules.gp_remote import save_host_settings
+    save_host_settings(cid, {"mode": "local"})
 
     # копия в своём каталоге (--backup-dir)
     _backup_files(tmp_path / "bk", prefix="gpseg")

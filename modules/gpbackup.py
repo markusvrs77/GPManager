@@ -495,13 +495,15 @@ _LOG_PREFIX_RE = re.compile(
     r"^\d{8}:\d{2}:\d{2}:\d{2}\s+\S+:\S+:\S+:\S*-\[(?:CRITICAL|ERROR|WARNING)\]:-")
 
 
-# «Encountered N errors during metadata restore; see log file <путь> …» —
-# сами упавшие операторы gprestore/gpbackup пишет только в свой лог
-_SEE_LOG_RE = re.compile(
-    r":(\d+)-\[(?:ERROR|CRITICAL)\]:-.*?see log file "
-    r"(/[A-Za-z0-9_./-]*/gp(?:restore|backup)_\d{8}\.log)")
+# Ссылка на лог gpAdminLogs в строке ERROR/CRITICAL: gprestore пишет
+# «… see log file <путь> for a list of failed statements», gpbackup —
+# «… See <путь> for a complete list of errors». Подробности (упавшие
+# операторы, ошибки по сегментам) есть только в этом логе.
+_ADMIN_LOG_REF_RE = re.compile(
+    r":(\d+)-\[(?:ERROR|CRITICAL)\]:-.*?"
+    r"(/[A-Za-z0-9_./-]*/gpAdminLogs/gp(?:restore|backup)_\d{8}\.log)")
 _LOG_ENTRY_RE = re.compile(
-    r"^\d{8}:\d{2}:\d{2}:\d{2}\s+gp\w+:[^:\s]*:[^:\s]*:(\d+)-\[\w+\]:-(.*)$")
+    r"^\d{8}:\d{2}:\d{2}:\d{2}\s+gp\w+:[^:\s]*:[^:\s]*:(\d+)-\[(\w+)\]:-(.*)$")
 _STMT_ERROR_RE = re.compile(
     r"Error encountered when executing statement:\s*(.*?)\s*Error was:\s*(.*)$",
     re.S)
@@ -509,11 +511,11 @@ _STMT_ERROR_RE = re.compile(
 # сколько хвоста дневного лога читать
 LOG_TAIL_BYTES = 32 * 1024 * 1024
 
-_stmt_cache = {}
+_admin_cache = {}
 
 
-def _statements_from_log(raw, pid=None):
-    """Записи «Error encountered when executing statement» (многострочные)."""
+def _log_entries(raw, pid=None):
+    """Записи лога gp* (многострочные) -> [(уровень, текст)]."""
     entries = []
     current = None
 
@@ -521,17 +523,23 @@ def _statements_from_log(raw, pid=None):
         m = _LOG_ENTRY_RE.match(line)
 
         if m:
-            current = [m.group(2)] if pid is None or m.group(1) == pid else None
-
-            if current is not None:
+            if pid is None or m.group(1) == pid:
+                current = [m.group(2).upper(), [m.group(3)]]
                 entries.append(current)
+            else:
+                current = None
         elif current is not None:
-            current.append(line)
+            current[1].append(line)
 
+    return [(level, "\n".join(lines)) for level, lines in entries]
+
+
+def _statements_from_log(raw, pid=None):
+    """Записи «Error encountered when executing statement»."""
     found = []
 
-    for entry in entries:
-        m = _STMT_ERROR_RE.search("\n".join(entry))
+    for _level, body in _log_entries(raw, pid):
+        m = _STMT_ERROR_RE.search(body)
 
         if not m:
             continue
@@ -568,53 +576,121 @@ def _statements_from_block(text):
     return found
 
 
-def failed_statements(text, limit=50):
+def admin_log_ref(text):
+    """(pid, путь) последней ссылки на лог gpAdminLogs или None."""
+    match = None
+
+    for match in _ADMIN_LOG_REF_RE.finditer(text or ""):
+        pass
+
+    return (match.group(1), match.group(2)) if match else None
+
+
+def _read_admin_log(text, fs=None):
+    """(pid, хвост лога gpAdminLogs) — здесь или на координаторе."""
+    ref = admin_log_ref(text)
+
+    if not ref:
+        return None, None
+
+    pid, path = ref
+
+    if fs is not None and getattr(fs, "remote", False):
+        return pid, fs.read(path, tail=LOG_TAIL_BYTES)
+
+    try:
+        st = os.stat(path)
+    except OSError:
+        return pid, None
+
+    key = (path, st.st_mtime, st.st_size)
+
+    if key not in _admin_cache:
+        try:
+            with open(path, "rb") as f:
+                if st.st_size > LOG_TAIL_BYTES:
+                    f.seek(st.st_size - LOG_TAIL_BYTES)
+                raw = f.read().decode("utf-8", errors="replace")
+        except OSError:
+            return pid, None
+
+        if len(_admin_cache) > 20:
+            _admin_cache.clear()
+
+        _admin_cache[key] = raw
+
+    return pid, _admin_cache[key]
+
+
+def failed_statements(text, limit=50, fs=None):
     """
     Какие операторы не выполнились -> [{statement, error}].
 
-    Сначала сам текст (лог задачи: gprestore запускается с --verbose).
-    Иначе — лог gpAdminLogs по строке «see log file» и pid запуска;
-    verbose-строки там есть, только если запуск был с --verbose.
+    Сначала сам текст (лог задачи: gprestore запускается с --verbose) и
+    сохранённый блок «Не выполнено». Иначе — лог gpAdminLogs по ссылке
+    из строки ошибки (verbose-строки там есть, если запуск был с --verbose).
     """
     own = _statements_from_log(text) or _statements_from_block(text)
 
     if own:
         return own[:limit]
 
-    match = None
+    pid, raw = _read_admin_log(text, fs)
 
-    for match in _SEE_LOG_RE.finditer(text or ""):
-        pass
+    return _statements_from_log(raw, pid)[:limit] if raw else []
 
-    if not match:
+
+def _admin_errors_from_block(text):
+    """Блок «Из лога gpAdminLogs (N):», сохранённый в ошибке задачи."""
+    found = []
+    inside = False
+
+    for line in (text or "").splitlines():
+        if re.match(r"^Из лога gpAdminLogs \(\d+\):$", line):
+            inside = True
+            continue
+
+        if not inside:
+            continue
+
+        if line.startswith("- "):
+            found.append(line[2:].strip())
+        else:
+            break
+
+    return found
+
+
+def admin_log_errors(text, limit=20, fs=None):
+    """
+    Строки ERROR/CRITICAL этого запуска из лога gpAdminLogs — например,
+    ошибки по каждому сегменту за «Unable to create backup directories on
+    N segments». Итоговая строка со ссылкой на лог не повторяется.
+    """
+    saved = _admin_errors_from_block(text)
+
+    if saved:
+        return saved[:limit]
+
+    pid, raw = _read_admin_log(text, fs)
+
+    if not raw:
         return []
 
-    pid, path = match.group(1), match.group(2)
+    found = []
 
-    try:
-        st = os.stat(path)
-    except OSError:
-        return []
+    for level, body in _log_entries(raw, pid):
+        if level not in ("ERROR", "CRITICAL"):
+            continue
 
-    key = (path, pid, st.st_mtime, st.st_size)
+        line = " ".join(body.split())
 
-    if key in _stmt_cache:
-        return _stmt_cache[key][:limit]
+        if "gpAdminLogs/" in line or _STMT_ERROR_RE.search(body):
+            continue
 
-    try:
-        with open(path, "rb") as f:
-            if st.st_size > LOG_TAIL_BYTES:
-                f.seek(st.st_size - LOG_TAIL_BYTES)
-            raw = f.read().decode("utf-8", errors="replace")
-    except OSError:
-        return []
+        if line and line not in found:
+            found.append(line[:500])
 
-    found = _statements_from_log(raw, pid)
-
-    if len(_stmt_cache) > 200:
-        _stmt_cache.clear()
-
-    _stmt_cache[key] = found
     return found[:limit]
 
 
@@ -622,6 +698,12 @@ def error_hint(text):
     """Что делать с типичной ошибкой gprestore — одной фразой."""
     t = (text or "").lower()
 
+    if "unable to create backup directories" in t or \
+            "could not create directory" in t:
+        return ("gpbackup не смог создать каталог копии на сегментах. Он должен "
+                "запускаться на координаторе этого кластера (блок «Где "
+                "запускать gpbackup»), каталог — существовать и быть доступным "
+                "на запись gpadmin на всех хостах сегментов.")
     if "already exists" in t:
         return ("Объект уже есть в целевой БД. Всю копию восстанавливайте в "
                 "новую базу (Redirect-db + «создать БД»), таблицы — в режиме "
@@ -731,11 +813,25 @@ def run_manager_command(conn_cfg, action, timestamp=None,
     """Синхронный запуск gpbackup_manager. -> (rc, вывод)."""
     cmd = build_manager_command(action, timestamp, manager_path)
     env = build_pg_env(conn_cfg)
+    stdin_data = None
+
+    # gpbackup_manager — тоже на координаторе кластера
+    try:
+        from modules.gp_remote import resolve_target, wrap_command
+
+        target = resolve_target(conn_cfg.get("id"))
+    except Exception:
+        target = None
+
+    if target:
+        cmd, stdin_data = wrap_command(target, cmd, env)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PG")}
 
     proc = subprocess.run(
         cmd,
         env=env,
-        stdin=subprocess.DEVNULL,
+        input=stdin_data,
+        stdin=None if stdin_data is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         universal_newlines=True,
@@ -1328,11 +1424,27 @@ def _finalize_backup_job(job_id, job_type, config, items, log_text, rc,
 
     errors = extract_backup_errors(log_text)
 
-    # упавшие операторы — из лога gpAdminLogs (он ротируется: сохраняем в задаче)
+    # подробности — из лога gpAdminLogs на координаторе (здесь или по SSH);
+    # лог ротируется, поэтому найденное сохраняется в задаче
+    fs = None
+
+    if admin_log_ref(log_text):
+        try:
+            from modules.gp_remote import fs_for
+
+            fs = fs_for((config or {}).get("connection_id"))
+        except Exception:
+            fs = None
+
     try:
-        stmts = failed_statements(log_text, limit=20)
+        stmts = failed_statements(log_text, limit=20, fs=fs)
     except Exception:
         stmts = []
+
+    try:
+        admin_errors = [] if stmts else admin_log_errors(log_text, limit=20, fs=fs)
+    except Exception:
+        admin_errors = []
 
     failed_block = ""
 
@@ -1341,6 +1453,10 @@ def _finalize_backup_job(job_id, job_type, config, items, log_text, rc,
             "- {}\n  {}".format(s["error"], s["statement"].splitlines()[0][:300])
             for s in stmts))
         errors = [s["error"] for s in stmts] + errors
+    elif admin_errors:
+        failed_block = "\n\nИз лога gpAdminLogs ({}):\n{}".format(
+            len(admin_errors), "\n".join("- " + e for e in admin_errors))
+        errors = errors + admin_errors
 
     report = "Команда: {}\n\n{}{}\n\nХвост лога:\n{}".format(
         command_text,
@@ -1359,10 +1475,24 @@ def _finalize_backup_job(job_id, job_type, config, items, log_text, rc,
     mark_job_failed(job_id, report[:12000])
 
 
+def _stop_remote_if_needed(config, log_text):
+    """Стоп задачи, запущенной по SSH: гасим и сам gpbackup на координаторе."""
+    try:
+        from modules.gp_remote import resolve_target, stop_remote
+
+        target = resolve_target((config or {}).get("connection_id"))
+
+        if target:
+            stop_remote(target, log_text)
+    except Exception:
+        pass
+
+
 def _resume_backup_watch(job_id, job_type, log_path, pid, items, config):
     log_text = _watch_gpcopy_log(job_id, log_path, [], pid=pid)
 
     if is_stop_requested(job_id):
+        _stop_remote_if_needed(config, log_text)
         mark_job_cancelled(job_id)
         refresh_job_progress(job_id)
         return
@@ -1445,7 +1575,7 @@ def resume_unfinished_backup_jobs():
 # раннеры
 # ------------------------------------------------------------------
 
-def _run_external_tool(job_id, cmd, env, finalize):
+def _run_external_tool(job_id, cmd, env, finalize, stdin_data=None, target=None):
     """
     Общий каркас: detached-процесс, лог в постоянный файл, стоп-кнопка,
     переживание рестарта (pid + log_file в задаче). finalize(log_text, rc).
@@ -1458,6 +1588,7 @@ def _run_external_tool(job_id, cmd, env, finalize):
         "stderr": subprocess.STDOUT,
         "universal_newlines": True,
         "env": env,
+        "stdin": subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
     }
 
     if os.name == "posix":
@@ -1474,14 +1605,48 @@ def _run_external_tool(job_id, cmd, env, finalize):
 
     set_job_runtime(job_id, pid=process.pid, log_file=log_path)
 
+    # по SSH пароль БД идёт первой строкой stdin, не в командной строке
+    if stdin_data is not None:
+        try:
+            process.stdin.write(stdin_data)
+            process.stdin.close()
+        except (OSError, ValueError):
+            pass
+
     log_text = _watch_gpcopy_log(job_id, log_path, [], process=process)
 
     if is_stop_requested(job_id):
+        if target:
+            from modules.gp_remote import stop_remote
+
+            stop_remote(target, log_text)
         mark_job_cancelled(job_id)
         refresh_job_progress(job_id)
         return
 
     finalize(log_text, process.returncode)
+
+
+def _prepare_command(config, cmd, env):
+    """
+    Здесь или на координаторе кластера по SSH -> (cmd, env, stdin, target,
+    подпись для отчёта). gpbackup работает только с координатора своего
+    кластера: иначе «Unable to create backup directories on N segments».
+    """
+    from modules.gp_remote import describe, resolve_target, wrap_command
+
+    target = resolve_target(config.get("connection_id"))
+    shown = " ".join(cmd)
+
+    if not target:
+        return cmd, env, None, None, shown
+
+    ssh_cmd, stdin_data = wrap_command(target, cmd, env)
+    clean_env = {k: v for k, v in os.environ.items()
+                 if not k.startswith("PG")}
+
+    return ssh_cmd, clean_env, stdin_data, target, "{}  [{}]".format(
+        shown, describe(target))
 
 
 def run_gpbackup_job(job_id):
@@ -1512,15 +1677,15 @@ def run_gpbackup_job(job_id):
                 conn_cfg.get("database_name") or conn_cfg.get("database")
             )
 
-        cmd = build_gpbackup_command(config)
-        env = build_pg_env(conn_cfg)
+        cmd, env, stdin_data, target, shown = _prepare_command(
+            config, build_gpbackup_command(config), build_pg_env(conn_cfg))
 
         def finalize(log_text, rc):
             finalize_backup_job(
-                job_id, "gpbackup", config, items, log_text, rc, " ".join(cmd),
+                job_id, "gpbackup", config, items, log_text, rc, shown,
             )
 
-        _run_external_tool(job_id, cmd, env, finalize)
+        _run_external_tool(job_id, cmd, env, finalize, stdin_data, target)
 
     except Exception as e:
         for item in items:
@@ -1556,15 +1721,15 @@ def run_gprestore_job(job_id):
         if not conn_cfg:
             raise Exception("Подключение не найдено")
 
-        cmd = build_gprestore_command(config)
-        env = build_pg_env(conn_cfg)
+        cmd, env, stdin_data, target, shown = _prepare_command(
+            config, build_gprestore_command(config), build_pg_env(conn_cfg))
 
         def finalize(log_text, rc):
             finalize_backup_job(
-                job_id, "gprestore", config, items, log_text, rc, " ".join(cmd),
+                job_id, "gprestore", config, items, log_text, rc, shown,
             )
 
-        _run_external_tool(job_id, cmd, env, finalize)
+        _run_external_tool(job_id, cmd, env, finalize, stdin_data, target)
 
     except Exception as e:
         for item in items:
