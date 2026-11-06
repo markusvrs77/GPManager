@@ -336,6 +336,11 @@ def build_gprestore_command(config):
 
     extra = (config.get("extra_args") or "").strip()
 
+    # без --verbose gprestore пишет лишь «Encountered N errors…», а какой
+    # оператор упал и почему — только в verbose-строках
+    if config.get("verbose", True) and "--verbose" not in extra.split():
+        cmd.append("--verbose")
+
     if extra:
         cmd += extra.split()
 
@@ -488,6 +493,149 @@ def backup_outcome(text):
 
 _LOG_PREFIX_RE = re.compile(
     r"^\d{8}:\d{2}:\d{2}:\d{2}\s+\S+:\S+:\S+:\S*-\[(?:CRITICAL|ERROR|WARNING)\]:-")
+
+
+# «Encountered N errors during metadata restore; see log file <путь> …» —
+# сами упавшие операторы gprestore/gpbackup пишет только в свой лог
+_SEE_LOG_RE = re.compile(
+    r":(\d+)-\[(?:ERROR|CRITICAL)\]:-.*?see log file "
+    r"(/[A-Za-z0-9_./-]*/gp(?:restore|backup)_\d{8}\.log)")
+_LOG_ENTRY_RE = re.compile(
+    r"^\d{8}:\d{2}:\d{2}:\d{2}\s+gp\w+:[^:\s]*:[^:\s]*:(\d+)-\[\w+\]:-(.*)$")
+_STMT_ERROR_RE = re.compile(
+    r"Error encountered when executing statement:\s*(.*?)\s*Error was:\s*(.*)$",
+    re.S)
+
+# сколько хвоста дневного лога читать
+LOG_TAIL_BYTES = 32 * 1024 * 1024
+
+_stmt_cache = {}
+
+
+def _statements_from_log(raw, pid=None):
+    """Записи «Error encountered when executing statement» (многострочные)."""
+    entries = []
+    current = None
+
+    for line in (raw or "").splitlines():
+        m = _LOG_ENTRY_RE.match(line)
+
+        if m:
+            current = [m.group(2)] if pid is None or m.group(1) == pid else None
+
+            if current is not None:
+                entries.append(current)
+        elif current is not None:
+            current.append(line)
+
+    found = []
+
+    for entry in entries:
+        m = _STMT_ERROR_RE.search("\n".join(entry))
+
+        if not m:
+            continue
+
+        item = {"statement": m.group(1).strip()[:2000],
+                "error": m.group(2).strip()[:1000]}
+
+        if item not in found:
+            found.append(item)
+
+    return found
+
+
+def _statements_from_block(text):
+    """Блок «Не выполнено (N):», который finalize сохраняет в ошибке задачи."""
+    found = []
+    inside = False
+
+    for line in (text or "").splitlines():
+        if re.match(r"^Не выполнено \(\d+\):$", line):
+            inside = True
+            continue
+
+        if not inside:
+            continue
+
+        if line.startswith("- "):
+            found.append({"error": line[2:].strip(), "statement": ""})
+        elif line.startswith("  ") and found:
+            found[-1]["statement"] = line.strip()
+        else:
+            break
+
+    return found
+
+
+def failed_statements(text, limit=50):
+    """
+    Какие операторы не выполнились -> [{statement, error}].
+
+    Сначала сам текст (лог задачи: gprestore запускается с --verbose).
+    Иначе — лог gpAdminLogs по строке «see log file» и pid запуска;
+    verbose-строки там есть, только если запуск был с --verbose.
+    """
+    own = _statements_from_log(text) or _statements_from_block(text)
+
+    if own:
+        return own[:limit]
+
+    match = None
+
+    for match in _SEE_LOG_RE.finditer(text or ""):
+        pass
+
+    if not match:
+        return []
+
+    pid, path = match.group(1), match.group(2)
+
+    try:
+        st = os.stat(path)
+    except OSError:
+        return []
+
+    key = (path, pid, st.st_mtime, st.st_size)
+
+    if key in _stmt_cache:
+        return _stmt_cache[key][:limit]
+
+    try:
+        with open(path, "rb") as f:
+            if st.st_size > LOG_TAIL_BYTES:
+                f.seek(st.st_size - LOG_TAIL_BYTES)
+            raw = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+
+    found = _statements_from_log(raw, pid)
+
+    if len(_stmt_cache) > 200:
+        _stmt_cache.clear()
+
+    _stmt_cache[key] = found
+    return found[:limit]
+
+
+def error_hint(text):
+    """Что делать с типичной ошибкой gprestore — одной фразой."""
+    t = (text or "").lower()
+
+    if "already exists" in t:
+        return ("Объект уже есть в целевой БД. Всю копию восстанавливайте в "
+                "новую базу (Redirect-db + «создать БД»), таблицы — в режиме "
+                "«Заменить данные» или «В другую схему». С --on-error-continue "
+                "данные в существующую таблицу дописываются — проверьте дубли.")
+    if "role" in t and "does not exist" in t:
+        return "В целевом кластере нет роли из копии — создайте её и повторите."
+    if "permission denied" in t or "must be owner" in t:
+        return "Не хватает прав у пользователя подключения."
+    if "no space left" in t:
+        return "Закончилось место на диске."
+    if "does not exist" in t and "database" in t:
+        return "Целевой базы нет — отметьте «создать БД»."
+    return None
 
 
 def error_reason(text):
@@ -1007,9 +1155,25 @@ def finalize_backup_job(job_id, job_type, config, items, log_text, rc,
         return
 
     errors = extract_backup_errors(log_text)
-    report = "Команда: {}\n\n{}\n\nХвост лога:\n{}".format(
+
+    # упавшие операторы — из лога gpAdminLogs (он ротируется: сохраняем в задаче)
+    try:
+        stmts = failed_statements(log_text, limit=20)
+    except Exception:
+        stmts = []
+
+    failed_block = ""
+
+    if stmts:
+        failed_block = "\n\nНе выполнено ({}):\n{}".format(len(stmts), "\n".join(
+            "- {}\n  {}".format(s["error"], s["statement"].splitlines()[0][:300])
+            for s in stmts))
+        errors = [s["error"] for s in stmts] + errors
+
+    report = "Команда: {}\n\n{}{}\n\nХвост лога:\n{}".format(
         command_text,
-        "\n".join(errors) or "(строк с ошибками не найдено)",
+        "\n".join(extract_backup_errors(log_text)) or "(строк с ошибками не найдено)",
+        failed_block,
         (log_text or "")[-5000:],
     )
 

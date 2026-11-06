@@ -335,6 +335,16 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 .bk-err button { border: 0; background: none; padding: 0; font: inherit; font-weight: 600;
   color: var(--a2); cursor: pointer; white-space: nowrap; }
 .bk-err button:focus-visible { outline: 2px solid var(--a-bright); outline-offset: 2px; }
+.bk-err-hint { font-size: 12.5px; color: var(--text-muted); line-height: 1.45;
+  margin: 4px 0 0 23px; }
+.bk-failed { margin-top: 8px; }
+.bk-failed .bk-sub-h { margin-top: 4px; }
+.bk-failed-it { border-left: 3px solid var(--crit); background: var(--crit-tint);
+  border-radius: 0 8px 8px 0; padding: 8px 10px; margin-bottom: 6px; }
+.bk-failed-it b { display: block; font-size: 12.5px; font-weight: 600; color: var(--crit);
+  word-break: break-word; }
+.bk-failed-it code { display: block; margin-top: 4px; font-size: 12px; color: var(--text);
+  white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow-y: auto; }
 .bk-hist-err .bk-report { margin-top: 8px; max-height: 280px; padding: 10px 12px;
   border-radius: 8px; background: var(--surface-2); }
 
@@ -1416,9 +1426,19 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
     }
 
     /* ------------------------------------------------------------ история */
+    var histKey = null;
+
     function renderHist() {
         var box = $("gpbHist");
         var list = state.data.history || [];
+
+        // автообновление каждые 20 с: без изменений не перерисовываем,
+        // иначе сбрасывается прокрутка раскрытого лога
+        var key = JSON.stringify([list, state.histOpen]);
+        if (key === histKey) { return; }
+        histKey = key;
+        var pre = box.querySelector(".bk-hist-err .bk-report");
+        var keep = pre ? { id: pre.dataset.job, top: pre.scrollTop } : null;
 
         if (!list.length) {
             box.innerHTML = '<div class="bk-empty" style="padding: 18px 8px;"><b>Операций пока не было</b>' +
@@ -1441,10 +1461,25 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                         "<span>" + esc(j.reason) + "</span>" +
                         '<button type="button" data-hist="' + j.id + '" aria-expanded="' + (open ? "true" : "false") + '">' +
                         (open ? "Скрыть" : "Подробнее") + "</button></div>" +
-                        (open ? '<pre class="bk-report">' + esc(j.error || "") + "</pre>" : "") + "</td></tr>";
+                        (j.hint ? '<div class="bk-err-hint">' + esc(j.hint) + "</div>" : "") +
+                        (open ? failedHtml(j) + '<pre class="bk-report" data-job="' + j.id + '">' + esc(j.error || "") + "</pre>" : "") +
+                        "</td></tr>";
                 }
                 return html;
             }).join("") + "</tbody></table></div>";
+
+        if (keep) {
+            var again = box.querySelector('.bk-hist-err .bk-report[data-job="' + keep.id + '"]');
+            if (again) { again.scrollTop = keep.top; }
+        }
+    }
+
+    function failedHtml(j) {
+        if (!j.failed || !j.failed.length) { return ""; }
+        return '<div class="bk-failed"><div class="bk-sub-h">Не выполнено (' + j.failed.length + ")</div>" +
+            j.failed.map(function (s) {
+                return '<div class="bk-failed-it"><b>' + esc(s.error) + "</b><code>" + esc(s.statement) + "</code></div>";
+            }).join("") + "</div>";
     }
 
     /* ------------------------------------------------------------ меню строки */

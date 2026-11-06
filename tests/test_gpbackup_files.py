@@ -124,9 +124,10 @@ def _no_coordinator_env(monkeypatch):
     gf._coordinator_dirs.clear()
 
 
-def _backup_files(base, ts=TS, report=REPORT, toc=TOC, config=CONFIG):
-    """<base>/gpseg-1/backups/<day>/<ts>/ с файлами копии."""
-    d = base / "gpseg-1" / "backups" / ts[:8] / ts
+def _backup_files(base, ts=TS, report=REPORT, toc=TOC, config=CONFIG,
+                  prefix="seg"):
+    """<base>/<prefix>-1/backups/<day>/<ts>/ с файлами копии (GP7: seg-1)."""
+    d = base / (prefix + "-1") / "backups" / ts[:8] / ts
     d.mkdir(parents=True)
     (d / "gpbackup_{}_report".format(ts)).write_text(report, encoding="utf-8")
     (d / "gpbackup_{}_toc.yaml".format(ts)).write_text(toc, encoding="utf-8")
@@ -297,7 +298,7 @@ def test_sync_disk_from_files_and_history(tmp_path, monkeypatch):
     monkeypatch.setattr(gf, "coordinator_data_dir", lambda _cid: str(datadir))
 
     # копия в своём каталоге (--backup-dir)
-    _backup_files(tmp_path / "bk")
+    _backup_files(tmp_path / "bk", prefix="gpseg")
 
     # копия только в истории gpbackup + удалённая + другой БД
     hist = sqlite3.connect(str(datadir / "gpbackup_history.db"))
@@ -352,3 +353,55 @@ def test_history_has_reason(client):
     assert h["status"] == "failed"
     assert h["reason"] == "Backup directory /data/x missing"
     assert "Команда: x" in h["error"]
+
+
+# ------------------------------------------------------------ упавшие операторы
+
+VERBOSE_LOG = (
+    "20261106:18:47:39 gprestore:gpadmin:mdw:871516-[INFO]:-Restoring pre-data metadata\n"
+    "20261106:18:47:39 gprestore:gpadmin:mdw:871516-[DEBUG]:-Error encountered when "
+    "executing statement: CREATE TABLE public.accounts_status_history (\n"
+    "\tid bigint\n) DISTRIBUTED BY (id); Error was: ERROR: relation "
+    "\"accounts_status_history\" already exists (SQLSTATE 42P07)\n"
+    "20261106:18:47:39 gprestore:gpadmin:mdw:871516-[ERROR]:-Encountered 1 errors "
+    "during metadata restore; see log file /home/gpadmin/gpAdminLogs/"
+    "gprestore_20261106.log for a list of failed statements.\n"
+)
+
+
+def test_gprestore_runs_verbose_once():
+    cmd = gb.build_gprestore_command(dict(BASE))
+    assert "--verbose" in cmd
+
+    cmd = gb.build_gprestore_command(dict(BASE, extra_args="--verbose"))
+    assert cmd.count("--verbose") == 1
+
+
+def test_failed_statements_from_verbose_log():
+    stmts = gb.failed_statements(VERBOSE_LOG)
+
+    assert len(stmts) == 1
+    assert "already exists" in stmts[0]["error"]
+    assert stmts[0]["statement"].startswith("CREATE TABLE public.accounts_status_history")
+    assert "уже есть" in gb.error_hint(stmts[0]["error"])
+
+
+def test_failed_statements_saved_in_job_error(client):
+    job_id = create_job("gprestore", 965, {"connection_id": 965})
+    gb.finalize_backup_job(job_id, "gprestore", {"connection_id": 965}, [],
+                           VERBOSE_LOG, 1, "gprestore --timestamp " + TS)
+
+    # лог задачи потерян — причина берётся из сохранённого блока
+    d = __import__("job_manager").get_job(job_id)
+    assert gb.failed_statements(d["error_message"])[0]["error"].startswith("ERROR: relation")
+
+
+def test_failed_statements_from_saved_block_only():
+    text = ("Команда: x\n\nНе выполнено (1):\n- ERROR: role \"etl\" does not exist\n"
+            "  ALTER TABLE public.t OWNER TO etl;\n\nХвост лога:\n...")
+
+    stmts = gb.failed_statements(text)
+
+    assert stmts == [{"error": "ERROR: role \"etl\" does not exist",
+                      "statement": "ALTER TABLE public.t OWNER TO etl;"}]
+    assert "роли" in gb.error_hint(stmts[0]["error"])

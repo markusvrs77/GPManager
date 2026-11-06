@@ -11,8 +11,9 @@ gpbackup_manager в неинтерактивном запуске ждёт те�
       gpbackup_<ts>_toc.yaml      оглавление: точный список таблиц
   <данные координатора>/gpbackup_history.db   история (SQLite)
 
-<каталог> — <backup_dir>/gpseg-1 при --backup-dir, иначе каталог данных
-координатора. GPManager запускает gpbackup на координаторе, поэтому всё
+<каталог> — <backup_dir>/<префикс>-1 при --backup-dir (префикс — имя
+каталога данных координатора без «-1»: gpseg-1, seg-1 …), иначе каталог
+данных координатора. GPManager запускает gpbackup на координаторе, поэтому всё
 читается локально. Модуль ничего на диске не меняет: только чтение.
 """
 
@@ -339,7 +340,9 @@ def backup_roots(connection_id, backup_dirs=()):
         d = _clean_dir(d)
 
         if d:
-            roots.append(os.path.join(d, "gpseg-1", "backups"))
+            # <префикс>-1: gpseg-1, seg-1 — зависит от кластера
+            roots += sorted(glob.glob(os.path.join(glob.escape(d), "*-1",
+                                                   "backups")))
 
     seen = []
 
@@ -371,8 +374,8 @@ def backup_files_dir(record):
     backup_dir = _clean_dir(record.get("backup_dir"))
 
     if backup_dir:
-        candidates.append(os.path.join(backup_dir, "gpseg-1", "backups",
-                                       ts[:8], ts))
+        candidates += sorted(glob.glob(os.path.join(
+            glob.escape(backup_dir), "*-1", "backups", ts[:8], ts)))
     else:
         datadir = coordinator_data_dir(record.get("connection_id"))
 

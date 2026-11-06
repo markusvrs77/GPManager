@@ -2983,6 +2983,7 @@ def api_backup_overview():
 
     from modules.gpbackup import backup_dir_usage, list_connection_backups
     from modules.gpbackup import duration_seconds, error_reason
+    from modules.gpbackup import error_hint, failed_statements
     from modules.web_auth import user_can
 
     connection_id = request.args.get("connection_id", type=int)
@@ -3049,6 +3050,15 @@ def api_backup_overview():
                 if j.get("error_message") else None,
                 "error": (j.get("error_message") or "")[-8000:] or None,
             })
+            item = history[-1]
+            if item["error"] and item["status"] in ("failed", "interrupted"):
+                # «see log file …»: упавшие операторы — из лога gpAdminLogs
+                failed = failed_statements(j.get("error_message"), limit=20)
+                if failed:
+                    item["failed"] = failed
+                    item["reason"] = "Не выполнено {}: {}".format(
+                        len(failed), failed[0]["error"])
+                item["hint"] = error_hint(item["reason"] or item["error"])
             if len(history) == 8:
                 break
 
