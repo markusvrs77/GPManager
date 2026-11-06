@@ -3770,6 +3770,66 @@ def api_backup_report():
         return jsonify({"ok": False, "message": str(e)[:2000]}), 500
 
 
+@app.route("/api/backup/catalog")
+def api_backup_catalog():
+    """Схемы и таблицы кластера для выбора в форме бэкапа (чтение каталога)."""
+    import modules.table_catalog as table_catalog
+    from modules.gpbackup import backup_catalog
+
+    connection_id = request.args.get("connection_id", type=int)
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    if not in_scope([connection_id]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    try:
+        tables, cached_at = table_catalog.get_catalog(
+            connection_id, force=bool(request.args.get("force", 0, type=int)))
+        pairs = table_catalog.fetch_partition_pairs(connection_id)
+    except Exception as e:
+        return jsonify({"ok": False, "message": "Не удалось прочитать каталог: {}".format(
+            str(e)[:500])}), 500
+
+    return jsonify(dict(backup_catalog(tables, pairs), ok=True, cached_at=cached_at))
+
+
+@app.route("/api/backup/forget", methods=["POST"])
+def api_backup_forget():
+    """
+    Убрать из списка сбойные записи (файлов копии нет): одну — backup_id,
+    или все сбойные кластера — connection_id + all_failed.
+    """
+    from modules.gpbackup import failed_backup_ids, forget_backups, get_backup_record
+
+    data = request.get_json(silent=True) or {}
+
+    if data.get("backup_id"):
+        record = get_backup_record(int(data["backup_id"]))
+
+        if not record:
+            return jsonify({"ok": False, "message": "Запись не найдена"}), 404
+
+        connection_id, ids = record.get("connection_id"), [record["id"]]
+    elif data.get("connection_id") and data.get("all_failed"):
+        connection_id = int(data["connection_id"])
+
+        ids = failed_backup_ids(connection_id)
+    else:
+        return jsonify({"ok": False, "message": "backup_id или connection_id + all_failed"}), 400
+
+    if not in_scope([int(connection_id or 0)]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    try:
+        removed = forget_backups(ids)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    return jsonify({"ok": True, "removed": removed})
+
+
 @app.route("/api/backup/delete", methods=["POST"])
 def api_backup_delete():
     data = request.get_json(silent=True) or {}

@@ -1133,6 +1133,42 @@ def _lines(raw):
     return [str(x).strip() for x in items if str(x).strip()]
 
 
+def backup_catalog(tables, child_parent):
+    """
+    Список для выбора в форме бэкапа: схемы с числом таблиц и таблицы
+    без leaf-секций (секционированная — одной строкой, parts — сколько
+    секций). ok=False — имя, которое фильтр gpbackup здесь не примет.
+    """
+    parts = {}
+
+    for child in child_parent:
+        top, seen = child_parent[child], set()
+
+        while top in child_parent and top not in seen:
+            seen.add(top)
+            top = child_parent[top]
+
+        parts[top] = parts.get(top, 0) + 1
+
+    items, counts = [], {}
+
+    for schema, table in tables:
+        if (schema, table) in child_parent:
+            continue
+
+        name = "{}.{}".format(schema, table)
+        counts[schema] = counts.get(schema, 0) + 1
+        items.append({"name": name, "parts": parts.get((schema, table), 0),
+                      "ok": bool(_IDENT_RE.match(name)) and name.count(".") == 1})
+
+    return {
+        "schemas": [{"name": s, "tables": counts[s],
+                     "ok": bool(_IDENT_RE.match(s)) and "." not in s}
+                    for s in sorted(counts)],
+        "tables": items,
+    }
+
+
 def backup_scope(config):
     """Что попало в бэкап по конфигу задачи: схемы, таблицы, файл."""
     config = config or {}
@@ -1298,6 +1334,50 @@ def link_topups(rows):
             r["completed"] = bool(topups) and known and not missing
 
     return top
+
+
+# записи реестра, у которых на диске ничего нет: убрать можно без gpbackup_manager
+FORGETTABLE = ("failed", "deleted")
+
+
+def failed_backup_ids(connection_id):
+    """Сбойные/удалённые записи gpbackup кластера."""
+    with sqlite_cursor() as cur:
+        cur.execute(
+            "SELECT id FROM backups WHERE connection_id = ? AND status IN ({}) "
+            "AND COALESCE(tool, 'gpbackup') = 'gpbackup'".format(
+                ",".join("?" for _ in FORGETTABLE)),
+            [int(connection_id)] + list(FORGETTABLE))
+        return [r["id"] for r in cur.fetchall()]
+
+
+def forget_backups(ids):
+    """
+    Убрать записи реестра (не файлы!): только сбойные/удалённые или без
+    метки копии. Возвращает число удалённых строк. ValueError — среди них
+    живая копия: её удаляют с диска.
+    """
+    ids = [int(i) for i in ids]
+
+    if not ids:
+        return 0
+
+    marks = ",".join("?" for _ in ids)
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute("SELECT id, status, backup_timestamp FROM backups "
+                    "WHERE id IN ({})".format(marks), ids)
+        rows = [dict(r) for r in cur.fetchall()]
+
+        alive = [r for r in rows if r["status"] not in FORGETTABLE
+                 and (r.get("backup_timestamp") or "").strip()]
+
+        if alive:
+            raise ValueError("Копия {} есть на диске — удалите её через «Удалить с диска»"
+                             .format(alive[0]["backup_timestamp"]))
+
+        cur.execute("DELETE FROM backups WHERE id IN ({})".format(marks), ids)
+        return cur.rowcount
 
 
 def backup_with_topups(backup_id):
@@ -1625,6 +1705,9 @@ def list_running_backup_jobs(connection_id):
             "eta_sec": eta,
             "backup_type": cfg.get("backup_type"),
             "backup_timestamp": cfg.get("backup_timestamp"),
+            # добор пропущенных / его догрузка при восстановлении
+            "topup_of": cfg.get("skipped_from") or cfg.get("topup_of"),
+            "scope": backup_scope(cfg) if r["job_type"] == "gpbackup" else None,
         }))
 
     return out

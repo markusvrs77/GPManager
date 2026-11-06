@@ -169,6 +169,8 @@ POLICY = {
     "api_backup_sync_disk": "backups.run",
     "api_backup_report": "backups.run",
     "api_backup_delete": "backups.run",
+    "api_backup_forget": "backups.run",
+    "api_backup_catalog": "backups.view",
     "api_pg_backup_start": "backups.run",
     "api_pg_backup_restore": "backups.run",
 

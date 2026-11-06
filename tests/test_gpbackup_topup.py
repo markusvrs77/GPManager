@@ -205,3 +205,50 @@ def test_failed_main_restore_does_not_load_topup(client, spawned):
 
     assert spawned == []
     assert "Добор не применён" in get_job(job_id)["error_message"]
+
+
+# ------------------------------------------------------------ сбойные записи
+
+def test_forget_failed_records_but_not_live_copies(client):
+    cid = 932
+    failed = [gb.insert_backup(cid, None, None, "adb", "full", "", "failed") for _ in range(3)]
+    live = gb.insert_backup(cid, None, "20261106205400", "adb", "full", "", "done")
+
+    # живую копию так не убрать — только «Удалить с диска»
+    r = client.post("/api/backup/forget", json={"backup_id": live})
+    assert r.status_code == 400
+
+    r = client.post("/api/backup/forget", json={"backup_id": failed[0]}).get_json()
+    assert r == {"ok": True, "removed": 1}
+
+    r = client.post("/api/backup/forget", json={"connection_id": cid, "all_failed": True}).get_json()
+    assert r == {"ok": True, "removed": 2}
+
+    d = client.get("/api/backup/overview?connection_id={}".format(cid)).get_json()
+    assert [b["id"] for b in d["backups"]] == [live]
+
+
+# ------------------------------------------------------------ выбор схем и таблиц
+
+def test_backup_catalog_hides_leaf_partitions():
+    tables = [("dwh", "f_sales"), ("dwh", "f_sales_1_prt_1"), ("dwh", "f_sales_1_prt_1_2_prt_a"),
+              ("dwh", "d_client"), ("ods", "Mixed Case")]
+    pairs = {("dwh", "f_sales_1_prt_1"): ("dwh", "f_sales"),
+             ("dwh", "f_sales_1_prt_1_2_prt_a"): ("dwh", "f_sales_1_prt_1")}
+
+    c = gb.backup_catalog(tables, pairs)
+
+    assert c["schemas"] == [{"name": "dwh", "tables": 2, "ok": True},
+                            {"name": "ods", "tables": 1, "ok": True}]
+    assert [(t["name"], t["parts"], t["ok"]) for t in c["tables"]] == [
+        ("dwh.f_sales", 2, True), ("dwh.d_client", 0, True), ("ods.Mixed Case", 0, False)]
+
+
+def test_backup_catalog_api(client, monkeypatch):
+    import modules.table_catalog as tc
+
+    monkeypatch.setattr(tc, "get_catalog", lambda cid, force=False: ([("dwh", "t")], 1.0))
+    monkeypatch.setattr(tc, "fetch_partition_pairs", lambda cid: {})
+
+    d = client.get("/api/backup/catalog?connection_id=1").get_json()
+    assert d["ok"] is True and d["tables"][0]["name"] == "dwh.t"

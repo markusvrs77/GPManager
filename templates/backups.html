@@ -323,6 +323,17 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
   background: var(--warn-tint); border-radius: 6px; padding: 1px 6px; }
 .gpr-more { padding: 8px 10px; font-size: 12.5px; color: var(--text-muted); }
 .gpr-conf { display: flex; flex-direction: column; gap: 10px; }
+.gbs .bk-seg.gpr-scope { max-width: none; }
+.gbs-pick { margin-top: 8px; }
+.gbs-pick .gpr-list { max-height: 228px; }
+.gbs-pick .gpr-tools .bk-input { flex-basis: 160px; }
+.gbs-chosen { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--hairline); }
+.gbs-chosen:empty { display: none; }
+.gbs-chosen button { display: inline-flex; align-items: center; gap: 4px; border: 0; cursor: pointer;
+  font: 500 12px var(--font-mono); color: var(--a2); background: var(--surface-2);
+  border-radius: 6px; padding: 2px 6px; }
+.gbs-chosen button:hover { color: var(--crit); }
+.gbs-chosen button .ic { width: 12px; height: 12px; }
 .gpr-conf legend { margin-bottom: 2px; }
 
 /* причина сбоя в истории */
@@ -745,15 +756,18 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                     <div class="bk-hint" id="gpbDirMsg" hidden></div>
                 </div>
 
-                <div>
-                    <label class="bk-lbl" for="gpbSchemas">Схемы <span class="opt">— по одной в строке, пусто = вся БД</span></label>
-                    <textarea id="gpbSchemas" class="bk-area" rows="2" placeholder="dwh_dds&#10;dwh_dm"></textarea>
-                </div>
-
-                <div>
-                    <label class="bk-lbl" for="gpbTables">Таблицы <span class="opt">— schema.table, по одной в строке</span></label>
-                    <textarea id="gpbTables" class="bk-area" rows="2" placeholder="dwh_stage.s01_t_bal"></textarea>
-                </div>
+                <fieldset class="gpr-sec gbs">
+                    <legend class="bk-lbl">Что бэкапить</legend>
+                    <div class="bk-seg gpr-scope" role="radiogroup">
+                        <label><input type="radio" name="gbsScope" value="full" checked><span class="dot"></span>Вся БД</label>
+                        <label><input type="radio" name="gbsScope" value="schemas"><span class="dot"></span>Схемы</label>
+                        <label><input type="radio" name="gbsScope" value="tables"><span class="dot"></span>Таблицы</label>
+                    </div>
+                    <div id="gbsPick" class="gbs-pick" hidden></div>
+                    <!-- итог выбора: их читают запуск и расписание -->
+                    <textarea id="gpbSchemas" hidden aria-hidden="true"></textarea>
+                    <textarea id="gpbTables" hidden aria-hidden="true"></textarea>
+                </fieldset>
 
                 <div class="bk-row2">
                     <div>
@@ -891,6 +905,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 
                 <div class="bk-foot">
                     <span id="gpbShown"></span>
+                    <button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" id="gpbForgetFailed" hidden>{{ ic('trash') }}<span></span></button>
                     <nav class="bk-pages" id="gpbPages" aria-label="Страницы списка копий"></nav>
                 </div>
             </section>
@@ -1079,21 +1094,29 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
     }
 
     /* состав в строке списка: фильтр задачи + сколько таблиц реально в копии */
+    /* что бэкапили: «вся БД», «схема dwh_dds», «3 таблицы» */
+    function scopeShort(scope) {
+        if (!scope) { return ""; }
+        if (scope.from_file) { return "пропущенные таблицы"; }
+        var s = scope.schemas || [], t = scope.tables || [];
+        if (s.length === 1 && !t.length) { return "схема " + s[0]; }
+        if (s.length) { return "схемы " + s.slice(0, 2).join(", ") + (s.length > 2 ? " +" + (s.length - 2) : ""); }
+        if (t.length === 1) { return "таблица " + t[0]; }
+        if (t.length) { return t.length + " " + plural(t.length, "таблица", "таблицы", "таблиц"); }
+        return "вся БД";
+    }
+
+    function cap(text) { return text ? text.charAt(0).toUpperCase() + text.slice(1) : text; }
+
     function scopeText(b) {
         var scope = b.scope, det = b.details;
         var cnt = det && det.tables != null ? fmtInt(det.tables) + " табл." : "";
         if (!scope) { return cnt ? esc(cnt) : "—"; }
-        if (scope.from_file) { return esc("Пропущенные таблицы" + (cnt ? " · " + cnt : "")); }
-        var parts = [];
-        if (scope.schemas.length) {
-            parts.push(scope.schemas.slice(0, 2).join(", ") +
-                (scope.schemas.length > 2 ? " +" + (scope.schemas.length - 2) : ""));
-        } else if (!scope.tables.length) {
-            parts.push("Вся БД");
+        // «3 таблицы» — счётчик копии лишь повторил бы выбор
+        if (scope.tables.length > 1 && !scope.schemas.length && !scope.from_file) {
+            return esc(cap(scopeShort(scope)));
         }
-        if (cnt) { parts.push(cnt); }
-        else if (scope.tables.length) { parts.push(scope.tables.length + " табл."); }
-        return esc(parts.join(" · "));
+        return esc(cap(scopeShort(scope)) + (cnt ? " · " + cnt : ""));
     }
 
     function scopeTitle(b) {
@@ -1180,7 +1203,179 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         $("gpbHost").innerHTML = '<div class="bk-skel" style="height: 90px;"></div>';
         loadHost();
         loadDir();
+        gbsReset();
     }
+
+    /* ------------------------------------------- что бэкапить (схемы/таблицы) */
+    var GBS_LIMIT = 300;
+    var gbs = { scope: "full", schemas: {}, tables: {}, q: "", cat: null, catCid: null, err: "", seq: 0 };
+
+    function gbsChosen() {
+        var map = gbs.scope === "schemas" ? gbs.schemas : gbs.scope === "tables" ? gbs.tables : {};
+        return Object.keys(map).filter(function (k) { return map[k]; }).sort();
+    }
+
+    function gbsSync() {
+        var list = gbsChosen();
+        $("gpbSchemas").value = gbs.scope === "schemas" ? list.join("\n") : "";
+        $("gpbTables").value = gbs.scope === "tables" ? list.join("\n") : "";
+    }
+
+    function gbsError() {
+        if (gbs.scope === "full" || gbsChosen().length) { return ""; }
+        return gbs.scope === "schemas" ? "Выберите хотя бы одну схему — или «Вся БД»"
+                                       : "Выберите хотя бы одну таблицу — или «Вся БД»";
+    }
+
+    function gbsReset() {
+        gbs.schemas = {}; gbs.tables = {}; gbs.q = ""; gbs.cat = null; gbs.catCid = null; gbs.err = "";
+        gbs.seq++;
+        gbsSync();
+        if (gbs.scope !== "full") { gbsLoad(false); } else { gbsRender(); }
+    }
+
+    function gbsLoad(force) {
+        var cid = state.cid, seq = ++gbs.seq;
+        gbs.err = "";
+        gbs.cat = null;
+        gbsRender();
+        api("/api/backup/catalog?connection_id=" + cid + (force ? "&force=1" : "")).then(function (d) {
+            if (seq !== gbs.seq || cid !== state.cid) { return; }
+            if (!d.ok) { gbs.err = d.message || "Не удалось прочитать каталог"; gbsRender(); return; }
+            gbs.cat = d; gbs.catCid = cid;
+            gbsRender();
+        }).catch(function (e) {
+            if (seq !== gbs.seq) { return; }
+            gbs.err = String(e);
+            gbsRender();
+        });
+    }
+
+    function gbsItems() {
+        if (!gbs.cat) { return []; }
+        var q = gbs.q.trim().toLowerCase();
+        var src = gbs.scope === "schemas" ? gbs.cat.schemas : gbs.cat.tables;
+        return src.filter(function (x) { return !q || x.name.toLowerCase().indexOf(q) >= 0; });
+    }
+
+    function gbsListHtml() {
+        var map = gbs.scope === "schemas" ? gbs.schemas : gbs.tables;
+        var items = gbsItems();
+        if (!items.length) {
+            return '<div class="gpr-more">' + (gbs.q ? "Ничего не найдено" :
+                gbs.scope === "schemas" ? "В БД нет пользовательских схем" : "В БД нет таблиц") + "</div>";
+        }
+        var html = items.slice(0, GBS_LIMIT).map(function (x) {
+            var meta = gbs.scope === "schemas"
+                ? fmtInt(x.tables) + " " + plural(x.tables, "таблица", "таблицы", "таблиц")
+                : x.parts ? fmtInt(x.parts) + " " + plural(x.parts, "секция", "секции", "секций") : "";
+            var dot = x.name.indexOf(".");
+            var nm = gbs.scope === "tables" && dot > 0
+                ? "<small>" + esc(x.name.slice(0, dot + 1)) + "</small>" + esc(x.name.slice(dot + 1)) : esc(x.name);
+            return '<label class="gpr-item' + (x.ok ? "" : " is-off") + '"' +
+                (x.ok ? "" : ' title="Имя с особыми символами — выберите целиком схему или «Вся БД»"') + ">" +
+                '<input type="checkbox" data-gbs="' + esc(x.name) + '"' + (map[x.name] ? " checked" : "") +
+                (x.ok ? "" : " disabled") + '><span class="nm">' + nm + "</span>" +
+                (meta ? '<span class="meta">' + esc(meta) + "</span>" : "") + "</label>";
+        }).join("");
+        if (items.length > GBS_LIMIT) {
+            html += '<div class="gpr-more">Показано ' + GBS_LIMIT + " из " + fmtInt(items.length) + " — уточните поиск</div>";
+        }
+        return html;
+    }
+
+    function gbsCountText() {
+        var n = gbsChosen().length;
+        return n ? "Выбрано: " + n : (gbs.cat ? fmtInt(gbsItems().length) + " в списке" : "");
+    }
+
+    function gbsChosenHtml() {
+        var list = gbsChosen();
+        if (!list.length) { return ""; }
+        return list.slice(0, 30).map(function (n) {
+            return '<button type="button" data-gbs-off="' + esc(n) + '" title="Убрать из выбора">' + esc(n) + icon("x-circle") + "</button>";
+        }).join("") + (list.length > 30 ? '<span class="gpr-more" style="padding: 2px 4px;">… ещё ' + (list.length - 30) + "</span>" : "");
+    }
+
+    function gbsRender() {
+        var box = $("gbsPick");
+        box.hidden = gbs.scope === "full";
+        if (box.hidden) { return; }
+        var what = gbs.scope === "schemas" ? "схему" : "таблицу";
+
+        if (gbs.err) {
+            box.innerHTML = '<div class="bk-err">' + icon("alert") + "<span>" + esc(gbs.err) + "</span>" +
+                '<button type="button" data-gbs-reload="1">Повторить</button></div>';
+            return;
+        }
+        if (!gbs.cat) {
+            box.innerHTML = '<div class="gpr-pick"><div class="gpr-more">Читаю схемы и таблицы с кластера…</div>' +
+                '<div class="bk-skel" style="height: 90px; margin: 0 8px 8px;"></div></div>';
+            return;
+        }
+        box.innerHTML = '<div class="gpr-pick">' +
+            '<div class="gpr-tools">' +
+            '<input id="gbsSearch" class="bk-input" type="search" autocomplete="off" placeholder="Найти ' + what +
+            '" value="' + esc(gbs.q) + '" aria-label="Поиск: ' + what + '">' +
+            '<button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" data-gbs-all="1"' +
+            (gbs.q ? "" : ' disabled title="Сначала найдите — выбрать всё сразу можно режимом «Вся БД»"') + ">Выбрать найденные</button>" +
+            '<button class="bk-icon-btn" type="button" data-gbs-reload="1" title="Перечитать с кластера" aria-label="Перечитать схемы и таблицы с кластера">' +
+            icon("sync") + "</button>" +
+            '<span class="gpr-count" id="gbsCount" aria-live="polite">' + gbsCountText() + "</span></div>" +
+            '<div class="gbs-chosen" id="gbsChosen">' + gbsChosenHtml() + "</div>" +
+            '<div class="gpr-list" id="gbsList">' + gbsListHtml() + "</div></div>";
+    }
+
+    function gbsRefreshParts() {
+        var list = $("gbsList"), count = $("gbsCount"), chosen = $("gbsChosen");
+        if (list) { list.innerHTML = gbsListHtml(); }
+        if (count) { count.textContent = gbsCountText(); }
+        if (chosen) { chosen.innerHTML = gbsChosenHtml(); }
+    }
+
+    document.querySelectorAll("input[name='gbsScope']").forEach(function (r) {
+        r.addEventListener("change", function () {
+            gbs.scope = this.value;
+            gbs.q = "";
+            gbsSync();
+            if (gbs.scope !== "full" && (!gbs.cat || gbs.catCid !== state.cid) && !gbs.err) { gbsLoad(false); }
+            else { gbsRender(); }
+        });
+    });
+
+    $("gbsPick").addEventListener("input", function (e) {
+        if (e.target.id !== "gbsSearch") { return; }
+        gbs.q = e.target.value;
+        var all = this.querySelector("[data-gbs-all]");
+        if (all) { all.disabled = !gbs.q; }
+        var list = $("gbsList"), count = $("gbsCount");
+        if (list) { list.innerHTML = gbsListHtml(); }
+        if (count) { count.textContent = gbsCountText(); }
+    });
+
+    $("gbsPick").addEventListener("change", function (e) {
+        var name = e.target.dataset && e.target.dataset.gbs;
+        if (!name) { return; }
+        (gbs.scope === "schemas" ? gbs.schemas : gbs.tables)[name] = e.target.checked;
+        gbsSync();
+        var count = $("gbsCount"), chosen = $("gbsChosen");
+        if (count) { count.textContent = gbsCountText(); }
+        if (chosen) { chosen.innerHTML = gbsChosenHtml(); }
+    });
+
+    $("gbsPick").addEventListener("click", function (e) {
+        var t = e.target.closest("button");
+        if (!t) { return; }
+        var map = gbs.scope === "schemas" ? gbs.schemas : gbs.tables;
+        if (t.dataset.gbsReload) { gbsLoad(true); return; }
+        if (t.dataset.gbsAll) {
+            gbsItems().forEach(function (x) { if (x.ok) { map[x.name] = true; } });
+        } else if (t.dataset.gbsOff) {
+            map[t.dataset.gbsOff] = false;
+        } else { return; }
+        gbsSync();
+        gbsRefreshParts();
+    });
 
     /* ------------------------------------------------- каталог бэкапа */
     var dirSeq = 0, dirSaved = null;
@@ -1253,7 +1448,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             $("gpbStatLastIco").className = "bk-stat-ico " + tone;
             $("gpbStatLast").textContent = fmtTs(last.backup_timestamp);
             $("gpbStatLastSub").innerHTML = statusPill(last.completed ? "topped" : last.status) + "<span>" +
-                esc(TYPE_LABELS[last.backup_type] || last.backup_type || "") + "</span>";
+                esc((TYPE_LABELS[last.backup_type] || last.backup_type || "") +
+                    (last.scope ? " · " + scopeShort(last.scope) : "")) + "</span>";
         } else {
             $("gpbStatLastIco").className = "bk-stat-ico idle";
             $("gpbStatLast").textContent = "—";
@@ -1396,6 +1592,11 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             }
             return html;
         }).join("");
+
+        var nFailed = all.filter(function (x) { return x.status === "failed" || x.status === "deleted"; }).length;
+        var fbtn = $("gpbForgetFailed");
+        fbtn.hidden = !nFailed || !CAN_RUN;
+        fbtn.lastElementChild.textContent = "Убрать ошибочные (" + nFailed + ")";
 
         $("gpbShown").textContent = "Показано " + (from + 1) + "–" + (from + rows.length) +
             " из " + all.length + " " + plural(all.length, "копии", "копий", "копий");
@@ -1857,7 +2058,11 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             items.push('<button type="button" role="menuitem" data-act="skipped" data-id="' + b.id + '">' + icon("plus-square") +
                 (usableTopups(b).length ? "Добрать оставшиеся" : "Добрать пропущенные") + "</button>");
         }
-        if (b.status !== "deleted" && b.backup_timestamp) {
+        if (b.status === "failed" || b.status === "deleted" || !b.backup_timestamp) {
+            items.push("<hr>");
+            items.push('<button type="button" role="menuitem" class="danger" data-act="forget" data-id="' + b.id + '">' +
+                icon("trash") + "Убрать из списка</button>");
+        } else if (b.status !== "deleted" && b.backup_timestamp) {
             items.push("<hr>");
             items.push('<button type="button" role="menuitem" class="danger" data-act="delete" data-id="' + b.id + '">' + icon("trash") + "Удалить с диска</button>");
         }
@@ -2026,6 +2231,21 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         });
     }
 
+    function forget(body, text) {
+        confirmThen(text, function () {
+            api("/api/backup/forget", body).then(function (d) {
+                toast(d.ok ? "Убрано записей: " + d.removed : (d.message || "Ошибка"), d.ok ? "success" : "error");
+                if (d.ok) { state.open = null; load(); }
+            }).catch(function (e) { toast(String(e), "error"); });
+        });
+    }
+
+    $("gpbForgetFailed").addEventListener("click", function () {
+        forget({ connection_id: state.cid, all_failed: true },
+            "Убрать из списка все ошибочные записи кластера? Файлов копий у них нет — удаляются только записи, " +
+            "история задач остаётся.");
+    });
+
     function del(b) {
         var nt = (b.topups || []).filter(function (t) { return t.status !== "deleted"; }).length;
         confirmThen("Удалить копию " + fmtTs(b.backup_timestamp) +
@@ -2066,6 +2286,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         if (act === "report") { showReport(b); }
         if (act === "skipped") { backupSkipped(b); }
         if (act === "delete") { del(b); }
+        if (act === "forget") { forget({ backup_id: b.id }, "Убрать из списка запись " +
+            (b.backup_timestamp ? fmtTs(b.backup_timestamp) : "без метки") + "? Файлов копии нет — удаляется только запись."); }
     });
 
     $("gpbPages").addEventListener("click", function (e) {
@@ -2186,8 +2408,11 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
     function renderRun(list) {
         var html = list.map(function (r) {
             var what = r.job_type === "gprestore"
-                ? "Идёт восстановление" + (r.backup_timestamp ? " копии " + fmtTs(r.backup_timestamp) : "")
-                : "Идёт бэкап" + (r.backup_type ? " · " + (TYPE_LABELS[r.backup_type] || r.backup_type) : "");
+                ? (r.topup_of ? "Догрузка добора копии " + fmtTs(r.topup_of)
+                    : "Идёт восстановление" + (r.backup_timestamp ? " копии " + fmtTs(r.backup_timestamp) : ""))
+                : r.topup_of ? "Идёт добор копии " + fmtTs(r.topup_of)
+                : "Идёт бэкап" + (r.backup_type ? " · " + (TYPE_LABELS[r.backup_type] || r.backup_type) : "") +
+                  (r.scope ? " · " + scopeShort(r.scope) : "");
             var pct = Math.max(0, Math.min(100, Number(r.percent) || 0));
             var meta = (r.elapsed_sec != null ? fmtDur(r.elapsed_sec) : "") +
                 (r.eta_sec ? " · ≈ осталось " + fmtLeft(r.eta_sec) : "");
@@ -2588,6 +2813,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 
     $("gpbStart").addEventListener("click", function () {
         var btn = this;
+        var bad = gbsError();
+        if (bad) { msg(bad, "err"); return; }
         btn.disabled = true;
         msg("Запускаю gpbackup…");
         api("/api/backup/start", formConfig()).then(function (d) {
@@ -2649,6 +2876,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         $("gpbSchedule").addEventListener("click", function () {
             var btn = this;
             var o = $("gpbConn").options[$("gpbConn").selectedIndex];
+            var bad = gbsError();
+            if (bad) { msg(bad, "err"); return; }
             btn.disabled = true;
             api("/api/schedules", {
                 name: ("gpbackup " + (o ? o.textContent.split("/")[0] : "")).trim(),
