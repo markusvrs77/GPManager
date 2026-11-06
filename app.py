@@ -2995,11 +2995,24 @@ def api_backup_overview():
     if not in_scope([connection_id]):
         return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
 
+    from modules.gpbackup import LEFTOVER_STATUSES, files_on_disk, register_stopped_backups
+
+    try:
+        register_stopped_backups(connection_id)
+    except Exception:
+        pass
+
     backups = list_connection_backups(connection_id)
     alive = [b for b in backups if b.get("status") != "deleted"]
+    usable = [b for b in alive if b.get("status") in ("done", "partial")]
+
+    # остановленная/сбойная копия: каталог мог остаться — проверяем (в фоне)
+    for b in backups:
+        if b.get("status") in LEFTOVER_STATUSES and b.get("backup_timestamp"):
+            b["on_disk"] = files_on_disk(b)
 
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d%H%M%S")
-    last_week = sum(1 for b in alive
+    last_week = sum(1 for b in usable
                     if str(b.get("backup_timestamp") or "") >= week_ago)
 
     # диск: сохранённый каталог кластера, иначе каталог последней копии
@@ -3113,7 +3126,7 @@ def api_backup_overview():
     return jsonify({
         "ok": True,
         "backups": backups,
-        "stats": {"total": len(alive), "last_week": last_week},
+        "stats": {"total": len(usable), "last_week": last_week},
         "disk": disk,
         "run_where": describe(target),
         "disk_dir": disk_dir,
@@ -3799,44 +3812,45 @@ def api_backup_forget():
 
 @app.route("/api/backup/delete", methods=["POST"])
 def api_backup_delete():
+    """
+    Удалить копию с диска (координатор + все сегменты, по SSH с
+    координатора) вместе с её доборами. Идёт в фоне: запись — «deleting».
+    """
+    from modules.gpbackup import get_backup_record, list_connection_backups
+    from modules.gpbackup_delete import start_delete
+
     data = request.get_json(silent=True) or {}
     connection_id = data.get("connection_id")
     backup_timestamp = data.get("backup_timestamp")
+    record = None
 
-    if not connection_id or not backup_timestamp:
-        return jsonify({
-            "ok": False,
-            "message": "connection_id и backup_timestamp обязательны",
-        }), 400
+    if data.get("backup_id"):
+        record = get_backup_record(int(data["backup_id"]))
+    elif connection_id and backup_timestamp:
+        found = next((b for b in list_connection_backups(int(connection_id), limit=1000)
+                      if str(b.get("backup_timestamp")) == str(backup_timestamp)), None)
+        record = get_backup_record(found["id"]) if found else None
+    else:
+        return jsonify({"ok": False,
+                        "message": "backup_id или connection_id и backup_timestamp обязательны"}), 400
+
+    if not record:
+        return jsonify({"ok": False, "message": "Копия не найдена"}), 404
+
+    if not in_scope([int(record.get("connection_id") or 0)]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    family = next((b for b in list_connection_backups(int(record["connection_id"]), limit=1000)
+                   if b["id"] == record["id"]), None)
+    records = [record] + [get_backup_record(t["id"]) for t in (family or {}).get("topups") or []]
 
     try:
-        from modules.gpbackup import delete_disk_backup, list_connection_backups
-
-        family = next((b for b in list_connection_backups(int(connection_id), limit=1000)
-                       if str(b.get("backup_timestamp")) == str(backup_timestamp)), None)
-
-        delete_disk_backup(int(connection_id), str(backup_timestamp))
-
-        failed = []
-        topups = [t for t in (family or {}).get("topups") or []
-                  if t.get("backup_timestamp") and t.get("status") != "deleted"]
-
-        for t in topups:
-            try:
-                delete_disk_backup(int(connection_id), str(t["backup_timestamp"]))
-            except Exception as e:
-                failed.append("{}: {}".format(t["backup_timestamp"], str(e)[:300]))
-
-        if failed:
-            return jsonify({"ok": False, "message": "Копия удалена, но не доборы — " +
-                            "; ".join(failed)}), 500
-
-        return jsonify({"ok": True, "message": "Копия удалена с диска" + (
-            " вместе с доборами ({})".format(len(topups)) if topups else "")})
+        count = start_delete([r for r in records if r])
     except ValueError as e:
         return jsonify({"ok": False, "message": str(e)}), 400
-    except Exception as e:
-        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+    return jsonify({"ok": True, "deleting": count, "message": "Удаление запущено" + (
+        " вместе с доборами ({})".format(count - 1) if count > 1 else "")})
 
 
 @app.route("/grants")
@@ -4898,6 +4912,10 @@ if __name__ == "__main__":
     from modules.job_resume import resume_inprocess_jobs
 
     from modules.pg_backup import resume_unfinished_pg_jobs
+
+    from modules.gpbackup_delete import reset_stale_deleting
+
+    reset_stale_deleting()
 
     resumed_jobs = resume_unfinished_gpcopy_jobs()
     resumed_jobs += resume_unfinished_backup_jobs()

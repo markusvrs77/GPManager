@@ -1365,8 +1365,123 @@ def link_topups(rows):
     return top
 
 
-# записи реестра, у которых на диске ничего нет: убрать можно без gpbackup_manager
-FORGETTABLE = ("failed", "deleted")
+# записи, которые можно убрать из списка (у остановленной/сбойной файлы
+# могут остаться — интерфейс предупреждает и предлагает «Удалить с диска»)
+FORGETTABLE = ("failed", "deleted", "cancelled", "interrupted")
+
+# статусы реестра, у которых каталог копии мог остаться на диске
+LEFTOVER_STATUSES = ("failed", "cancelled", "interrupted")
+
+
+def record_stopped_backup(job_id, config, log_text, status="cancelled"):
+    """
+    Остановленный gpbackup -> запись реестра: gpbackup при прерывании файлы
+    не удаляет, каталог копии остаётся на координаторе и сегментах.
+    None — метка ещё не напечатана (до записи на диск дело не дошло).
+    """
+    config = config or {}
+    ts = parse_backup_timestamp(log_text)
+
+    if not ts or _backup_recorded_for_job(job_id):
+        return None
+
+    return insert_backup(
+        connection_id=int(config.get("connection_id") or 0),
+        job_id=job_id,
+        backup_timestamp=ts,
+        dbname=connection_dbname(config) or None,
+        backup_type=config.get("backup_type") or "full",
+        backup_dir=config.get("backup_dir") or "",
+        status=status,
+        parent_id=config.get("parent_backup_id"),
+    )
+
+
+_no_ts_jobs = set()
+
+
+def register_stopped_backups(connection_id):
+    """
+    Остановленные/прерванные задачи gpbackup без записи реестра (были до
+    этой версии) -> записи по метке из начала их лога. Сколько добавлено.
+    """
+    with sqlite_cursor() as cur:
+        cur.execute(
+            """
+            SELECT j.id, j.status, j.config_json, j.log_file FROM jobs j
+            WHERE j.job_type = 'gpbackup' AND j.connection_id = ?
+              AND j.status IN ('cancelled', 'interrupted')
+              AND NOT EXISTS (SELECT 1 FROM backups b WHERE b.job_id = j.id)
+            ORDER BY j.id DESC LIMIT 50
+            """,
+            (int(connection_id),),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    added = 0
+
+    for r in rows:
+        if r["id"] in _no_ts_jobs:
+            continue
+
+        text = ""
+
+        try:
+            with open(r.get("log_file") or "", encoding="utf-8", errors="replace") as f:
+                text = f.read(512 * 1024)
+        except (OSError, TypeError, ValueError):
+            pass
+
+        try:
+            cfg = json.loads(r.get("config_json") or "{}")
+        except ValueError:
+            cfg = {}
+
+        if record_stopped_backup(r["id"], cfg, text, status=r["status"]):
+            added += 1
+        else:
+            _no_ts_jobs.add(r["id"])
+
+    return added
+
+
+# есть ли каталог копии на координаторе: кэш, проверка в фоне (SSH)
+DISK_SEEN_TTL = 300
+_disk_seen = {}
+_disk_lock = threading.Lock()
+
+
+def files_on_disk(row):
+    """True/False — каталог копии виден на координаторе; None — пока неизвестно."""
+    import time
+
+    key = (row["id"], row.get("status"))
+    now = time.time()
+
+    with _disk_lock:
+        hit = _disk_seen.get(key)
+
+        if hit and (hit[1] == "busy" or now - hit[0] < DISK_SEEN_TTL):
+            return None if hit[1] == "busy" else hit[1]
+
+        _disk_seen[key] = (now, "busy")
+
+    threading.Thread(target=_check_on_disk, args=(key, dict(row)), daemon=True).start()
+    return hit[1] if hit else None
+
+
+def _check_on_disk(key, row):
+    import time
+
+    try:
+        from modules.gpbackup_files import backup_files_dir
+
+        value = backup_files_dir(row) is not None
+    except Exception:
+        value = None
+
+    with _disk_lock:
+        _disk_seen[key] = (time.time(), value)
 
 
 def failed_backup_ids(connection_id):
@@ -1374,6 +1489,7 @@ def failed_backup_ids(connection_id):
     with sqlite_cursor() as cur:
         cur.execute(
             "SELECT id FROM backups WHERE connection_id = ? AND status IN ({}) "
+            "AND (status = 'deleted' OR COALESCE(backup_timestamp, '') = '') "
             "AND COALESCE(tool, 'gpbackup') = 'gpbackup'".format(
                 ",".join("?" for _ in FORGETTABLE)),
             [int(connection_id)] + list(FORGETTABLE))
@@ -1997,6 +2113,11 @@ def _resume_backup_watch(job_id, job_type, log_path, pid, items, config):
 
     if is_stop_requested(job_id):
         _stop_remote_if_needed(config, log_text)
+        if job_type == "gpbackup":
+            try:
+                record_stopped_backup(job_id, config, log_text)
+            except Exception:
+                pass
         mark_job_cancelled(job_id)
         refresh_job_progress(job_id)
         return
@@ -2079,7 +2200,8 @@ def resume_unfinished_backup_jobs():
 # раннеры
 # ------------------------------------------------------------------
 
-def _run_external_tool(job_id, cmd, env, finalize, stdin_data=None, target=None):
+def _run_external_tool(job_id, cmd, env, finalize, stdin_data=None, target=None,
+                       on_cancel=None):
     """
     Общий каркас: detached-процесс, лог в постоянный файл, стоп-кнопка,
     переживание рестарта (pid + log_file в задаче). finalize(log_text, rc).
@@ -2124,6 +2246,11 @@ def _run_external_tool(job_id, cmd, env, finalize, stdin_data=None, target=None)
             from modules.gp_remote import stop_remote
 
             stop_remote(target, log_text)
+        if on_cancel:
+            try:
+                on_cancel(log_text)
+            except Exception:
+                pass
         mark_job_cancelled(job_id)
         refresh_job_progress(job_id)
         return
@@ -2189,7 +2316,8 @@ def run_gpbackup_job(job_id):
                 job_id, "gpbackup", config, items, log_text, rc, shown,
             )
 
-        _run_external_tool(job_id, cmd, env, finalize, stdin_data, target)
+        _run_external_tool(job_id, cmd, env, finalize, stdin_data, target,
+                           on_cancel=lambda text: record_stopped_backup(job_id, config, text))
 
     except Exception as e:
         for item in items:

@@ -666,6 +666,13 @@ def init_db():
         "ALTER TABLE backups ADD COLUMN details_json TEXT"
     )
 
+    # почему не удалось удалить копию с диска (своё удаление, без gpbackup_manager)
+    ensure_column_exists(
+        "backups",
+        "delete_error",
+        "ALTER TABLE backups ADD COLUMN delete_error TEXT"
+    )
+
     # добор пропущенных таблиц — дочерняя копия основной (частичной)
     ensure_column_exists(
         "backups",

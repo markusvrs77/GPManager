@@ -435,6 +435,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 
 .bk-skipped { font-size: 13px; color: var(--warn); display: flex; gap: 8px; margin-top: 12px; }
 .bk-skipped.ok { color: var(--ok); }
+.bk-del-err { color: var(--crit); vertical-align: middle; }
+.bk-del-err .ic { width: 14px; height: 14px; }
 .bk-topups { margin-top: 8px; }
 .bk-topup { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--text-muted);
   padding: 4px 0; }
@@ -1085,6 +1087,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         done: ["ok", "check", "Успешно"],
         partial: ["warn", "alert", "Частично"],
         topped: ["ok", "check", "Добрано"],
+        deleting: ["run", "clock", "Удаляется"],
         failed: ["crit", "x-circle", "Ошибка"],
         deleted: ["idle", "trash", "Удалена"],
         running: ["run", "clock", "Идёт"],
@@ -1454,7 +1457,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
     function renderStats() {
         var d = state.data;
         var live = (d.backups || []).filter(function (b) {
-            return b.status !== "deleted" && b.backup_timestamp;
+            return (b.status === "done" || b.status === "partial") && b.backup_timestamp;
         }).sort(function (a, b) {
             return String(b.backup_timestamp).localeCompare(String(a.backup_timestamp));
         });
@@ -1579,6 +1582,10 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                 ? "Пропущенные таблицы добраны: " + tops.map(function (t) { return fmtTs(t.backup_timestamp); }).join(", ") +
                   ". При восстановлении догрузятся автоматически."
                 : skipped.length ? "Не хватает таблиц: " + skipped.length + (tops.length ? " (после добора)" : "") : "";
+            if (b.on_disk) {
+                stTitle = "Каталог копии остался на диске (координатор и сегменты) — его можно удалить: ⋮ → «Удалить с диска»";
+            }
+            if (b.delete_error) { stTitle = b.delete_error; }
             var restorable = (b.status === "done" || partial) && b.backup_timestamp;
             var isOpen = state.open && state.open.id === b.id;
 
@@ -1593,7 +1600,10 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                       esc(scopeTitle(b)) + '">' + scopeText(b) + "</button>"
                     : scopeText(b)) + "</td>" +
                 '<td class="c-st"' + (stTitle ? ' title="' + esc(stTitle) + '"' : "") + ">" +
-                statusPill(b.completed ? "topped" : b.status, skipped.length ? String(skipped.length) : "") + "</td>" +
+                statusPill(b.completed ? "topped" : b.status,
+                    skipped.length ? String(skipped.length) : b.on_disk ? "на диске" : "") +
+                (b.delete_error ? ' <span class="bk-del-err" aria-label="Удалить не удалось">' + icon("alert") + "</span>" : "") +
+                "</td>" +
                 '<td class="act"><span class="act-in">' +
                 (restorable
                     ? '<button class="bk-btn bk-btn-outline bk-btn-sm" type="button" data-act="restore" title="Восстановить копию" data-id="' + b.id +
@@ -1610,7 +1620,10 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             return html;
         }).join("");
 
-        var nFailed = all.filter(function (x) { return x.status === "failed" || x.status === "deleted"; }).length;
+        var nFailed = all.filter(function (x) {
+            return x.status === "deleted" || (!x.backup_timestamp &&
+                ["failed", "cancelled", "interrupted"].indexOf(x.status) >= 0);
+        }).length;
         var fbtn = $("gpbForgetFailed");
         fbtn.hidden = !nFailed || !CAN_RUN;
         fbtn.lastElementChild.textContent = "Убрать ошибочные (" + nFailed + ")";
@@ -1628,7 +1641,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
     function prefetchDetails(rows) {
         rows.forEach(function (b) {
             if (b.backup_timestamp && !b.details && !state.detTried[b.id] &&
-                    b.status !== "deleted" && b.status !== "failed") {
+                    (b.status === "done" || b.status === "partial")) {
                 state.detTried[b.id] = true;
                 detQueue.push(b.id);
             }
@@ -2077,13 +2090,21 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             items.push('<button type="button" role="menuitem" data-act="skipped" data-id="' + b.id + '">' + icon("plus-square") +
                 (usableTopups(b).length ? "Добрать оставшиеся" : "Добрать пропущенные") + "</button>");
         }
-        if (b.status === "failed" || b.status === "deleted" || !b.backup_timestamp) {
+        var leftover = ["failed", "cancelled", "interrupted", "deleted"].indexOf(b.status) >= 0;
+        if (b.status === "deleting") {
             items.push("<hr>");
-            items.push('<button type="button" role="menuitem" class="danger" data-act="forget" data-id="' + b.id + '">' +
-                icon("trash") + "Убрать из списка</button>");
-        } else if (b.status !== "deleted" && b.backup_timestamp) {
-            items.push("<hr>");
-            items.push('<button type="button" role="menuitem" class="danger" data-act="delete" data-id="' + b.id + '">' + icon("trash") + "Удалить с диска</button>");
+            items.push('<button type="button" role="menuitem" disabled>' + icon("clock") + "Удаляется с диска…</button>");
+        } else {
+            if (b.backup_timestamp && b.status !== "deleted") {
+                items.push("<hr>");
+                items.push('<button type="button" role="menuitem" class="danger" data-act="delete" data-id="' + b.id + '">' +
+                    icon("trash") + (b.delete_error ? "Удалить с диска — повторить" : "Удалить с диска") + "</button>");
+            }
+            if (leftover || !b.backup_timestamp) {
+                if (!(b.backup_timestamp && b.status !== "deleted")) { items.push("<hr>"); }
+                items.push('<button type="button" role="menuitem" data-act="forget" data-id="' + b.id + '">' +
+                    icon("x-circle") + "Убрать из списка</button>");
+            }
         }
         if (!items.length) {
             items.push('<button type="button" role="menuitem" disabled>' + icon("alert") + "Для этой записи действий нет</button>");
@@ -2267,15 +2288,19 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 
     function del(b) {
         var nt = (b.topups || []).filter(function (t) { return t.status !== "deleted"; }).length;
-        confirmThen("Удалить копию " + fmtTs(b.backup_timestamp) +
+        var live = b.status === "done" || b.status === "partial";
+        confirmThen("Удалить " + (live ? "копию " : "остатки копии ") + fmtTs(b.backup_timestamp) +
             (nt ? " вместе с доборами (" + nt + ")" : "") +
-            " с диска (gpbackup_manager delete-backup)? Восстановить её будет нельзя.", function () {
+            " с диска — на координаторе и всех сегментах?" +
+            (live ? " Восстановить её будет нельзя." : "") +
+            " Удаление идёт в фоне, на NFS может занять несколько минут.", function () {
             api("/api/backup/delete", {
-                connection_id: b.connection_id, backup_timestamp: b.backup_timestamp,
+                backup_id: b.id, connection_id: b.connection_id, backup_timestamp: b.backup_timestamp,
             }).then(function (d) {
-                toast(d.ok ? "Копия удалена" : (d.message || "Ошибка"), d.ok ? "success" : "error");
+                toast(d.ok ? d.message + " — статус в списке обновится сам." : (d.message || "Ошибка"),
+                      d.ok ? "success" : "error");
                 load();
-            });
+            }).catch(function (e) { toast(String(e), "error"); });
         });
     }
 
@@ -2305,8 +2330,14 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         if (act === "report") { showReport(b); }
         if (act === "skipped") { backupSkipped(b); }
         if (act === "delete") { del(b); }
-        if (act === "forget") { forget({ backup_id: b.id }, "Убрать из списка запись " +
-            (b.backup_timestamp ? fmtTs(b.backup_timestamp) : "без метки") + "? Файлов копии нет — удаляется только запись."); }
+        if (act === "forget") {
+            var mayStay = b.backup_timestamp && b.status !== "deleted";
+            forget({ backup_id: b.id }, "Убрать из списка запись " +
+                (b.backup_timestamp ? fmtTs(b.backup_timestamp) : "без метки") + "? " +
+                (mayStay ? "Файлы копии на диске это НЕ удалит" + (b.on_disk ? " — а они там есть" : "") +
+                           ". Чтобы освободить место — «Удалить с диска»."
+                         : "Файлов копии нет — удаляется только запись."));
+        }
     });
 
     $("gpbPages").addEventListener("click", function (e) {
