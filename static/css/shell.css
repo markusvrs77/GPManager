@@ -338,6 +338,31 @@ textarea.form-control { min-height: 56px; font-size: 13px; }
 .modal-header .modal-title { font-size: 15px; font-weight: 700; }
 .modal-body { padding: 14px; font-size: 13.5px; }
 
+/* alerts: a status line, not a banner (theme.css made them bold glass) */
+.alert { border-width: 1px; font-weight: 500;
+  background: color-mix(in srgb, var(--status) 9%, var(--surface));
+  border-color: color-mix(in srgb, var(--status) 35%, transparent); }
+.alert-warning, .alert-danger { font-weight: 600; }
+
+/* slim progress bars carry no text inside */
+.progress-bar { font-size: 0; }
+
+/* job counters (Всего / Готово / В работе / Ошибки / Пропущено): one line */
+.job-counters { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0 0 10px !important;
+  text-align: left !important; }
+.job-counters > .col { flex: 0 0 auto; width: auto; max-width: none; padding: 0;
+  display: flex; align-items: baseline; gap: 6px; }
+.job-counters .small { font-size: 12px !important; }
+.job-counters strong, .job-counters b { font-size: 14px; font-variant-numeric: tabular-nums; }
+
+/* cron picker (Расписания и формы «по расписанию»): общий вид полей */
+.gpcp-f select, .gpcp-f input { background-color: var(--surface); min-height: 30px; }
+.gpcp-f select { appearance: none; -webkit-appearance: none; padding-right: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238d8ca3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 8px center; background-size: 14px; }
+.gpcp-f select:focus, .gpcp-f input:focus { outline: none;
+  border-color: color-mix(in srgb, var(--a1) 55%, transparent); box-shadow: 0 0 0 3px var(--ring); }
+
 /* headings inside page content */
 .card h5, .card .h5 { font-size: 15px; }
 .card h6, .card .h6 { font-size: 13.5px; }
@@ -372,3 +397,7 @@ textarea.form-control { min-height: 56px; font-size: 13px; }
   .gp-top .pg-ico { width: 42px; height: 42px; }
   .gp-top .pgtitle { font-size: 19px; }
 }
+
+/* KPI numbers from theme.css: console scale */
+.gp-stat .gp-v { font-size: 22px; margin-top: 3px; letter-spacing: -.5px; }
+.gp-stat .gp-k { font-size: 11px; }

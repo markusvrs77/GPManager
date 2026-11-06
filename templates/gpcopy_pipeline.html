@@ -353,6 +353,69 @@ details.gpp-tgt.off > summary { color: var(--text-muted); }
 .gpp-tgt-row .err:empty { display: none; }
 .gpp-tgt-more { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
 .gpp-tgt-to { color: var(--a2); font-family: var(--font-mono); white-space: nowrap; }
+
+/* ============ плотность: компактный режим консоли ============ */
+.gpp { max-width: 1320px; }
+.gpp .gpp-sub { margin-bottom: 12px; font-size: 12.5px; }
+.gpp-pipe { padding: 10px 12px; gap: 10px; margin-bottom: 12px; }
+.gpp-db { padding: 7px 11px; }
+.gpp-db .lbl { font-size: 11px; margin-bottom: 2px; }
+.gpp-dbbtn { font-size: 14px; }
+.gpp-db .meta { font-size: 11.5px; margin-top: 3px; }
+.gpp-arrow { font-size: 18px; }
+
+.gpp-step { padding: 12px 14px; margin-bottom: 12px; }
+.gpp-step .n { font-size: 11px; padding: 2px 10px; }
+.gpp-step h3 { font-size: 14px; margin: 8px 0 8px; }
+
+.gpp-btn { padding: 5px 12px; font-size: 13px; border-radius: 8px; }
+.gpp-btn.big { padding: 7px 20px; font-size: 14px; }
+.gpp-btn.sm { padding: 3px 9px; font-size: 12px; }
+.gpp-chip { padding: 3px 10px; font-size: 12.5px; }
+
+/* стратегии — сеткой: на широком экране две в ряд */
+@media (min-width: 1100px) {
+  .gpp-strats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+    align-items: start; }
+}
+.gpp-strat { padding: 8px 11px; border-radius: 10px; border-width: 1px; }
+.gpp-strat.sel { box-shadow: inset 0 0 0 1px var(--a1); }
+.gpp-strat .ic { font-size: 15px; }
+.gpp-strat .t { font-size: 13px; }
+.gpp-strat .w { font-size: 11.5px; line-height: 1.35; }
+.gpp-strat .why, .gpp-strat .danger { font-size: 11.5px; margin-top: 6px; }
+
+.gpp-modes { gap: 8px; }
+.gpp-mode { padding: 9px 10px; border-radius: 10px; border-width: 1px; }
+.gpp-mode .ic { font-size: 17px; }
+.gpp-mode .t { font-size: 13px; margin: 4px 0 2px; }
+.gpp-mode .d { font-size: 11.5px; }
+
+.gpp-params { margin-top: 10px; padding: 10px 12px; }
+.gpp-f input, .gpp-f select { padding: 5px 9px; font-size: 13px; min-width: 150px; }
+.gpp-hint { font-size: 12px; margin-top: 6px; }
+details.gpp-exp { margin-top: 8px; }
+details.gpp-tgt { margin-top: 10px; }
+details.gpp-tgt > summary { padding: 7px 11px; font-size: 13px; }
+
+.gpp-when { gap: 8px; margin-bottom: 10px; max-width: 520px; }
+.gpp-when .opt { padding: 6px 10px; font-size: 13px; border-width: 1px; }
+.gpp-when .opt.sel { box-shadow: inset 0 0 0 1px var(--a1); }
+.gpp-summary { padding: 8px 12px; font-size: 13px; margin: 10px 0; }
+.gpp-actions { gap: 8px; }
+
+.gpp-runs .run { padding: 7px 4px; font-size: 13px; gap: 12px; }
+.gpp-run-drawer { padding: 10px 12px; }
+.gpp-active { padding: 8px 12px; font-size: 13px; }
+.gpp-ring, .gpp-ring svg { width: 38px; height: 38px; }
+.gpp-ring .pct { font-size: 11px; }
+
+.gpp-modal { padding: 16px 18px; }
+.gpp-modal h4 { font-size: 16px; }
+.gpp-bigsearch { padding: 8px 12px; font-size: 14px; }
+.gpp-sc { padding: 5px 9px; font-size: 12.5px; }
+.gpp-sidebl { padding: 10px; }
+.gpp-modal .foot { margin-top: 10px; padding-top: 10px; }
 </style>
 
 <div class="gpp">

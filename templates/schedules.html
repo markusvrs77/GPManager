@@ -59,14 +59,14 @@
                         </select>
                     </div>
 
-                    <label class="form-label">Connection</label>
+                    <label class="form-label">Подключение</label>
                     <select id="schConnection" class="form-select mb-3">
                         {% for c in connections %}
                         <option value="{{ c.id }}">{{ c.name }} / {{ c.host }} / {{ c.database_name }}</option>
                         {% endfor %}
                     </select>
 
-                    <label class="form-label">Tables (schema.table, по одной в строке)</label>
+                    <label class="form-label">Таблицы <span class="text-muted fw-normal">— schema.table, по одной в строке</span></label>
                     <textarea id="schTables" class="form-control mb-3" rows="3" placeholder="dwh.orders&#10;dwh.payments"></textarea>
 
                     <div id="schDateWindow" class="border rounded p-2 mb-3" style="display:none">
@@ -107,19 +107,19 @@
 
                     <div class="row g-2 mb-3">
                         <div class="col-6">
-                            <label class="form-label small">Overlap</label>
+                            <label class="form-label small" title="Что делать, если прошлый запуск ещё идёт">Если прошлый ещё идёт</label>
                             <select id="schOverlap" class="form-select form-select-sm">
-                                <option value="skip">skip</option>
-                                <option value="queue">queue</option>
-                                <option value="parallel">parallel</option>
+                                <option value="skip">пропустить</option>
+                                <option value="queue">в очередь</option>
+                                <option value="parallel">параллельно</option>
                             </select>
                         </div>
                         <div class="col-3">
-                            <label class="form-label small">Retries</label>
+                            <label class="form-label small">Повторы</label>
                             <input type="number" id="schRetries" class="form-control form-control-sm" value="0" min="0">
                         </div>
                         <div class="col-3">
-                            <label class="form-label small">Delay, с</label>
+                            <label class="form-label small">Пауза, с</label>
                             <input type="number" id="schRetryDelay" class="form-control form-control-sm" value="60" min="0">
                         </div>
                     </div>
