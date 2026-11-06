@@ -7,3 +7,6 @@
 *.png   binary
 *.jpg   binary
 *.ico   binary
+
+# скрипты и unit для Linux-сервера — только LF
+deploy/* text eol=lf

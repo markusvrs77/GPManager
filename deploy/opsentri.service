@@ -1,0 +1,38 @@
+# Opsentri (GPManager) как systemd-сервис.
+# Шаблон: @...@ подставляет deploy/install-service.sh.
+#
+#   sudo systemctl restart opsentri     # перезапуск
+#   sudo systemctl stop opsentri        # остановка
+#   journalctl -u opsentri -f           # лог
+
+[Unit]
+Description=Opsentri (GPManager) web
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@APP_DIR@
+EnvironmentFile=/etc/opsentri/opsentri.env
+ExecStart=@PYTHON@ -u app.py
+
+Restart=on-failure
+RestartSec=5
+
+# gpcopy / gpbackup / gprestore / pg_dump запускаются отдельными
+# процессами и идут часами. По умолчанию systemd при stop/restart убивает
+# все процессы сервиса — копирование оборвалось бы на середине.
+# KillMode=process останавливает только само приложение; внешние процессы
+# продолжают работу, а приложение после старта цепляется к ним по pid и
+# логу. Остановить копирование — кнопкой «Стоп» в интерфейсе.
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+UMask=0027
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
