@@ -348,6 +348,51 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 .bk-hist-err .bk-report { margin-top: 8px; max-height: 280px; padding: 10px 12px;
   border-radius: 8px; background: var(--surface-2); }
 
+/* ход бэкапа / восстановления */
+.bk-run { border: 1px solid color-mix(in srgb, var(--run) 30%, var(--hairline));
+  background: var(--run-tint); border-radius: 11px; padding: 12px 14px; margin-bottom: 14px; }
+.bk-run-hd { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13.5px; }
+.bk-run-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--run);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--run) 25%, transparent);
+  animation: bkPulse 1.2s ease-in-out infinite; }
+.bk-run-hd b { font-weight: 700; }
+.bk-run-meta { color: var(--text-muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.bk-run-hd .bk-btn { margin-left: auto; }
+.bk-run-line { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.bk-run-line .bk-meter { flex: 1; margin: 0; height: 8px;
+  background: color-mix(in srgb, var(--run) 14%, var(--surface)); }
+.bk-run-line .bk-meter span { background: var(--run); }
+.bk-run-pct { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+.bk-run-phase { font-size: 12.5px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+
+/* уведомления */
+.bk-col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.bk-ntf { display: flex; flex-direction: column; gap: 14px; }
+.bk-ntf fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.bk-note { display: flex; gap: 8px; font-size: 13px; line-height: 1.45; padding: 10px 12px;
+  border-radius: 9px; }
+.bk-note.warn { background: var(--warn-tint); color: var(--warn); }
+.bk-note .ic { width: 16px; height: 16px; flex: none; margin-top: 1px; }
+.bk-ev { display: flex; flex-wrap: wrap; gap: 8px; }
+.bk-ev label { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; margin: 0;
+  border: 1px solid var(--hairline); border-radius: var(--radius-pill); font-size: 13px;
+  cursor: pointer; transition: background var(--dur-fast), border-color var(--dur-fast); }
+.bk-ev label:has(input:checked) { border-color: color-mix(in srgb, var(--a1) 45%, transparent);
+  background: var(--a-tint); color: var(--a2); font-weight: 600; }
+.bk-ev label:has(input:disabled) { cursor: default; opacity: .7; }
+.bk-ev label:focus-within { outline: 2px solid var(--a-bright); outline-offset: 2px; }
+.bk-ev input { width: 15px; height: 15px; margin: 0; accent-color: var(--a1); }
+.bk-ntf-act { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.bk-ntf-stat { font-size: 12.5px; color: var(--text-muted); }
+.bk-ntf-stat.err { color: var(--crit); }
+.bk-smtp { display: flex; gap: 6px 10px; align-items: center; flex-wrap: wrap; font-size: 12.5px;
+  color: var(--text-muted); padding-top: 12px; border-top: 1px dashed var(--hairline); }
+.bk-smtp b { color: var(--text); font-weight: 600; }
+.bk-smtp-form { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 12px;
+  padding: 14px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface-2); }
+.bk-smtp-form .s2 { grid-column: span 2; }
+.bk-smtp-form .s3 { grid-column: 1 / -1; }
+
 .bk-skipped { font-size: 13px; color: var(--warn); display: flex; gap: 8px; margin-top: 12px; }
 .bk-skipped .ic { width: 16px; height: 16px; flex: none; margin-top: 1px; }
 .bk-skipped code { color: inherit; font-size: 12.5px; }
@@ -450,10 +495,12 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
   .bk-list-table .act .bk-btn-sm { flex: 1; }
   .bk-list-table tr.bk-detail, .bk-list-table tr.bk-detail td { display: block; padding: 0 0 12px; }
   .bk-drawer .frow { grid-template-columns: 1fr; }
+  .bk-smtp-form { grid-template-columns: 1fr; }
+  .bk-smtp-form > * { grid-column: auto !important; }
   .ctx-pick { min-width: 0; flex: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .bk-skel, .ctx-state[data-state="checking"] i { animation: none; }
+  .bk-skel, .ctx-state[data-state="checking"] i, .bk-run-dot { animation: none; }
   .bk-switch span, .bk-switch span::after, .bk-meter span, .bk-link .ic { transition: none; }
 }
 </style>
@@ -629,6 +676,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                 </div>
 
                 <div class="bk-body" style="padding-bottom: 0;">
+                    <div id="gpbRun" aria-live="polite"></div>
                     <div class="bk-table-wrap">
                         <table class="bk-table bk-list-table">
                             <thead>
@@ -658,6 +706,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             </section>
 
             <div class="bk-bottom">
+                <div class="bk-col">
                 <!-- расписание -->
                 <section class="bk-panel" aria-labelledby="gpbSchedTitle">
                     <div class="bk-hd">
@@ -671,6 +720,17 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                     </div>
                     <div class="bk-body" id="gpbSched"><div class="bk-skel" style="height: 120px;"></div></div>
                 </section>
+
+                <!-- уведомления -->
+                <section class="bk-panel" aria-labelledby="gpbNotifyTitle">
+                    <div class="bk-hd">
+                        <span class="bk-hd-ico">{{ ic('message') }}</span>
+                        <h2 id="gpbNotifyTitle">Уведомления на почту</h2>
+                        <div class="bk-hd-act" id="gpbNotifySwitch"></div>
+                    </div>
+                    <div class="bk-body" id="gpbNotify"><div class="bk-skel" style="height: 120px;"></div></div>
+                </section>
+                </div>
 
                 <!-- история -->
                 <section class="bk-panel bk-hist" aria-labelledby="gpbHistTitle">
@@ -701,6 +761,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
     var PAGE_SIZE = 6;
     var CAN_SCHED_EDIT = {{ 'true' if can('schedules.edit') else 'false' }};
     var CAN_TEST = {{ 'true' if can('connections.view') else 'false' }};
+    var CAN_RUN = {{ 'true' if can('backups.run') else 'false' }};
+    var CAN_STOP = {{ 'true' if can('jobs.stop') else 'false' }};
 
     var state = {
         cid: null,
@@ -712,6 +774,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         contents: {},        // id -> состав копии (/api/backup/details)
         detTried: {},        // id -> сводку уже запрашивали
         rs: null,            // форма восстановления (переживает перерисовку)
+        notify: null,        // /api/backup/notify
+        mailOpen: false,     // открыта форма SMTP
         histOpen: null,      // id задачи, у которой раскрыт текст ошибки
     };
 
@@ -900,6 +964,15 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         syncClusterSub();
         checkCluster();
         load();
+        runIds = null;
+        runHtml = "";
+        $("gpbRun").innerHTML = "";
+        pollRun();
+        state.notify = null;
+        state.mailOpen = false;
+        $("gpbNotifySwitch").innerHTML = "";
+        $("gpbNotify").innerHTML = '<div class="bk-skel" style="height: 120px;"></div>';
+        loadNotify();
     }
 
     /* ------------------------------------------------------------ данные */
@@ -1630,8 +1703,9 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                 if (!d.ok) { toast(d.message || "Ошибка", "error"); return; }
                 state.open = null;
                 state.rs = null;
-                toast("Восстановление запущено: задача #" + d.job_id + ". Ход и ошибки — в «Истории операций».", "success");
+                toast("Восстановление запущено: задача #" + d.job_id + ". Ход — над списком копий, ошибки — в «Истории операций».", "success");
                 load();
+                setTimeout(pollRun, 1200);
             }).catch(function (e) { toast(String(e), "error"); });
         });
     }
@@ -1655,7 +1729,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             api("/api/backup/backup-skipped", { backup_id: b.id }).then(function (d) {
                 toast(d.ok ? "Запущено: задача #" + d.job_id : (d.message || "Ошибка"),
                       d.ok ? "success" : "error");
-                if (d.ok) { setTimeout(load, 1500); }
+                if (d.ok) { setTimeout(pollRun, 1200); }
             }).catch(function (e) { toast(String(e), "error"); });
         });
     }
@@ -1803,6 +1877,242 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         refreshPick(b);
     });
 
+    /* ------------------------------------------------------------ ход задачи */
+    // пока идёт gpbackup / gprestore — опрос раз в 3 с; задача закончилась —
+    // полная перезагрузка (новая копия, история)
+    var runTimer = null, runIds = null, runSeq = 0, runHtml = "";
+
+    function fmtLeft(sec) {
+        if (sec == null) { return ""; }
+        if (sec < 90) { return "меньше 2 мин"; }
+        var m = Math.round(sec / 60);
+        return m < 90 ? m + " мин" : Math.floor(m / 60) + " ч " + (m % 60) + " мин";
+    }
+
+    function renderRun(list) {
+        var html = list.map(function (r) {
+            var what = r.job_type === "gprestore"
+                ? "Идёт восстановление" + (r.backup_timestamp ? " копии " + fmtTs(r.backup_timestamp) : "")
+                : "Идёт бэкап" + (r.backup_type ? " · " + (TYPE_LABELS[r.backup_type] || r.backup_type) : "");
+            var pct = Math.max(0, Math.min(100, Number(r.percent) || 0));
+            var meta = (r.elapsed_sec != null ? fmtDur(r.elapsed_sec) : "") +
+                (r.eta_sec ? " · ≈ осталось " + fmtLeft(r.eta_sec) : "");
+            var count = r.total ? " — " + fmtInt(r.done) + " / " + fmtInt(r.total) +
+                (/данных/.test(r.phase) ? " табл." : "") : "";
+            return '<div class="bk-run" role="status">' +
+                '<div class="bk-run-hd"><span class="bk-run-dot" aria-hidden="true"></span>' +
+                "<b>" + esc(what) + "</b>" +
+                '<span class="bk-run-meta">задача #' + r.job_id + (meta ? " · " + esc(meta) : "") + "</span>" +
+                (r.status === "stopping" ? '<span class="bk-run-meta">останавливается…</span>'
+                    : CAN_STOP ? '<button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" data-run-stop="' + r.job_id + '">' +
+                      icon("x-circle") + "Остановить</button>" : "") +
+                "</div>" +
+                '<div class="bk-run-line"><div class="bk-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' +
+                Math.round(pct) + '" aria-label="Ход задачи #' + r.job_id + '"><span style="width: ' + pct.toFixed(1) + '%"></span></div>' +
+                '<span class="bk-run-pct">' + pct.toFixed(0) + "%</span></div>" +
+                '<div class="bk-run-phase">' + esc(r.phase + count) + "</div></div>";
+        }).join("");
+
+        if (html === runHtml) { return; }
+        runHtml = html;
+        $("gpbRun").innerHTML = html;
+    }
+
+    function pollRun() {
+        clearTimeout(runTimer);
+        runTimer = null;
+        var seq = ++runSeq, cid = state.cid;
+        api("/api/backup/progress?connection_id=" + cid).then(function (d) {
+            if (seq !== runSeq || cid !== state.cid) { return; }
+            if (!d.ok) { return; }
+            var ids = d.running.map(function (r) { return r.job_id; }).join(",");
+            if (runIds !== null && ids !== runIds) { load(); }
+            runIds = ids;
+            renderRun(d.running);
+            if (d.running.length) { runTimer = setTimeout(pollRun, 3000); }
+        }).catch(function () {
+            if (seq === runSeq) { runTimer = setTimeout(pollRun, 10000); }
+        });
+    }
+
+    $("gpbRun").addEventListener("click", function (e) {
+        var btn = e.target.closest("[data-run-stop]");
+        if (!btn) { return; }
+        var id = btn.dataset.runStop;
+        confirmThen("Остановить задачу #" + id + "? Процесс gpbackup/gprestore будет прерван, незавершённая копия не попадёт в список.", function () {
+            btn.disabled = true;
+            api("/api/jobs/" + id + "/stop", {}).then(function (d) {
+                toast(d.ok ? "Остановка запрошена" : (d.message || "Ошибка"), d.ok ? "success" : "error");
+                pollRun();
+            });
+        });
+    });
+
+    /* ------------------------------------------------------------ уведомления */
+    var notifySeq = 0;
+
+    function loadNotify() {
+        var seq = ++notifySeq, cid = state.cid;
+        api("/api/backup/notify?connection_id=" + cid).then(function (d) {
+            if (seq !== notifySeq || cid !== state.cid) { return; }
+            if (!d.ok) {
+                $("gpbNotify").innerHTML = '<div class="bk-ntf-stat err">' + esc(d.message || "Не удалось загрузить") + "</div>";
+                return;
+            }
+            state.notify = d;
+            renderNotify();
+        });
+    }
+
+    function evChip(id, label, on) {
+        return '<label><input type="checkbox" id="' + id + '"' + (on ? " checked" : "") +
+            (CAN_RUN ? "" : " disabled") + ">" + esc(label) + "</label>";
+    }
+
+    function smtpFormHtml(m) {
+        var sec = [["starttls", "STARTTLS"], ["ssl", "SSL/TLS"], ["none", "Без шифрования"]];
+        return '<div class="bk-smtp-form">' +
+            '<div><label class="bk-lbl" for="gpmHost">SMTP-сервер <em>*</em></label><input id="gpmHost" class="bk-input" autocomplete="off" placeholder="smtp.company.kz" value="' + esc(m.host) + '"></div>' +
+            '<div><label class="bk-lbl" for="gpmPort">Порт</label><input id="gpmPort" class="bk-input" inputmode="numeric" value="' + esc(m.port || 587) + '"></div>' +
+            '<div><label class="bk-lbl" for="gpmSec">Защита</label><select id="gpmSec" class="bk-select">' + sec.map(function (x) {
+                return '<option value="' + x[0] + '"' + (m.security === x[0] ? " selected" : "") + ">" + x[1] + "</option>";
+            }).join("") + "</select></div>" +
+            '<div><label class="bk-lbl" for="gpmFrom">Отправитель <em>*</em></label><input id="gpmFrom" class="bk-input" autocomplete="off" placeholder="opsentri@company.kz" value="' + esc(m.from_addr) + '"></div>' +
+            '<div><label class="bk-lbl" for="gpmUser">Логин <span class="opt">— если нужен</span></label><input id="gpmUser" class="bk-input" autocomplete="off" value="' + esc(m.username) + '"></div>' +
+            '<div><label class="bk-lbl" for="gpmPass">Пароль</label><input id="gpmPass" class="bk-input" type="password" autocomplete="new-password" placeholder="' +
+            (m.has_password ? "сохранён — пусто = не менять" : "") + '"></div>' +
+            '<div class="s3"><label class="bk-lbl" for="gpmUrl">Адрес Opsentri для ссылки в письме <span class="opt">— необязательно</span></label><input id="gpmUrl" class="bk-input" autocomplete="off" placeholder="http://172.16.10.8:8080" value="' + esc(m.public_url) + '"></div>' +
+            '<div class="s3 bk-ntf-act"><button class="bk-btn bk-btn-primary bk-btn-sm" type="button" id="gpmSave">Сохранить сервер</button>' +
+            (m.configured ? '<button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" id="gpmCancel">Отмена</button>' : "") +
+            '<span class="bk-ntf-stat">Сервер общий для всех кластеров.</span></div></div>';
+    }
+
+    function renderNotify() {
+        var d = state.notify, n = d.notify, m = d.mail;
+        var sw = $("gpbNotifySwitch");
+        sw.innerHTML = CAN_RUN && n.configured
+            ? '<label class="bk-switch" title="' + (n.enabled ? "Выключить" : "Включить") + ' уведомления"><input type="checkbox" role="switch" id="gpnEnabled"' +
+              (n.enabled ? " checked" : "") + ' aria-label="Уведомления кластера"><span></span></label>' : "";
+
+        var html = '<div class="bk-ntf">';
+
+        if (!m.configured) {
+            html += '<div class="bk-note warn">' + icon("alert") + "<span><b>Почтовый сервер не настроен.</b> " +
+                (d.can_edit_mail ? "Укажите SMTP ниже — он один на все кластеры." : "Попросите администратора указать SMTP-сервер.") +
+                "</span></div>";
+        }
+
+        html += '<div><label class="bk-lbl" for="gpnTo">Получатели <span class="opt">— через запятую или с новой строки</span></label>' +
+            '<textarea id="gpnTo" class="bk-area" rows="2" placeholder="dba@company.kz, oncall@company.kz"' + (CAN_RUN ? "" : " disabled") + ">" +
+            esc(n.recipients.join(", ")) + "</textarea></div>" +
+            '<fieldset><legend class="bk-lbl">Когда писать</legend><div class="bk-ev">' +
+            evChip("gpnDone", "Успешно", n.on_done) + evChip("gpnPartial", "Частично", n.on_partial) +
+            evChip("gpnFailed", "Ошибка", n.on_failed) + evChip("gpnRestore", "И о восстановлениях", n.on_restore) +
+            "</div></fieldset>";
+
+        if (CAN_RUN) {
+            html += '<div class="bk-ntf-act">' +
+                '<button class="bk-btn bk-btn-primary bk-btn-sm" type="button" id="gpnSave">Сохранить</button>' +
+                '<button class="bk-btn bk-btn-outline bk-btn-sm" type="button" id="gpnTest"' + (m.configured ? "" : " disabled") + ">" +
+                icon("message") + "Тестовое письмо</button>" +
+                (n.last_error ? '<span class="bk-ntf-stat err" title="' + esc(n.last_error) + '">Последнее письмо не ушло: ' + esc(n.last_error.slice(0, 120)) + "</span>"
+                    : n.last_sent_at ? '<span class="bk-ntf-stat">Последнее письмо: ' + esc(fmtJobTime(n.last_sent_at)) + "</span>"
+                    : n.configured && !n.enabled ? '<span class="bk-ntf-stat">Уведомления выключены</span>' : "") +
+                "</div>";
+        }
+
+        html += '<div class="bk-smtp">' + icon("message") + "<span>" + (m.configured
+            ? "Сервер <b>" + esc(m.host) + ":" + esc(m.port) + "</b> · " + esc(m.security.toUpperCase()) + " · от <b>" + esc(m.from_addr) + "</b>"
+            : "SMTP-сервер не задан") + "</span>" +
+            (d.can_edit_mail && m.configured && !state.mailOpen
+                ? '<button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" id="gpmOpen">Изменить</button>' : "") + "</div>";
+
+        if (d.can_edit_mail && (state.mailOpen || !m.configured)) { html += smtpFormHtml(m); }
+
+        $("gpbNotify").innerHTML = html + "</div>";
+    }
+
+    function notifyBody(extra) {
+        return Object.assign({
+            connection_id: state.cid,
+            enabled: state.notify.notify.configured ? state.notify.notify.enabled : true,
+            recipients: $("gpnTo").value,
+            on_done: $("gpnDone").checked,
+            on_partial: $("gpnPartial").checked,
+            on_failed: $("gpnFailed").checked,
+            on_restore: $("gpnRestore").checked,
+        }, extra || {});
+    }
+
+    function saveNotify(extra, okText) {
+        return api("/api/backup/notify", notifyBody(extra)).then(function (d) {
+            if (!d.ok) { toast(d.message || "Ошибка", "error"); return; }
+            state.notify = d;
+            renderNotify();
+            toast(okText || "Уведомления сохранены", "success");
+        }).catch(function (e) { toast(String(e), "error"); });
+    }
+
+    var notifyRoot = $("gpbNotify").closest(".bk-panel");
+
+    // перерисовка панели не должна терять несохранённые поля
+    function stashNotify() {
+        var n = state.notify && state.notify.notify;
+        if (!n || !$("gpnTo")) { return; }
+        n.recipients = $("gpnTo").value.split(/[\s,;]+/).filter(Boolean);
+        n.on_done = $("gpnDone").checked;
+        n.on_partial = $("gpnPartial").checked;
+        n.on_failed = $("gpnFailed").checked;
+        n.on_restore = $("gpnRestore").checked;
+    }
+
+    notifyRoot.addEventListener("click", function (e) {
+        var t = e.target.closest("button");
+        if (!t) { return; }
+        if (t.id === "gpnSave") { saveNotify(); }
+        if (t.id === "gpnTest") {
+            t.disabled = true;
+            api("/api/backup/notify/test", { connection_id: state.cid, recipients: $("gpnTo").value }).then(function (d) {
+                t.disabled = false;
+                toast(d.ok ? "Тестовое письмо отправлено: " + d.sent_to.join(", ") : (d.message || "Не отправилось"),
+                      d.ok ? "success" : "error");
+            }).catch(function (err) { t.disabled = false; toast(String(err), "error"); });
+        }
+        if (t.id === "gpmOpen") { stashNotify(); state.mailOpen = true; renderNotify(); $("gpmHost").focus(); }
+        if (t.id === "gpmCancel") { stashNotify(); state.mailOpen = false; renderNotify(); }
+        if (t.id === "gpmSave") {
+            t.disabled = true;
+            api("/api/mail-settings", {
+                host: $("gpmHost").value, port: $("gpmPort").value, security: $("gpmSec").value,
+                from_addr: $("gpmFrom").value, username: $("gpmUser").value,
+                password: $("gpmPass").value, public_url: $("gpmUrl").value,
+            }).then(function (d) {
+                t.disabled = false;
+                if (!d.ok) { toast(d.message || "Ошибка", "error"); return; }
+                stashNotify();
+                state.mailOpen = false;
+                state.notify.mail = d.mail;
+                renderNotify();
+                toast("Почтовый сервер сохранён", "success");
+            }).catch(function (err) { t.disabled = false; toast(String(err), "error"); });
+        }
+    });
+
+    notifyRoot.addEventListener("change", function (e) {
+        if (e.target.id !== "gpnEnabled") { return; }
+        var on = e.target.checked;
+        var n = state.notify.notify;
+        api("/api/backup/notify", {
+            connection_id: state.cid, enabled: on, recipients: n.recipients,
+            on_done: n.on_done, on_partial: n.on_partial, on_failed: n.on_failed, on_restore: n.on_restore,
+        }).then(function (d) {
+            if (!d.ok) { toast(d.message || "Ошибка", "error"); e.target.checked = !on; return; }
+            state.notify = d;
+            renderNotify();
+            toast(on ? "Уведомления включены" : "Уведомления выключены", "success");
+        });
+    });
+
     /* ------------------------------------------------------------ форма */
     function msg(text, cls) {
         var el = $("gpbMsg");
@@ -1841,8 +2151,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         api("/api/backup/start", formConfig()).then(function (d) {
             btn.disabled = false;
             if (!d.ok) { msg(d.message || "Ошибка", "err"); return; }
-            msg("Бэкап запущен — задача #" + d.job_id + ". Ход выполнения — в «Истории операций».", "ok");
-            setTimeout(load, 1500);
+            msg("Бэкап запущен — задача #" + d.job_id + ". Ход — над списком копий.", "ok");
+            setTimeout(pollRun, 1200);
         }).catch(function (e) {
             btn.disabled = false;
             msg(String(e), "err");
@@ -1924,7 +2234,9 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
     setCluster(picker.value);
 
     setInterval(function () {
-        if (document.visibilityState === "visible" && !state.open && menu.hidden) { load(); }
+        if (document.visibilityState !== "visible") { return; }
+        if (!state.open && menu.hidden) { load(); }
+        if (!runTimer) { pollRun(); }
     }, 20000);
 })();
 </script>

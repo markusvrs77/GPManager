@@ -303,6 +303,40 @@ def init_db():
             """
         )
 
+        # почтовый сервер для писем о бэкапах: одна строка на приложение
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mail_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                host TEXT,
+                port INTEGER,
+                security TEXT NOT NULL DEFAULT 'starttls',
+                username TEXT,
+                password TEXT,
+                from_addr TEXT,
+                public_url TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+
+        # кому и о чём писать по бэкапам кластера
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS backup_notify (
+                connection_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                recipients TEXT,
+                on_done INTEGER NOT NULL DEFAULT 1,
+                on_partial INTEGER NOT NULL DEFAULT 1,
+                on_failed INTEGER NOT NULL DEFAULT 1,
+                on_restore INTEGER NOT NULL DEFAULT 1,
+                last_sent_at TEXT,
+                last_error TEXT
+            )
+            """
+        )
+
         # срез прав («Пользователи и гранты»): страница читает его из
         # SQLite и не ходит в источник, пока не нажали «обновить срез»
         # найденные ключи синхронизации: поиск по данным дорогой, поэтому

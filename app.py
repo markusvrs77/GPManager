@@ -3465,6 +3465,93 @@ def api_backup_details():
     return jsonify({"ok": True, **contents})
 
 
+@app.route("/api/backup/progress")
+def api_backup_progress():
+    """Идущие бэкапы и восстановления кластера: этап, счётчик, процент."""
+    from modules.gpbackup import list_running_backup_jobs
+
+    connection_id = request.args.get("connection_id", type=int)
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    if not in_scope([connection_id]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    return jsonify({"ok": True,
+                    "running": list_running_backup_jobs(connection_id)})
+
+
+@app.route("/api/backup/notify", methods=["GET", "POST"])
+def api_backup_notify():
+    """Письма о статусе бэкапов кластера: получатели и события."""
+    from modules import backup_notify as bn
+    from modules.web_auth import user_can
+
+    if request.method == "GET":
+        connection_id = request.args.get("connection_id", type=int)
+    else:
+        data = request.get_json(silent=True) or {}
+        connection_id = data.get("connection_id")
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    if not in_scope([int(connection_id)]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    if request.method == "POST":
+        try:
+            bn.save_backup_notify(int(connection_id), data)
+        except ValueError as e:
+            return jsonify({"ok": False, "message": str(e)}), 400
+
+    return jsonify({
+        "ok": True,
+        "notify": bn.get_backup_notify(int(connection_id)),
+        "mail": bn.get_mail_settings(),
+        "can_edit_mail": user_can("users.manage"),
+    })
+
+
+@app.route("/api/backup/notify/test", methods=["POST"])
+def api_backup_notify_test():
+    from modules import backup_notify as bn
+
+    data = request.get_json(silent=True) or {}
+    connection_id = data.get("connection_id")
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    if not in_scope([int(connection_id)]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    try:
+        sent = bn.send_test(int(connection_id), data.get("recipients") or None)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": "{}: {}".format(
+            type(e).__name__, str(e)[:500])}), 502
+
+    return jsonify({"ok": True, "sent_to": sent})
+
+
+@app.route("/api/mail-settings", methods=["GET", "POST"])
+def api_mail_settings():
+    """SMTP-сервер приложения. Пароль наружу не отдаётся."""
+    from modules import backup_notify as bn
+
+    if request.method == "POST":
+        try:
+            bn.save_mail_settings(request.get_json(silent=True) or {})
+        except ValueError as e:
+            return jsonify({"ok": False, "message": str(e)}), 400
+
+    return jsonify({"ok": True, "mail": bn.get_mail_settings()})
+
+
 @app.route("/api/backup/report", methods=["POST"])
 def api_backup_report():
     data = request.get_json(silent=True) or {}

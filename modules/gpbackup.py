@@ -1095,6 +1095,178 @@ def _backup_recorded_for_job(job_id):
 def finalize_backup_job(job_id, job_type, config, items, log_text, rc,
                         command_text):
     """
+    Финализация задачи и письмо о её статусе (если кластер подписан;
+    отправка в фоне — сбой почты задачу не трогает).
+    """
+    _finalize_backup_job(job_id, job_type, config, items, log_text, rc,
+                         command_text)
+
+    try:
+        from modules.backup_notify import notify_finished
+
+        notify_finished(job_id, (config or {}).get("connection_id"))
+    except Exception:
+        pass
+
+
+# ------------------------------------------------------------------
+# ход выполнения: этап и счётчики из лога gpbackup / gprestore
+# ------------------------------------------------------------------
+
+# (фраза лога, этап по-русски, % общего хода)
+_PHASES = {
+    "gpbackup": [
+        ("Gathering table state information", "Сбор списка таблиц", 2),
+        ("Acquiring ACCESS SHARE locks", "Блокировки таблиц", 4),
+        ("Gathering additional table metadata", "Чтение метаданных", 10),
+        ("Writing global database metadata", "Запись глобальных метаданных", 12),
+        ("Writing pre-data metadata", "Запись DDL (pre-data)", 14),
+        ("Writing post-data metadata", "Запись DDL (post-data)", 18),
+        ("Writing data to file", "Запись данных", 20),
+        ("Data backup complete", "Данные записаны", 97),
+        ("Beginning cleanup", "Завершение", 99),
+    ],
+    "gprestore": [
+        ("Restoring pre-data metadata", "Создание объектов (pre-data)", 2),
+        ("Pre-data metadata restore complete", "Объекты созданы", 15),
+        ("Restoring data", "Загрузка данных", 15),
+        ("Data restore complete", "Данные загружены", 90),
+        ("Restoring post-data metadata", "Индексы и ограничения (post-data)", 90),
+        ("Post-data metadata restore complete", "Post-data готово", 99),
+        ("Beginning cleanup", "Завершение", 99),
+    ],
+}
+
+# (метка счётчика, этап по-русски, % от, % до)
+_COUNTERS = {
+    "gpbackup": [
+        ("Locks acquired", "Блокировки таблиц", 4, 10),
+        ("Tables backed up", "Запись данных", 20, 97),
+    ],
+    "gprestore": [
+        ("Pre-data objects restored", "Создание объектов (pre-data)", 2, 15),
+        ("Tables restored", "Загрузка данных", 15, 90),
+        ("Post-data objects restored", "Индексы и ограничения (post-data)", 90, 99),
+    ],
+}
+
+_TABLE_OF_RE = re.compile(r"\(table (\d+) of (\d+)\)")
+
+
+def parse_progress(text, job_type):
+    """
+    Хвост лога -> {phase, done, total, percent} по последнему событию:
+    фразе этапа или счётчику «Tables backed up: N / M» (прогресс-бар
+    пишет их через \\r — тоже учитываем).
+    """
+    text = (text or "").replace("\r", "\n")
+    best = (-1, None)
+
+    for phrase, label, pct in _PHASES.get(job_type, []):
+        pos = text.rfind(phrase)
+
+        if pos > best[0]:
+            best = (pos, {"phase": label, "done": None, "total": None,
+                          "percent": pct})
+
+    def counter(pos, label, lo, hi, done, total):
+        pct = lo + (hi - lo) * (min(done, total) / total if total else 0)
+        return (pos, {"phase": label, "done": done, "total": total,
+                      "percent": round(pct, 1)})
+
+    counters = _COUNTERS.get(job_type, [])
+
+    for marker, label, lo, hi in counters:
+        last = None
+
+        for last in re.finditer(re.escape(marker) + r":\s+(\d+)\s*/\s*(\d+)", text):
+            pass
+
+        if last and last.start() > best[0]:
+            best = counter(last.start(), label, lo, hi,
+                           int(last.group(1)), int(last.group(2)))
+
+    # --verbose: «(table N of M)» на каждой таблице — точнее прогресс-бара
+    data = next((c for c in counters if c[0] in ("Tables backed up",
+                                                  "Tables restored")), None)
+    last = None
+
+    for last in _TABLE_OF_RE.finditer(text):
+        pass
+
+    if data and last and last.start() > best[0]:
+        best = counter(last.start(), data[1], data[2], data[3],
+                       int(last.group(1)), int(last.group(2)))
+
+    return best[1] or {"phase": "Запуск", "done": None, "total": None,
+                       "percent": 0}
+
+
+def _log_tail(path, size=256 * 1024):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            end = f.tell()
+            f.seek(max(0, end - size))
+            return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def list_running_backup_jobs(connection_id):
+    """Идущие gpbackup / gprestore кластера с этапом и процентом."""
+    from datetime import datetime
+
+    with sqlite_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, job_type, status, started_at, log_file, config_json
+            FROM jobs
+            WHERE job_type IN ('gpbackup', 'gprestore')
+              AND status IN ('queued', 'running', 'stopping')
+              AND connection_id = ?
+            ORDER BY id
+            """,
+            (int(connection_id),),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    out = []
+
+    for r in rows:
+        progress = parse_progress(_log_tail(r["log_file"]) if r.get("log_file")
+                                  else "", r["job_type"])
+        start = _parse_job_time(r.get("started_at"))
+        elapsed = int((datetime.now() - start).total_seconds()) if start else None
+
+        try:
+            cfg = json.loads(r.get("config_json") or "{}")
+        except ValueError:
+            cfg = {}
+
+        eta = None
+        pct = progress["percent"]
+
+        if elapsed and pct >= 5 and pct < 100 and progress.get("total"):
+            eta = int(elapsed * (100 - pct) / pct)
+
+        out.append(dict(progress, **{
+            "job_id": r["id"],
+            "job_type": r["job_type"],
+            "status": r["status"],
+            "started_at": r.get("started_at"),
+            "elapsed_sec": elapsed,
+            "eta_sec": eta,
+            "backup_type": cfg.get("backup_type"),
+            "backup_timestamp": cfg.get("backup_timestamp"),
+        }))
+
+    return out
+
+
+def _finalize_backup_job(job_id, job_type, config, items, log_text, rc,
+                         command_text):
+    """
     Единая финализация gpbackup/gprestore: и из раннера, и при
     переподхвате после рестарта (rc=None — код возврата неизвестен,
     судим по логу).
