@@ -3339,6 +3339,7 @@ def api_backup_backup_skipped():
 
     from modules.gpbackup import (
         build_gpbackup_command,
+        connection_dbname,
         get_backup_record,
         skipped_backup_config,
     )
@@ -3350,6 +3351,9 @@ def api_backup_backup_skipped():
 
     try:
         config = skipped_backup_config(record)
+        # в реестре копии БД может не быть (копия с диска, подхват
+        # после рестарта) — тогда база подключения кластера
+        config["dbname"] = connection_dbname(config)
         build_gpbackup_command(config)
     except ValueError as e:
         return jsonify({"ok": False, "message": str(e)}), 400

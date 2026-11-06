@@ -258,3 +258,24 @@ def test_start_route_passes_flag(client, monkeypatch):
 
     cfg = json.loads(get_job(r.get_json()["job_id"])["config_json"])
     assert cfg["on_error_continue"] is True
+
+
+def test_backup_skipped_route_without_dbname_in_registry(client, monkeypatch):
+    """Копия без БД в реестре (подхват после рестарта) — база подключения."""
+    monkeypatch.setattr(app_module, "run_gpbackup_job", lambda job_id: None)
+    monkeypatch.setattr(gb, "get_connection_by_id",
+                        lambda cid: {"database_name": "adb_conn"})
+
+    job_id, cfg = _backup_job({"dbname": ""})
+    gb.finalize_backup_job(job_id, "gpbackup", cfg, get_job_items(job_id),
+                           PARTIAL_LOG, 3, "gpbackup ...")
+    rec = _record(job_id)
+    assert rec["dbname"] == "adb_conn"
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute("UPDATE backups SET dbname = NULL WHERE id = ?", (rec["id"],))
+
+    body = client.post("/api/backup/backup-skipped",
+                       json={"backup_id": rec["id"]}).get_json()
+    assert body["ok"] is True, body
+    assert json.loads(get_job(body["job_id"])["config_json"])["dbname"] == "adb_conn"

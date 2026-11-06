@@ -103,6 +103,21 @@ def _clean_names(raw):
     return out
 
 
+def connection_dbname(config):
+    """БД задачи: из конфига, иначе — база подключения кластера."""
+    dbname = (config.get("dbname") or "").strip()
+
+    if dbname or not config.get("connection_id"):
+        return dbname
+
+    try:
+        conn_cfg = get_connection_by_id(int(config["connection_id"])) or {}
+    except Exception:
+        return ""
+
+    return (conn_cfg.get("database_name") or conn_cfg.get("database") or "").strip()
+
+
 def build_gpbackup_command(config):
     """Команда gpbackup из конфига задачи. Чистая функция."""
     dbname = (config.get("dbname") or "").strip()
@@ -1414,7 +1429,8 @@ def _finalize_backup_job(job_id, job_type, config, items, log_text, rc,
             connection_id=int(config.get("connection_id") or 0),
             job_id=job_id,
             backup_timestamp=parse_backup_timestamp(log_text),
-            dbname=config.get("dbname"),
+            # после рестарта в конфиге задачи dbname нет — берём из подключения
+            dbname=connection_dbname(config) or None,
             backup_type=config.get("backup_type") or "full",
             backup_dir=config.get("backup_dir") or "",
             status="done" if ok else ("partial" if partial else "failed"),
