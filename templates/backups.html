@@ -348,6 +348,33 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 .bk-hist-err .bk-report { margin-top: 8px; max-height: 280px; padding: 10px 12px;
   border-radius: 8px; background: var(--surface-2); }
 
+
+/* левая колонка: форма и свёрнутые настройки */
+.bk-left { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+
+/* сворачиваемые панели: заголовок — кнопка, под ним сводка */
+.bk-fold .bk-hd { padding-bottom: 18px; }
+.bk-fold:has(.bk-fold-btn[aria-expanded="true"]) .bk-hd { padding-bottom: 14px; }
+.bk-fold-h { flex: 1; min-width: 0; margin: 0; font-size: inherit; }
+.bk-fold-btn { display: flex; align-items: center; gap: 10px; width: 100%; padding: 0;
+  border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.bk-fold-btn:focus-visible { outline: 2px solid var(--a-bright); outline-offset: 4px; border-radius: 8px; }
+.bk-fold-txt { min-width: 0; flex: 1; }
+.bk-fold-title { display: block; font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+.bk-fold-sum { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: 12.5px;
+  font-weight: 500; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bk-fold-sum:empty { display: none; }
+.bk-fold-sum i { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--idle); }
+.bk-fold-sum.ok i { background: var(--ok); }
+.bk-fold-sum.warn { color: var(--warn); }
+.bk-fold-sum.warn i { background: var(--warn); }
+.bk-fold-sum.crit { color: var(--crit); }
+.bk-fold-sum.crit i { background: var(--crit); }
+.bk-fold-chev { width: 18px; height: 18px; flex: none; color: var(--text-muted);
+  transition: transform var(--dur) var(--ease); }
+.bk-fold-btn:hover .bk-fold-chev { color: var(--text); }
+.bk-fold-btn[aria-expanded="true"] .bk-fold-chev { transform: rotate(180deg); }
+
 /* ход бэкапа / восстановления */
 .bk-run { border: 1px solid color-mix(in srgb, var(--run) 30%, var(--hairline));
   background: var(--run-tint); border-radius: 11px; padding: 12px 14px; margin-bottom: 14px; }
@@ -456,14 +483,101 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 .bk-link:hover { text-decoration: none !important; }
 .bk-link:hover .ic { transform: translateX(3px); }
 
+/* ============ плотность: компактный режим консоли ============ */
+.bk { gap: 14px; }
+.bk-main, .bk-bottom { gap: 14px; }
+.bk-left, .bk-right, .bk-col { gap: 14px; }
+.bk-stats { gap: 12px; }
+
+.bk-hd { padding: 12px 16px 10px; gap: 8px; }
+.bk-hd h2, .bk-fold-title { font-size: 15px; }
+.bk-hd .bk-hd-ico { width: 26px; height: 26px; border-radius: 7px; }
+.bk-hd .bk-hd-ico .ic { width: 15px; height: 15px; }
+.bk-fold .bk-hd { padding-bottom: 12px; }
+.bk-fold:has(.bk-fold-btn[aria-expanded="true"]) .bk-hd { padding-bottom: 10px; }
+.bk-fold-sum { font-size: 12px; margin-top: 1px; }
+.bk-body { padding: 0 16px 14px; }
+
+.bk-stat { padding: 12px 14px; min-height: 0; gap: 12px; }
+.bk-stat-ico { width: 38px; height: 38px; border-radius: 10px; }
+.bk-stat-ico .ic { width: 19px; height: 19px; }
+.bk-stat-lbl, .bk-stat-sub { font-size: 12px; }
+.bk-stat-val { font-size: 18px; line-height: 1.3; }
+.bk-stat-val small { font-size: 12px; }
+.bk-meter { height: 5px; margin-top: 5px; }
+.bk-stat-sub-row .bk-pill { height: 20px; font-size: 11.5px; }
+
+.bk-form .bk-body { gap: 11px; }
+.bk-lbl { font-size: 12.5px; margin-bottom: 4px; }
+.bk-hint { font-size: 12px; margin-top: 4px; line-height: 1.4; }
+.bk-input, .bk-select, .bk-area { padding: 6px 10px; font-size: 13.5px; border-radius: 8px; }
+.bk-select { padding-right: 30px; background-position: right 9px center; background-size: 15px; }
+.bk-area { min-height: 48px; font-size: 12.5px; line-height: 1.45; }
+.bk-affix .ic { left: 10px; width: 15px; height: 15px; }
+.bk-affix .bk-input { padding-left: 32px; }
+.bk-row2 { gap: 10px; }
+.bk-seg { gap: 6px; }
+.bk-seg label { padding: 6px 10px; font-size: 13px; border-radius: 8px; }
+.bk-seg .dot { width: 14px; height: 14px; }
+.bk-check { font-size: 13px; gap: 8px; }
+.bk-check input { width: 16px; height: 16px; }
+.bk-check small { font-size: 12px; }
+
+.bk-btn { height: 34px; padding: 0 12px; font-size: 13px; border-radius: 8px; gap: 6px; }
+.bk-btn .ic { width: 15px; height: 15px; }
+.bk-btn-sm { height: 28px; padding: 0 10px; font-size: 12.5px; }
+.bk-btn-block { height: 38px; font-size: 14px; }
+.bk-icon-btn { width: 28px; height: 28px; }
+.bk-plan { padding-top: 11px; gap: 6px; }
+
+.bk-pill { height: 22px; padding: 0 8px; font-size: 12px; gap: 5px; }
+.bk-pill .ic { width: 13px; height: 13px; }
+
+.bk-table { font-size: 13px; }
+.bk-table th { padding: 7px 10px; font-size: 12px; }
+.bk-table th:first-child, .bk-table td:first-child { padding-left: 12px; }
+.bk-table td { padding: 6px 10px; }
+.bk-foot { padding: 9px 16px 11px; font-size: 12.5px; }
+.bk-page-btn { min-width: 28px; height: 28px; }
+
+.bk-run { padding: 9px 12px; margin-bottom: 10px; }
+.bk-run-line { margin-top: 7px; }
+.bk-run-line .bk-meter { height: 6px; }
+.bk-run-phase { margin-top: 4px; font-size: 12px; }
+
+.bk-sched-head { padding: 8px 12px; }
+.bk-kv li { padding: 7px 12px; font-size: 13px; }
+.bk-kv { grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); }
+.bk-kv li .ic { width: 15px; height: 15px; }
+.bk-switch span { width: 36px; height: 20px; }
+.bk-switch span::after { width: 14px; height: 14px; }
+.bk-switch input:checked + span::after { transform: translateX(16px); }
+
+.bk-drawer { padding: 12px 14px; }
+.bk-drawer h3 { font-size: 13.5px; margin-bottom: 10px; }
+.bk-chip { padding: 6px 12px; min-width: 96px; }
+.bk-chip b { font-size: 16px; }
+.gpr-item { padding: 4px 8px; }
+.bk-ntf { gap: 11px; }
+.bk-ev label { padding: 4px 10px; font-size: 12.5px; }
+.bk-note { padding: 8px 10px; font-size: 12.5px; }
+.bk-empty { padding: 22px 16px; font-size: 13px; }
+.bk-empty b { font-size: 14px; }
+
+.ctx-pick { padding: 5px 10px 5px 7px; min-width: 230px; }
+.ctx-ico { width: 28px; height: 28px; }
+.ctx-pick select { font-size: 13.5px; }
+.ctx-sub { font-size: 11.5px; }
+.ctx-state { height: 40px; padding: 0 12px; font-size: 13px; }
+
 @media (max-width: 1840px) {
   .bk-restore-lbl { display: none; }
-  .bk-table .act .bk-btn-sm { width: 32px; padding: 0; }
+  .bk-table .act .bk-btn-sm { width: 28px; padding: 0; }
 }
 @media (max-width: 1720px) {
   .bk-bottom { grid-template-columns: minmax(0, 1fr); }
 }
-@media (max-width: 1500px) {
+@media (max-width: 1100px) {
   .bk-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 1440px) {
@@ -501,6 +615,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 }
 @media (prefers-reduced-motion: reduce) {
   .bk-skel, .ctx-state[data-state="checking"] i, .bk-run-dot { animation: none; }
+  .bk-fold-chev { transition: none; }
   .bk-switch span, .bk-switch span::after, .bk-meter span, .bk-link .ic { transition: none; }
 }
 </style>
@@ -557,6 +672,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 
     <div class="bk-main">
 
+        <div class="bk-left">
         <!-- новый бэкап -->
         <section class="bk-panel bk-form" aria-labelledby="gpbFormTitle">
             <div class="bk-hd">
@@ -658,6 +774,44 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             </div>
         </section>
 
+        <!-- уведомления -->
+                <section class="bk-panel bk-fold" aria-labelledby="gpbNotifyTitle">
+                    <div class="bk-hd">
+                        <h2 class="bk-fold-h" id="gpbNotifyTitle">
+                            <button class="bk-fold-btn" type="button" aria-expanded="false"
+                                    aria-controls="gpbNotify" data-fold="notify">
+                                <span class="bk-hd-ico">{{ ic('message') }}</span>
+                                <span class="bk-fold-txt">
+                                    <span class="bk-fold-title">Уведомления на почту</span>
+                                    <span class="bk-fold-sum" id="gpbNotifySum"></span>
+                                </span>
+                                {{ ic('chevron-down', 'ic bk-fold-chev') }}
+                            </button>
+                        </h2>
+                        <div class="bk-hd-act" id="gpbNotifySwitch"></div>
+                    </div>
+                    <div class="bk-body" id="gpbNotify" hidden><div class="bk-skel" style="height: 120px;"></div></div>
+                </section>
+
+        <!-- где запускать gpbackup -->
+                <section class="bk-panel bk-fold" aria-labelledby="gpbHostTitle">
+                    <div class="bk-hd">
+                        <h2 class="bk-fold-h" id="gpbHostTitle">
+                            <button class="bk-fold-btn" type="button" aria-expanded="false"
+                                    aria-controls="gpbHost" data-fold="host">
+                                <span class="bk-hd-ico">{{ ic('cpu') }}</span>
+                                <span class="bk-fold-txt">
+                                    <span class="bk-fold-title">Где запускать gpbackup</span>
+                                    <span class="bk-fold-sum" id="gpbHostSum"></span>
+                                </span>
+                                {{ ic('chevron-down', 'ic bk-fold-chev') }}
+                            </button>
+                        </h2>
+                    </div>
+                    <div class="bk-body" id="gpbHost" hidden><div class="bk-skel" style="height: 90px;"></div></div>
+                </section>
+        </div>
+
         <div class="bk-right">
 
             <!-- копии -->
@@ -722,24 +876,6 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                     <div class="bk-body" id="gpbSched"><div class="bk-skel" style="height: 120px;"></div></div>
                 </section>
 
-                <!-- уведомления -->
-                <section class="bk-panel" aria-labelledby="gpbNotifyTitle">
-                    <div class="bk-hd">
-                        <span class="bk-hd-ico">{{ ic('message') }}</span>
-                        <h2 id="gpbNotifyTitle">Уведомления на почту</h2>
-                        <div class="bk-hd-act" id="gpbNotifySwitch"></div>
-                    </div>
-                    <div class="bk-body" id="gpbNotify"><div class="bk-skel" style="height: 120px;"></div></div>
-                </section>
-
-                <!-- где запускать gpbackup -->
-                <section class="bk-panel" aria-labelledby="gpbHostTitle">
-                    <div class="bk-hd">
-                        <span class="bk-hd-ico">{{ ic('cpu') }}</span>
-                        <h2 id="gpbHostTitle">Где запускать gpbackup</h2>
-                    </div>
-                    <div class="bk-body" id="gpbHost"><div class="bk-skel" style="height: 90px;"></div></div>
-                </section>
                 </div>
 
                 <!-- история -->
@@ -2006,7 +2142,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             (m.has_password ? "сохранён — пусто = не менять" : "") + '"></div>' +
             '<div class="s3"><label class="bk-lbl" for="gpmUrl">Адрес Opsentri для ссылки в письме <span class="opt">— необязательно</span></label><input id="gpmUrl" class="bk-input" autocomplete="off" placeholder="http://172.16.10.8:8080" value="' + esc(m.public_url) + '"></div>' +
             '<div class="s3 bk-ntf-act"><button class="bk-btn bk-btn-primary bk-btn-sm" type="button" id="gpmSave">Сохранить сервер</button>' +
-            (m.configured ? '<button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" id="gpmCancel">Отмена</button>' : "") +
+            '<button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" id="gpmCancel">Отмена</button>' +
             '<span class="bk-ntf-stat">Сервер общий для всех кластеров.</span></div></div>';
     }
 
@@ -2047,12 +2183,33 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         html += '<div class="bk-smtp">' + icon("message") + "<span>" + (m.configured
             ? "Сервер <b>" + esc(m.host) + ":" + esc(m.port) + "</b> · " + esc(m.security.toUpperCase()) + " · от <b>" + esc(m.from_addr) + "</b>"
             : "SMTP-сервер не задан") + "</span>" +
-            (d.can_edit_mail && m.configured && !state.mailOpen
-                ? '<button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" id="gpmOpen">Изменить</button>' : "") + "</div>";
+            (d.can_edit_mail && !state.mailOpen
+                ? '<button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" id="gpmOpen">' +
+                  (m.configured ? "Изменить" : "Настроить SMTP") + "</button>" : "") + "</div>";
 
-        if (d.can_edit_mail && (state.mailOpen || !m.configured)) { html += smtpFormHtml(m); }
+        if (d.can_edit_mail && state.mailOpen) { html += smtpFormHtml(m); }
 
         $("gpbNotify").innerHTML = html + "</div>";
+
+        var ev = [];
+        if (n.on_failed) { ev.push("ошибка"); }
+        if (n.on_partial) { ev.push("частично"); }
+        if (n.on_done) { ev.push("успешно"); }
+        if (n.on_restore) { ev.push("восстановления"); }
+        setSum("gpbNotifySum",
+            !m.configured ? ["warn", "SMTP-сервер не настроен"]
+            : n.last_error ? ["crit", "Последнее письмо не ушло"]
+            : !n.configured || !n.recipients.length ? ["", "Получатели не заданы"]
+            : !n.enabled ? ["", "Выключено"]
+            : ["ok", n.recipients.length + " " + plural(n.recipients.length, "получатель", "получателя", "получателей") +
+                     " · " + (ev.join(", ") || "событий нет")]);
+    }
+
+    function setSum(id, v) {
+        var el = $(id);
+        el.className = "bk-fold-sum" + (v[0] ? " " + v[0] : "");
+        el.innerHTML = "<i></i>" + esc(v[1]);
+        el.title = v[1];
     }
 
     function notifyBody(extra) {
@@ -2199,6 +2356,12 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 
         $("gpbHost").innerHTML = html + "</div>";
         renderWhere();
+
+        var mode = { auto: "авто", local: "здесь", ssh: "SSH" }[s.mode] || s.mode;
+        setSum("gpbHostSum",
+            c && !c.pending && !c.ok ? ["crit", "Нет связи: " + d.run_where]
+            : [c && c.ok ? "ok" : "", (d.effective === "ssh" ? "По SSH · " + d.run_where.replace("по SSH на ", "")
+                                                              : "На этом сервере Opsentri") + " · режим " + mode]);
     }
 
     $("gpbHost").addEventListener("click", function (e) {
@@ -2235,6 +2398,25 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                 renderHost();
             });
         }
+    });
+
+    /* ------------------------------------------------------------ сворачивание */
+    // настройки нужны редко: панели свёрнуты, в заголовке — сводка
+    function setFold(btn, open) {
+        btn.setAttribute("aria-expanded", open ? "true" : "false");
+        $(btn.getAttribute("aria-controls")).hidden = !open;
+    }
+
+    document.querySelectorAll("[data-fold]").forEach(function (btn) {
+        var key = "gpb-fold-" + btn.dataset.fold;
+        var open = false;
+        try { open = localStorage.getItem(key) === "1"; } catch (e) {}
+        setFold(btn, open);
+        btn.addEventListener("click", function () {
+            var next = btn.getAttribute("aria-expanded") !== "true";
+            setFold(btn, next);
+            try { localStorage.setItem(key, next ? "1" : "0"); } catch (e) {}
+        });
     });
 
     /* ------------------------------------------------------------ форма */

@@ -140,3 +140,14 @@ def test_admin_errors_saved_block_roundtrip():
     text = "Команда: x\n\nИз лога gpAdminLogs (1):\n- seg0 on sdw1: denied\n\nХвост лога:\n"
 
     assert gb.admin_log_errors(text) == ["seg0 on sdw1: denied"]
+
+
+def test_ssh_failure_reason_and_hint():
+    text = ("Команда: gpbackup --dbname adb  [по SSH на gpadmin@172.17.138.23]\n\n"
+            "(строк с ошибками не найдено)\n\nХвост лога:\n"
+            "gpadmin@172.17.138.23: Permission denied (publickey,gssapi-keyex,password).\n")
+
+    reason = gb.error_reason(text)
+
+    assert reason.startswith("gpadmin@172.17.138.23: Permission denied (publickey")
+    assert "ssh-copy-id" in gb.error_hint(reason)

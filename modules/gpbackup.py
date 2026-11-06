@@ -698,6 +698,21 @@ def error_hint(text):
     """Что делать с типичной ошибкой gprestore — одной фразой."""
     t = (text or "").lower()
 
+    # отказы самого ssh при запуске на координаторе
+    if "permission denied (publickey" in t or "permission denied, please try again" in t:
+        return ("SSH не пустил на координатор: нет ключа. На сервере Opsentri от "
+                "пользователя сервиса: ssh-keygen и ssh-copy-id gpadmin@<координатор>, "
+                "затем «Проверить связь» в блоке «Где запускать gpbackup».")
+    if "host key verification failed" in t or "remote host identification has changed" in t:
+        return ("Ключ хоста координатора изменился или неизвестен — проверьте "
+                "~/.ssh/known_hosts пользователя сервиса Opsentri.")
+    if "could not resolve hostname" in t or "name or service not known" in t:
+        return "Имя координатора не резолвится — укажите IP в «Где запускать gpbackup»."
+    if ("connection refused" in t or "connection timed out" in t) and "ssh" in t:
+        return "Координатор не отвечает по SSH (порт, файрвол)."
+    if "greenplum_path.sh" in t or ("gpbackup" in t and "no such file" in t):
+        return "На координаторе не найден gpbackup — проверьте GPHOME в «Где запускать gpbackup»."
+
     if "unable to create backup directories" in t or \
             "could not create directory" in t:
         return ("gpbackup не смог создать каталог копии на сегментах. Он должен "
@@ -735,10 +750,24 @@ def error_reason(text):
     if errors:
         return _LOG_PREFIX_RE.sub("", errors[0]).strip()[:500]
 
-    for line in (text or "").splitlines():
+    # строк ERROR нет — например, отказ самого ssh («Permission denied
+    # (publickey)»): причина — последняя содержательная строка хвоста лога
+    text = text or ""
+    marker = text.rfind("Хвост лога:")
+    tail = text[marker + len("Хвост лога:"):] if marker >= 0 else text
+    skip = ("Команда:", "(строк с ошибками не найдено)", "Хвост лога:")
+
+    for line in reversed(tail.splitlines()):
         line = line.strip()
 
-        if line and not line.startswith("Команда:"):
+        if line and not line.startswith(skip) and \
+                not line.startswith("OPSENTRI_REMOTE_PID="):
+            return _LOG_PREFIX_RE.sub("", line).strip()[:500]
+
+    for line in text.splitlines():
+        line = line.strip()
+
+        if line and not line.startswith(skip):
             return line[:500]
 
     return None
