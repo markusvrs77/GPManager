@@ -59,3 +59,19 @@ def test_overview_disk_of_visible_dir(client, tmp_path):
 
 def test_overview_requires_connection(client):
     assert client.get("/api/backup/overview").status_code == 400
+
+
+def test_history_shows_partial_copy_as_partial(client):
+    job_id = _backup(905, "20261106205400")
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute("UPDATE jobs SET status='failed', error_message=? WHERE id=?",
+                    ("Backup completed with status Partial: 2 table(s) were skipped", job_id))
+        cur.execute("UPDATE backups SET status='partial', skipped_tables=? WHERE job_id=?",
+                    (json.dumps(["s.a", "s.b"]), job_id))
+
+    d = client.get("/api/backup/overview?connection_id=905").get_json()
+    h = d["history"][0]
+
+    assert h["status"] == "partial"
+    assert h["reason"].startswith("Пропущено 2 табл.")
+    assert "failed" not in h and "hint" not in h

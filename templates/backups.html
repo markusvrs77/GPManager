@@ -331,6 +331,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 .bk-err { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px;
   color: var(--crit); line-height: 1.45; }
 .bk-err .ic { width: 15px; height: 15px; flex: none; margin-top: 1px; }
+.bk-err.warn { color: var(--warn); }
 .bk-err span { flex: 1; min-width: 0; word-break: break-word; }
 .bk-err button { border: 0; background: none; padding: 0; font: inherit; font-weight: 600;
   color: var(--a2); cursor: pointer; white-space: nowrap; }
@@ -1739,14 +1740,15 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             '<th scope="col">Дата и время</th><th scope="col">Операция</th>' +
             '<th scope="col">Статус</th><th scope="col" class="num">Длительность</th></tr></thead><tbody>' +
             list.slice(0, 6).map(function (j) {
-                var bad = j.reason && ["failed", "interrupted", "cancelled"].indexOf(j.status) >= 0;
+                var bad = j.reason && ["failed", "interrupted", "cancelled", "partial"].indexOf(j.status) >= 0;
                 var open = bad && state.histOpen === j.id;
                 var html = '<tr class="bk-r' + (bad ? " has-err" : "") + '"><td>' + esc(fmtJobTime(j.started_at)) + "</td>" +
                     "<td>" + (j.job_type === "gprestore" ? "Восстановление" : "Создание бэкапа") + "</td>" +
                     "<td>" + statusPill(j.status) + "</td>" +
                     '<td class="num">' + esc(fmtDur(j.duration_sec)) + "</td></tr>";
                 if (bad) {
-                    html += '<tr class="bk-hist-err"><td colspan="4"><div class="bk-err">' + icon("alert") +
+                    html += '<tr class="bk-hist-err"><td colspan="4"><div class="bk-err' +
+                        (j.status === "partial" ? " warn" : "") + '">' + icon("alert") +
                         "<span>" + esc(j.reason) + "</span>" +
                         '<button type="button" data-hist="' + j.id + '" aria-expanded="' + (open ? "true" : "false") + '">' +
                         (open ? "Скрыть" : "Подробнее") + "</button></div>" +

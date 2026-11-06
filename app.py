@@ -3036,6 +3036,9 @@ def api_backup_overview():
             })
 
     history = []
+    # задача gpbackup, давшая частичную копию, в истории — «Частично», а не сбой
+    partial_jobs = {b["job_id"]: b for b in backups
+                    if b.get("job_id") and b.get("status") == "partial"}
 
     if user_can("jobs.view"):
         for j in list_recent_jobs(["gpbackup", "gprestore"], 100):
@@ -3055,7 +3058,18 @@ def api_backup_overview():
                 "error": (j.get("error_message") or "")[-8000:] or None,
             })
             item = history[-1]
-            if item["error"] and item["status"] in ("failed", "interrupted"):
+            copy = partial_jobs.get(j["id"]) if j["job_type"] == "gpbackup" else None
+            if copy and item["status"] in ("failed", "done"):
+                try:
+                    skipped = len(_json.loads(copy.get("skipped_tables") or "[]"))
+                except ValueError:
+                    skipped = 0
+                item["status"] = "partial"
+                item["reason"] = (
+                    "Пропущено {} табл. — копия восстановима без них. "
+                    "Добрать — в меню копии (⋮)".format(skipped) if skipped else
+                    "Часть таблиц пропущена — копия восстановима без них")
+            elif item["error"] and item["status"] in ("failed", "interrupted"):
                 # «see log file …»: упавшие операторы — из лога gpAdminLogs
                 failed = failed_statements(j.get("error_message"), limit=20)
                 if failed:
