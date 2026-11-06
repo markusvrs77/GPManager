@@ -735,7 +735,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                         {{ ic('folder') }}
                         <input id="gpbDir" class="bk-input" placeholder="/data/backups" autocomplete="off">
                     </div>
-                    <div class="bk-hint">{{ ic('alert') }}<span>Пусто — каталоги данных сегментов (по умолчанию gpbackup). Для восстановления на другой кластер нужен общий или NFS-путь.</span></div>
+                    <div class="bk-hint">{{ ic('alert') }}<span>Запоминается для кластера. Пусто — каталоги данных сегментов (по умолчанию gpbackup). Для восстановления на другой кластер нужен общий или NFS-путь.</span></div>
+                    <div class="bk-hint" id="gpbDirMsg" hidden></div>
                 </div>
 
                 <div>
@@ -1154,7 +1155,41 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         $("gpbWhere").innerHTML = "";
         $("gpbHost").innerHTML = '<div class="bk-skel" style="height: 90px;"></div>';
         loadHost();
+        loadDir();
     }
+
+    /* ------------------------------------------------- каталог бэкапа */
+    var dirSeq = 0, dirSaved = null;
+    function dirNote(text, err) {
+        var el = $("gpbDirMsg");
+        el.hidden = !text;
+        el.className = "bk-hint" + (err ? " err" : "");
+        el.textContent = text || "";
+    }
+    function loadDir() {
+        var seq = ++dirSeq, cid = state.cid, input = $("gpbDir");
+        dirNote("");
+        api("/api/backup/dir?connection_id=" + cid).then(function (d) {
+            if (seq !== dirSeq || cid !== state.cid || !d.ok) { return; }
+            dirSaved = d.saved ? d.backup_dir : null;
+            // не затираем то, что пользователь уже начал вводить
+            if (document.activeElement !== input) { input.value = d.backup_dir || ""; }
+        });
+    }
+    function saveDir() {
+        var value = $("gpbDir").value.trim(), cid = state.cid;
+        if (value === dirSaved) { return; }
+        api("/api/backup/dir", { connection_id: cid, backup_dir: value }).then(function (d) {
+            if (cid !== state.cid) { return; }
+            if (!d.ok) { dirNote(d.message || "Не удалось сохранить каталог", true); return; }
+            dirSaved = d.backup_dir;
+            $("gpbDir").value = d.backup_dir;
+            dirNote("");
+            toast(d.backup_dir ? "Каталог сохранён: " + d.backup_dir
+                               : "Каталог очищен — каталоги данных сегментов", "success");
+        }).catch(function (e) { dirNote(String(e), true); });
+    }
+    $("gpbDir").addEventListener("change", saveDir);
 
     /* ------------------------------------------------------------ данные */
     var loadSeq = 0;

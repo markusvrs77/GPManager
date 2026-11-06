@@ -666,6 +666,13 @@ def init_db():
         "ALTER TABLE backups ADD COLUMN details_json TEXT"
     )
 
+    # каталог бэкапа кластера — запоминается между запусками (NULL — не задавали)
+    ensure_column_exists(
+        "backup_hosts",
+        "backup_dir",
+        "ALTER TABLE backup_hosts ADD COLUMN backup_dir TEXT"
+    )
+
     # вес таблицы (байты) для взвешенного прогресса и live-счётчик
     ensure_column_exists(
         "job_items",

@@ -151,3 +151,31 @@ def test_ssh_failure_reason_and_hint():
 
     assert reason.startswith("gpadmin@172.17.138.23: Permission denied (publickey")
     assert "ssh-copy-id" in gb.error_hint(reason)
+
+
+def test_backup_dir_is_remembered(client):
+    cid = _cluster("gp-api-dir", "172.17.138.25")
+
+    d = client.get("/api/backup/dir?connection_id={}".format(cid)).get_json()
+    assert d == {"ok": True, "backup_dir": "", "saved": False}
+
+    d = client.post("/api/backup/dir", json={"connection_id": cid,
+                                             "backup_dir": " /dwh-backup/new/ "}).get_json()
+    assert d["backup_dir"] == "/dwh-backup/new"
+
+    d = client.get("/api/backup/dir?connection_id={}".format(cid)).get_json()
+    assert d == {"ok": True, "backup_dir": "/dwh-backup/new", "saved": True}
+
+    # SSH-настройки кластера каталог не затирают, и наоборот
+    client.post("/api/backup/host", json={"connection_id": cid, "mode": "local"})
+    assert gr.get_backup_dir(cid) == "/dwh-backup/new"
+    assert gr.get_host_settings(cid)["mode"] == "local"
+
+    bad = client.post("/api/backup/dir", json={"connection_id": cid,
+                                               "backup_dir": "/x; rm -rf /"})
+    assert bad.status_code == 400
+
+    # пусто — тоже осознанный выбор (каталоги сегментов)
+    client.post("/api/backup/dir", json={"connection_id": cid, "backup_dir": ""})
+    d = client.get("/api/backup/dir?connection_id={}".format(cid)).get_json()
+    assert d == {"ok": True, "backup_dir": "", "saved": True}

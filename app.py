@@ -3002,9 +3002,12 @@ def api_backup_overview():
     last_week = sum(1 for b in alive
                     if str(b.get("backup_timestamp") or "") >= week_ago)
 
-    # диск: каталог последней копии с явным каталогом
-    disk_dir = next((b.get("backup_dir") for b in alive
-                     if (b.get("backup_dir") or "").strip()), "")
+    # диск: сохранённый каталог кластера, иначе каталог последней копии
+    from modules.gp_remote import get_backup_dir
+
+    disk_dir = (get_backup_dir(connection_id) or "").strip() or next(
+        (b.get("backup_dir") for b in alive
+         if (b.get("backup_dir") or "").strip()), "")
 
     schedules = []
 
@@ -3300,6 +3303,14 @@ def api_backup_start():
         config=config,
     )
 
+    # каталог запоминается за кластером — при следующем открытии подставится
+    try:
+        from modules.gp_remote import save_backup_dir
+
+        save_backup_dir(int(connection_id), config["backup_dir"])
+    except ValueError:
+        pass
+
     create_job_items(
         job_id=job_id,
         items=[{
@@ -3594,6 +3605,44 @@ def api_backup_host():
         "run_where": gp_remote.describe(target),
         "can_edit": user_can("connections.edit"),
     })
+
+
+@app.route("/api/backup/dir", methods=["GET", "POST"])
+def api_backup_dir():
+    """Каталог бэкапа кластера: сохранённый, иначе — каталог последней копии."""
+    from modules import gp_remote
+    from modules.gpbackup import list_connection_backups
+
+    if request.method == "GET":
+        connection_id = request.args.get("connection_id", type=int)
+    else:
+        data = request.get_json(silent=True) or {}
+        connection_id = data.get("connection_id")
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    if not in_scope([int(connection_id)]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    if request.method == "POST":
+        try:
+            path = gp_remote.save_backup_dir(int(connection_id),
+                                             data.get("backup_dir"))
+        except ValueError as e:
+            return jsonify({"ok": False, "message": str(e)}), 400
+
+        return jsonify({"ok": True, "backup_dir": path, "saved": True})
+
+    path = gp_remote.get_backup_dir(int(connection_id))
+
+    if path is not None:
+        return jsonify({"ok": True, "backup_dir": path, "saved": True})
+
+    last = next((b.get("backup_dir") for b in list_connection_backups(int(connection_id))
+                 if b.get("status") != "deleted" and (b.get("backup_dir") or "").strip()), "")
+
+    return jsonify({"ok": True, "backup_dir": last or "", "saved": False})
 
 
 @app.route("/api/backup/host/check", methods=["POST"])

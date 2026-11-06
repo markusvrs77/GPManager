@@ -121,6 +121,35 @@ def save_host_settings(connection_id, data):
     return get_host_settings(connection_id)
 
 
+def get_backup_dir(connection_id):
+    """Сохранённый каталог бэкапа кластера; None — ещё не сохраняли."""
+    with sqlite_cursor() as cur:
+        cur.execute("SELECT backup_dir FROM backup_hosts WHERE connection_id = ?",
+                    (int(connection_id),))
+        row = cur.fetchone()
+
+    return None if not row or row["backup_dir"] is None else row["backup_dir"]
+
+
+def save_backup_dir(connection_id, value):
+    """Запомнить каталог бэкапа (пусто — каталоги данных сегментов)."""
+    path = _clean_path(value, "Каталог бэкапа")
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            INSERT INTO backup_hosts (connection_id, backup_dir, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(connection_id) DO UPDATE SET
+                backup_dir = excluded.backup_dir
+            """,
+            (int(connection_id), path,
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+
+    return path
+
+
 def _local_addresses():
     names = {"localhost", socket.gethostname().lower(), socket.getfqdn().lower()}
     addrs = {"127.0.0.1", "::1"}
