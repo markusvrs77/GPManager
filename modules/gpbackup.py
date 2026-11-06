@@ -579,6 +579,104 @@ def get_backup_record(backup_id):
         return dict(row) if row else None
 
 
+def _parse_job_time(value):
+    from datetime import datetime
+
+    try:
+        return datetime.strptime(str(value or "")[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def duration_seconds(started_at, finished_at):
+    """Длительность задачи в секундах или None (не началась / идёт)."""
+    start = _parse_job_time(started_at)
+    end = _parse_job_time(finished_at)
+
+    if start and end and end >= start:
+        return int((end - start).total_seconds())
+
+    return None
+
+
+def _lines(raw):
+    if isinstance(raw, (list, tuple)):
+        items = raw
+    else:
+        items = str(raw or "").splitlines()
+
+    return [str(x).strip() for x in items if str(x).strip()]
+
+
+def backup_scope(config):
+    """Что попало в бэкап по конфигу задачи: схемы, таблицы, файл."""
+    config = config or {}
+
+    return {
+        "schemas": _lines(config.get("include_schemas")),
+        "tables": _lines(config.get("include_tables")),
+        "from_file": bool(config.get("include_table_file")),
+    }
+
+
+def list_connection_backups(connection_id, limit=200):
+    """
+    Копии gpbackup одного кластера для страницы бэкапов: запись реестра
+    плюс длительность и состав из задачи, которая её сделала. Копии,
+    найденные на диске мимо GPManager, задачи не имеют — там None.
+    """
+    with sqlite_cursor() as cur:
+        cur.execute(
+            """
+            SELECT b.*, j.started_at AS job_started_at,
+                   j.finished_at AS job_finished_at,
+                   j.config_json AS job_config
+            FROM backups b
+            LEFT JOIN jobs j ON j.id = b.job_id
+            WHERE b.connection_id = ?
+              AND COALESCE(b.tool, 'gpbackup') = 'gpbackup'
+            ORDER BY b.id DESC
+            LIMIT ?
+            """,
+            (int(connection_id), int(limit)),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+
+    for row in rows:
+        try:
+            config = json.loads(row.pop("job_config", None) or "null")
+        except ValueError:
+            config = None
+
+        row["duration_sec"] = duration_seconds(
+            row.pop("job_started_at", None), row.pop("job_finished_at", None))
+        row["scope"] = backup_scope(config) if config is not None else None
+
+    return rows
+
+
+def backup_dir_usage(path):
+    """
+    Заполненность файловой системы каталога бэкапа на этом хосте
+    (координаторе) -> {path, total, used, free} или None, если каталог
+    не задан (каталоги сегментов) или отсюда не виден.
+    """
+    import shutil
+
+    path = str(path or "").strip()
+
+    if not path or not os.path.isdir(path):
+        return None
+
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return None
+
+    return {"path": path, "total": usage.total, "used": usage.used,
+            "free": usage.free}
+
+
 def list_backups(limit=100, tool=None):
     sql = """
         SELECT b.*, COALESCE(b.tool, 'gpbackup') AS tool,

@@ -2972,6 +2972,94 @@ def api_backup_list():
     return jsonify({"ok": True, "backups": list_backup_records(tool=tool)})
 
 
+@app.route("/api/backup/overview")
+def api_backup_overview():
+    """
+    Всё для страницы бэкапов одного кластера одним запросом: копии
+    (с длительностью и составом), диск каталога, расписание бэкапа и
+    последние операции gpbackup/gprestore.
+    """
+    from datetime import datetime, timedelta
+
+    from modules.gpbackup import backup_dir_usage, list_connection_backups
+    from modules.gpbackup import duration_seconds
+    from modules.web_auth import user_can
+
+    connection_id = request.args.get("connection_id", type=int)
+
+    if not connection_id:
+        return jsonify({"ok": False, "message": "connection_id обязателен"}), 400
+
+    if not in_scope([connection_id]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    backups = list_connection_backups(connection_id)
+    alive = [b for b in backups if b.get("status") != "deleted"]
+
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d%H%M%S")
+    last_week = sum(1 for b in alive
+                    if str(b.get("backup_timestamp") or "") >= week_ago)
+
+    # диск: каталог последней копии с явным каталогом
+    disk_dir = next((b.get("backup_dir") for b in alive
+                     if (b.get("backup_dir") or "").strip()), "")
+
+    schedules = []
+
+    if user_can("schedules.view"):
+        for s in scheduler_store.list_schedules():
+            if s.get("job_type") != "gpbackup" or not schedule_in_scope(s):
+                continue
+            try:
+                cfg = _json.loads(s.get("config_json") or "{}")
+            except ValueError:
+                cfg = {}
+            if str(cfg.get("connection_id")) != str(connection_id):
+                continue
+            schedules.append({
+                "id": s["id"],
+                "name": s.get("name"),
+                "enabled": bool(s.get("enabled")),
+                "cron_expr": s.get("cron_expr"),
+                "next_run_at": s.get("next_run_at"),
+                "backup_type": cfg.get("backup_type") or "full",
+                "jobs": cfg.get("jobs") or 1,
+                "compression_level": cfg.get("compression_level"),
+                "include_schemas": cfg.get("include_schemas") or "",
+                "include_tables": cfg.get("include_tables") or "",
+                "on_error_continue": bool(cfg.get("on_error_continue")),
+            })
+
+    history = []
+
+    if user_can("jobs.view"):
+        for j in list_recent_jobs(["gpbackup", "gprestore"], 100):
+            if j.get("connection_id") != connection_id or not job_in_scope(j):
+                continue
+            history.append({
+                "id": j["id"],
+                "job_type": j["job_type"],
+                "status": j["status"],
+                "started_at": j.get("started_at"),
+                "finished_at": j.get("finished_at"),
+                "duration_sec": duration_seconds(
+                    j.get("started_at"), j.get("finished_at")),
+            })
+            if len(history) == 8:
+                break
+
+    return jsonify({
+        "ok": True,
+        "backups": backups,
+        "stats": {"total": len(alive), "last_week": last_week},
+        "disk": backup_dir_usage(disk_dir),
+        "disk_dir": disk_dir,
+        "schedules": schedules,
+        "can_edit_schedules": user_can("schedules.edit"),
+        "history": history,
+    })
+
+
 @app.route("/pg/backups")
 def pg_backups_page():
     pg_connections = [

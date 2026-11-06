@@ -1,35 +1,40 @@
 /* ============================================================
-   Opsentri design tokens — soft console
-   Warm paper ground, solid cards, one orange accent.
-   Themes: light + dark, default = OS (prefers-color-scheme),
-   overridable via [data-theme] on <html>.
+   Opsentri design tokens — indigo console
+   Deep indigo rail, cool lavender-grey ground, white panels,
+   one violet accent. Themes: light + dark, default = OS
+   (prefers-color-scheme), overridable via [data-theme] on <html>.
 
-   The accent is split into three jobs, because a single orange
-   cannot do all three and still clear AA:
-     --a1        solid fill that carries WHITE text        5.0:1
-     --a2        orange TEXT sitting on the page ground    5.6:1
+   The accent is split into three jobs:
+     --a1        solid fill that carries WHITE text        ≥6:1
+     --a2        violet TEXT on the page ground / panels   ≥6:1
      --a-bright  fills that carry no text: bars, dots, rails
    ============================================================ */
 
 :root {
   /* accent */
-  --a1: #cc3a0d;
-  --a2: #c0330a;
-  --a-bright: #f0562b;
-  --accent-grad: linear-gradient(135deg, #cc3a0d, #b8320a);
+  --a1: #5b3fd6;
+  --a2: #4c31c2;
+  --a-bright: #7a5cf5;
+  --a-tint: #efebff;
+  --accent-grad: linear-gradient(135deg, #6447e6, #4f33c9);
 
-  /* status scale (each clears 4.5:1 on its own ground) */
-  --ok: #167a3c;
-  --warn: #a05a08;
-  --crit: #c22a20;
-  --idle: #6a6961;
-  /* «идёт» синим: акцент #cc3a0d и --crit #c22a20 — почти один оттенок,
-     и запущенная задача читалась как упавшая */
-  --run: #1668c4;
+  /* brand mark keeps its own orange: an identity, not an accent */
+  --brand: #e8590c;
+
+  /* status scale (each clears 4.5:1 on white) */
+  --ok: #17803f;
+  --ok-tint: #e5f6ec;
+  --warn: #9a5a06;
+  --warn-tint: #fdf1dc;
+  --crit: #c5281c;
+  --crit-tint: #fdebe9;
+  --idle: #646378;
+  --run: #1d63c4;
+  --run-tint: #e6f0fc;
 
   /* radius / spacing / elevation */
-  --radius: 22px;
-  --radius-sm: 14px;
+  --radius: 14px;
+  --radius-sm: 9px;
   --radius-pill: 999px;
   --space-1: 4px;
   --space-2: 8px;
@@ -48,70 +53,93 @@
   --font-ui: "Fira Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-mono: "Fira Code", ui-monospace, "Cascadia Code", Consolas, monospace;
 
+  /* ---- sidebar rail (same in both themes: it is the frame) ---- */
+  --sb-bg: linear-gradient(180deg, #1d1b3a 0%, #211d47 60%, #2a2063 100%);
+  --sb-text: #c4c2de;
+  --sb-text-strong: #ffffff;
+  --sb-muted: #8d8bb0;
+  --sb-hover: rgba(255, 255, 255, .06);
+  --sb-active: rgba(122, 92, 245, .30);
+  --sb-line: rgba(255, 255, 255, .08);
+
   /* ---- LIGHT theme (default) ---- */
-  --bg: #f1f0ec;
-  --text: #1a1a17;
-  --text-muted: #6a6961;
+  --bg: #f2f2f8;
+  --text: #1b1a2e;
+  --text-muted: #5f5e74;
   --surface: #ffffff;
-  --surface-2: #f7f6f3;
+  --surface-2: #f6f6fb;
   --solid: #ffffff;
   --glass-blur: 0px;
-  --glass-border: #eae8e2;
-  --hairline: #eae8e2;
-  --shadow: 0 1px 2px rgba(26, 26, 23, .05), 0 8px 24px -12px rgba(26, 26, 23, .16);
+  --glass-border: #e6e5f0;
+  --hairline: #e6e5f0;
+  --shadow: 0 1px 2px rgba(27, 26, 46, .04), 0 6px 20px -10px rgba(40, 32, 99, .14);
+  --shadow-pop: 0 2px 6px rgba(27, 26, 46, .06), 0 18px 40px -16px rgba(40, 32, 99, .28);
   --mesh-a: 0;
   --mesh-b: 0;
-  --table-head: #f7f6f3;
-  --row-hover: #f7f6f3;
-  --ring: rgba(240, 86, 43, .42);
+  --table-head: #f6f6fb;
+  --row-hover: #f6f5fd;
+  --ring: rgba(122, 92, 245, .38);
+  color-scheme: light;
 }
 
-/* ---- DARK theme values (shared block) ---- */
+/* ---- DARK theme values ---- */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --a2: #ff9877;
-    --bg: #111110;
-    --text: #f1f0eb;
-    --text-muted: #aba9a1;
-    --surface: #1c1c19;
-    --surface-2: #232320;
-    --solid: #1c1c19;
-    --glass-border: #2e2e29;
-    --hairline: #2e2e29;
+    --a2: #b3a2ff;
+    --a-tint: #2a2450;
+    --bg: #0f0f18;
+    --text: #ecebf6;
+    --text-muted: #a4a3bb;
+    --surface: #181826;
+    --surface-2: #1f1f30;
+    --solid: #181826;
+    --glass-border: #2b2a40;
+    --hairline: #2b2a40;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .7);
-    --mesh-a: 0;
-    --mesh-b: 0;
-    --table-head: #232320;
-    --row-hover: #232320;
-    --ring: rgba(255, 152, 119, .5);
-    --ok: #5cc77f;
-    --warn: #e8b45c;
-    --crit: #ff8a7a;
-    --idle: #aba9a1;
-    --run: #7ab3ff;
+    --shadow-pop: 0 2px 6px rgba(0, 0, 0, .5), 0 18px 40px -16px rgba(0, 0, 0, .8);
+    --table-head: #1f1f30;
+    --row-hover: #222236;
+    --ring: rgba(179, 162, 255, .45);
+    --ok: #5fcf8a;
+    --ok-tint: rgba(95, 207, 138, .14);
+    --warn: #f0b860;
+    --warn-tint: rgba(240, 184, 96, .14);
+    --crit: #ff8d80;
+    --crit-tint: rgba(255, 141, 128, .14);
+    --idle: #a4a3bb;
+    --run: #82b6ff;
+    --run-tint: rgba(130, 182, 255, .14);
+    --sb-bg: linear-gradient(180deg, #13122a 0%, #171535 60%, #201a4d 100%);
+    color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --a2: #ff9877;
-  --bg: #111110;
-  --text: #f1f0eb;
-  --text-muted: #aba9a1;
-  --surface: #1c1c19;
-  --surface-2: #232320;
-  --solid: #1c1c19;
-  --glass-border: #2e2e29;
-  --hairline: #2e2e29;
+  --a2: #b3a2ff;
+  --a-tint: #2a2450;
+  --bg: #0f0f18;
+  --text: #ecebf6;
+  --text-muted: #a4a3bb;
+  --surface: #181826;
+  --surface-2: #1f1f30;
+  --solid: #181826;
+  --glass-border: #2b2a40;
+  --hairline: #2b2a40;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .7);
-  --mesh-a: 0;
-  --mesh-b: 0;
-  --table-head: #232320;
-  --row-hover: #232320;
-  --ring: rgba(255, 152, 119, .5);
-  --ok: #5cc77f;
-  --warn: #e8b45c;
-  --crit: #ff8a7a;
-  --idle: #aba9a1;
-  --run: #7ab3ff;
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .5), 0 18px 40px -16px rgba(0, 0, 0, .8);
+  --table-head: #1f1f30;
+  --row-hover: #222236;
+  --ring: rgba(179, 162, 255, .45);
+  --ok: #5fcf8a;
+  --ok-tint: rgba(95, 207, 138, .14);
+  --warn: #f0b860;
+  --warn-tint: rgba(240, 184, 96, .14);
+  --crit: #ff8d80;
+  --crit-tint: rgba(255, 141, 128, .14);
+  --idle: #a4a3bb;
+  --run: #82b6ff;
+  --run-tint: rgba(130, 182, 255, .14);
+  --sb-bg: linear-gradient(180deg, #13122a 0%, #171535 60%, #201a4d 100%);
+  color-scheme: dark;
 }
 
 /* Surfaces here are already opaque, so reduced transparency only has
