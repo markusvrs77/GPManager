@@ -608,6 +608,14 @@ def init_db():
         "ALTER TABLE backups ADD COLUMN skipped_file TEXT"
     )
 
+    # сводка состава копии (таблиц, схем, размер БД) — из оглавления и
+    # отчёта gpbackup на координаторе, кэш: копия после записи не меняется
+    ensure_column_exists(
+        "backups",
+        "details_json",
+        "ALTER TABLE backups ADD COLUMN details_json TEXT"
+    )
+
     # вес таблицы (байты) для взвешенного прогресса и live-счётчик
     ensure_column_exists(
         "job_items",

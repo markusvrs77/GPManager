@@ -271,6 +271,73 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 .bk-report { font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap;
   word-break: break-word; max-height: 340px; overflow-y: auto; margin: 0;
   color: var(--text); }
+.bk-drawer-act { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.bk-scope-btn { border: 0; background: none; padding: 0; font: inherit; color: inherit;
+  cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; text-align: left; vertical-align: middle;
+  border-bottom: 1px dashed color-mix(in srgb, var(--text-muted) 55%, transparent); }
+.bk-scope-btn:hover { color: var(--a2); border-bottom-color: currentColor; }
+.bk-scope-btn:focus-visible { outline: 2px solid var(--a-bright); outline-offset: 2px; }
+
+/* состав копии */
+.bk-chips { display: flex; flex-wrap: wrap; gap: 10px; }
+.bk-chip { border: 1px solid var(--hairline); border-radius: 10px; padding: 8px 14px;
+  min-width: 108px; }
+.bk-chip b { display: block; font-size: 19px; font-weight: 700; line-height: 1.25;
+  letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.bk-chip span { font-size: 12px; color: var(--text-muted); }
+.bk-chip.warn { border-color: color-mix(in srgb, var(--warn) 40%, var(--hairline));
+  background: var(--warn-tint); }
+.bk-chip.warn b { color: var(--warn); }
+.bk-sub-h { font-size: 12.5px; font-weight: 600; color: var(--text-muted); margin: 14px 0 6px; }
+.bk-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.bk-tag { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12.5px;
+  padding: 3px 9px; border-radius: 7px; background: var(--surface-2);
+  font-family: var(--font-mono); }
+.bk-tag-plain { font-family: inherit; }
+.bk-tag small { color: var(--text-muted); font-size: 11.5px; font-variant-numeric: tabular-nums;
+  font-family: inherit; }
+.bk-src { font-size: 12px; color: var(--text-muted); margin-top: 12px; word-break: break-all; }
+
+/* выбор схем и таблиц при восстановлении */
+.gpr-sec { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
+.bk-seg.gpr-scope { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 460px; }
+.gpr-pick { border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; }
+.gpr-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 8px;
+  border-bottom: 1px solid var(--hairline); background: var(--surface-2); }
+.gpr-tools .bk-input { flex: 1 1 220px; width: auto; height: 34px; padding: 6px 10px; }
+.gpr-count { margin-left: auto; padding: 0 6px; font-size: 12.5px; color: var(--text-muted);
+  white-space: nowrap; font-variant-numeric: tabular-nums; }
+.gpr-list { max-height: 264px; overflow-y: auto; padding: 4px; }
+.gpr-item { display: flex; align-items: center; gap: 10px; padding: 6px 8px; margin: 0;
+  border-radius: 7px; font-size: 13px; cursor: pointer; }
+.gpr-item:hover { background: var(--row-hover); }
+.gpr-item input { width: 16px; height: 16px; flex: none; accent-color: var(--a1); cursor: pointer; }
+.gpr-item .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 12.5px; }
+.gpr-item .nm small { color: var(--text-muted); font-size: inherit; }
+.gpr-item .meta { margin-left: auto; font-size: 12px; color: var(--text-muted);
+  white-space: nowrap; font-variant-numeric: tabular-nums; }
+.gpr-item.is-off { opacity: .5; cursor: not-allowed; }
+.gpr-tag { flex: none; font-size: 11.5px; font-weight: 600; color: var(--warn);
+  background: var(--warn-tint); border-radius: 6px; padding: 1px 6px; }
+.gpr-more { padding: 8px 10px; font-size: 12.5px; color: var(--text-muted); }
+.gpr-conf { display: flex; flex-direction: column; gap: 10px; }
+.gpr-conf legend { margin-bottom: 2px; }
+
+/* причина сбоя в истории */
+.bk-table tr.has-err td { border-bottom-color: transparent; padding-bottom: 4px; }
+.bk-hist-err td { padding-top: 0 !important; white-space: normal !important; }
+.bk-err { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px;
+  color: var(--crit); line-height: 1.45; }
+.bk-err .ic { width: 15px; height: 15px; flex: none; margin-top: 1px; }
+.bk-err span { flex: 1; min-width: 0; word-break: break-word; }
+.bk-err button { border: 0; background: none; padding: 0; font: inherit; font-weight: 600;
+  color: var(--a2); cursor: pointer; white-space: nowrap; }
+.bk-err button:focus-visible { outline: 2px solid var(--a-bright); outline-offset: 2px; }
+.bk-hist-err .bk-report { margin-top: 8px; max-height: 280px; padding: 10px 12px;
+  border-radius: 8px; background: var(--surface-2); }
+
 .bk-skipped { font-size: 13px; color: var(--warn); display: flex; gap: 8px; margin-top: 12px; }
 .bk-skipped .ic { width: 16px; height: 16px; flex: none; margin-top: 1px; }
 .bk-skipped code { color: inherit; font-size: 12.5px; }
@@ -542,7 +609,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                     <h2 id="gpbListTitle">Резервные копии</h2>
                     <div class="bk-hd-act">
                         <button class="bk-btn bk-btn-ghost bk-btn-sm" id="gpbSyncDisk" type="button"
-                                title="Добавить в реестр копии, найденные на диске (gpbackup_manager list-backups)">
+                                title="Добавить в реестр копии, найденные на координаторе (история gpbackup и каталоги копий, включая каталог из формы)">
                             {{ ic('download') }}<span>С диска</span>
                         </button>
                         <button class="bk-btn bk-btn-outline bk-btn-sm" id="gpbRefresh" type="button">
@@ -630,8 +697,12 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         data: null,
         page: 1,
         sort: { key: "ts", dir: "desc" },
-        open: null,          // {id, kind: 'restore' | 'report'}
+        open: null,          // {id, kind: 'restore' | 'report' | 'info'}
         report: {},          // id -> текст отчёта
+        contents: {},        // id -> состав копии (/api/backup/details)
+        detTried: {},        // id -> сводку уже запрашивали
+        rs: null,            // форма восстановления (переживает перерисовку)
+        histOpen: null,      // id задачи, у которой раскрыт текст ошибки
     };
 
     var TYPE_LABELS = {
@@ -728,20 +799,36 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             (extra ? " · " + esc(extra) : "") + "</span>";
     }
 
-    function scopeText(scope) {
-        if (!scope) { return '<span class="muted" title="Копия найдена на диске, состав неизвестен">—</span>'; }
-        if (scope.from_file) { return "Пропущенные таблицы"; }
+    function fmtInt(n) {
+        return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+    }
+
+    /* состав в строке списка: фильтр задачи + сколько таблиц реально в копии */
+    function scopeText(b) {
+        var scope = b.scope, det = b.details;
+        var cnt = det && det.tables != null ? fmtInt(det.tables) + " табл." : "";
+        if (!scope) { return cnt ? esc(cnt) : "—"; }
+        if (scope.from_file) { return esc("Пропущенные таблицы" + (cnt ? " · " + cnt : "")); }
         var parts = [];
         if (scope.schemas.length) {
             parts.push(scope.schemas.slice(0, 2).join(", ") +
                 (scope.schemas.length > 2 ? " +" + (scope.schemas.length - 2) : ""));
+        } else if (!scope.tables.length) {
+            parts.push("Вся БД");
         }
-        if (scope.tables.length) { parts.push(scope.tables.length + " табл."); }
-        return parts.length ? esc(parts.join(" · ")) : "Вся БД";
+        if (cnt) { parts.push(cnt); }
+        else if (scope.tables.length) { parts.push(scope.tables.length + " табл."); }
+        return esc(parts.join(" · "));
     }
 
-    function scopeTitle(scope) {
-        return scope ? scope.schemas.concat(scope.tables).join("\n") : "";
+    function scopeTitle(b) {
+        var lines = b.scope ? b.scope.schemas.concat(b.scope.tables) : [];
+        if (b.details && b.details.tables != null) {
+            lines.push("В копии: " + b.details.tables + " табл." +
+                (b.details.schemas != null ? ", схем: " + b.details.schemas : ""));
+        }
+        lines.push("Нажмите — состав копии");
+        return lines.join("\n");
     }
 
     /* ------------------------------------------------------------ cron */
@@ -959,7 +1046,11 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                 '<td class="c-date">' + esc(fmtTs(b.backup_timestamp)) + "</td>" +
                 '<td class="c-meta">' + esc(TYPE_LABELS[b.backup_type] || b.backup_type || "—") + "</td>" +
                 '<td class="c-meta" title="Длительность">' + esc(fmtDur(b.duration_sec)) + "</td>" +
-                '<td class="scope c-meta" title="' + esc(scopeTitle(b.scope)) + '">' + scopeText(b.scope) + "</td>" +
+                '<td class="scope c-meta" id="gpbScope-' + b.id + '">' +
+                (b.backup_timestamp
+                    ? '<button type="button" class="bk-scope-btn" data-act="info" data-id="' + b.id + '" title="' +
+                      esc(scopeTitle(b)) + '">' + scopeText(b) + "</button>"
+                    : scopeText(b)) + "</td>" +
                 '<td class="c-st"' + (skipped.length ? ' title="Пропущено таблиц: ' + skipped.length + '"' : "") + ">" +
                 statusPill(b.status, skipped.length ? String(skipped.length) : "") + "</td>" +
                 '<td class="act"><span class="act-in">' +
@@ -981,6 +1072,127 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         $("gpbShown").textContent = "Показано " + (from + 1) + "–" + (from + rows.length) +
             " из " + all.length + " " + plural(all.length, "копии", "копий", "копий");
         renderPages(pages);
+        prefetchDetails(rows);
+    }
+
+    /* ------------------------------------------------------------ состав копии */
+    // сколько таблиц в копии — подтягиваем по видимым строкам, по одной
+    var detQueue = [], detBusy = false;
+
+    function prefetchDetails(rows) {
+        rows.forEach(function (b) {
+            if (b.backup_timestamp && !b.details && !state.detTried[b.id] &&
+                    b.status !== "deleted" && b.status !== "failed") {
+                state.detTried[b.id] = true;
+                detQueue.push(b.id);
+            }
+        });
+        pumpDetails();
+    }
+
+    function pumpDetails() {
+        if (detBusy || !detQueue.length) { return; }
+        var id = detQueue.shift();
+        detBusy = true;
+        api("/api/backup/details?backup_id=" + id).then(function (d) {
+            detBusy = false;
+            if (d.ok) { applyContents(id, d, false); }
+            pumpDetails();
+        }).catch(function () { detBusy = false; pumpDetails(); });
+    }
+
+    function applyContents(id, d, withTables) {
+        var prev = state.contents[id];
+        if (!prev || withTables || prev.tables === undefined) { state.contents[id] = d; }
+        var b = byId(id);
+        if (b && d.summary) {
+            b.details = d.summary;
+            var cell = $("gpbScope-" + id);
+            var btn = cell && cell.querySelector(".bk-scope-btn");
+            if (btn) { btn.innerHTML = scopeText(b); btn.title = scopeTitle(b); }
+        }
+    }
+
+    function loadContents(b, withTables) {
+        var have = state.contents[b.id];
+        if (have && (!withTables || have.tables !== undefined)) { return; }
+        api("/api/backup/details?backup_id=" + b.id + (withTables ? "&with_tables=1" : "")).then(function (d) {
+            if (!d.ok) { d = { ok: false, message: d.message || "Ошибка", tables: null }; }
+            applyContents(b.id, d, withTables);
+            if (state.open && state.open.id === b.id) { renderRows(); }
+        }).catch(function (e) {
+            state.contents[b.id] = { ok: false, message: String(e), tables: null };
+            if (state.open && state.open.id === b.id) { renderRows(); }
+        });
+    }
+
+    var OBJ_LABELS = {
+        tables: "Таблицы", schemas: "Схемы", views: "Представления",
+        "materialized views": "Мат. представления", functions: "Функции",
+        sequences: "Последовательности", indexes: "Индексы", types: "Типы",
+        aggregates: "Агрегаты", triggers: "Триггеры", rules: "Правила",
+        constraints: "Ограничения", extensions: "Расширения", procedures: "Процедуры",
+        "external tables": "Внешние таблицы", roles: "Роли", "default privileges": "Права по умолчанию",
+    };
+
+    function chip(val, label, tone) {
+        return '<div class="bk-chip' + (tone ? " " + tone : "") + '"><b>' + esc(val) + "</b><span>" + esc(label) + "</span></div>";
+    }
+
+    function infoHtml(b) {
+        var c = state.contents[b.id];
+        var head = '<div class="bk-drawer"><h3>Состав копии ' + esc(fmtTs(b.backup_timestamp)) + "</h3>";
+        var actions = '<div class="bk-drawer-act">' +
+            ((b.status === "done" || b.status === "partial")
+                ? '<button class="bk-btn bk-btn-outline bk-btn-sm" type="button" data-act="restore" data-id="' + b.id + '">' +
+                  icon("restore") + "Восстановить…</button>" : "") +
+            '<button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" data-act="report" data-id="' + b.id + '">' +
+            icon("file") + "Отчёт gpbackup</button></div>";
+
+        if (!c) { return head + '<div class="bk-skel" style="height: 70px;"></div></div>'; }
+        if (c.ok === false) {
+            return head + '<div class="bk-err">' + icon("alert") + "<span>" + esc(c.message) + "</span></div>" + actions + "</div>";
+        }
+
+        var s = c.summary;
+        if (!s) {
+            return head + '<div class="bk-empty" style="padding: 14px 8px; text-align: left;"><b>Файлы копии не видны с этого хоста</b>' +
+                "Состав читается из оглавления и отчёта gpbackup на координаторе (…/backups/" +
+                esc(String(b.backup_timestamp).slice(0, 8)) + "/" + esc(b.backup_timestamp) +
+                "/). Если копия в другом каталоге — укажите его в форме и нажмите «С диска».</div>" + actions + "</div>";
+        }
+
+        var chips = [];
+        if (s.tables != null) { chips.push(chip(fmtInt(s.tables), plural(s.tables, "таблица", "таблицы", "таблиц") + " в копии")); }
+        if (s.data_tables != null && s.data_tables !== s.tables) { chips.push(chip(fmtInt(s.data_tables), "с данными")); }
+        if (s.skipped) { chips.push(chip(fmtInt(s.skipped), "пропущено — только структура", "warn")); }
+        if (s.schemas != null) { chips.push(chip(fmtInt(s.schemas), plural(s.schemas, "схема", "схемы", "схем"))); }
+        if (s.rows != null) { chips.push(chip(fmtInt(s.rows), "строк")); }
+        if (s.db_size) { chips.push(chip(s.db_size, "размер БД")); }
+
+        var html = head + '<div class="bk-chips">' + chips.join("") + "</div>";
+
+        if (c.schemas && c.schemas.length) {
+            html += '<div class="bk-sub-h">Схемы</div><div class="bk-tags">' +
+                c.schemas.slice(0, 40).map(function (x) {
+                    return '<span class="bk-tag">' + esc(x.name) + "<small>" + fmtInt(x.tables) + "</small></span>";
+                }).join("") +
+                (c.schemas.length > 40 ? '<span class="bk-tag">… ещё ' + (c.schemas.length - 40) + "</span>" : "") + "</div>";
+        }
+
+        var objs = Object.keys(s.objects || {}).filter(function (k) { return k !== "tables" && k !== "schemas"; });
+        if (objs.length) {
+            html += '<div class="bk-sub-h">Прочие объекты</div><div class="bk-tags">' + objs.map(function (k) {
+                return '<span class="bk-tag bk-tag-plain">' + esc(OBJ_LABELS[k] || k) + "<small>" + fmtInt(s.objects[k]) + "</small></span>";
+            }).join("") + "</div>";
+        }
+
+        html += '<div class="bk-src">' + (s.source === "toc" ? "По оглавлению копии" : "По отчёту gpbackup") +
+            (s.gpbackup_version ? " · gpbackup " + esc(s.gpbackup_version) : "") +
+            (s.filtering && s.filtering !== "None" ? " · фильтр: " + esc(s.filtering) : "") +
+            (c.files_dir ? " · " + esc(c.files_dir) : "") + "</div>";
+
+        return html + skippedNote(b) + actions + "</div>";
     }
 
     function renderPages(pages) {
@@ -1028,20 +1240,144 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                 skippedNote(b) + "</div>";
         }
 
-        return '<div class="bk-drawer"><h3>Восстановление копии ' + esc(fmtTs(b.backup_timestamp)) + "</h3>" +
-            '<div class="frow">' +
+        if (state.open.kind === "info") { return infoHtml(b); }
+
+        return restoreHtml(b);
+    }
+
+    /* ------------------------------------------------------------ восстановление */
+    var PICK_LIMIT = 300;
+
+    function rsFor(b) {
+        if (!state.rs || state.rs.id !== b.id) {
+            state.rs = {
+                id: b.id, scope: "full", schemas: {}, tables: {}, manual: "", q: "",
+                conflict: "error", redirect_schema: "", conn: b.connection_id,
+                redirect_db: "", create_db: false, data_only: false,
+            };
+        }
+        return state.rs;
+    }
+
+    function rsSelected(b) {
+        var rs = rsFor(b), c = state.contents[b.id];
+        if (rs.scope === "full") { return []; }
+        if (!c || !c.tables) {
+            return rs.manual.split(/\n/).map(function (x) { return x.trim(); }).filter(Boolean);
+        }
+        return Object.keys(rs.scope === "schemas" ? rs.schemas : rs.tables);
+    }
+
+    function pickItems(b) {
+        var rs = rsFor(b), c = state.contents[b.id], q = rs.q.trim().toLowerCase();
+        var src = rs.scope === "schemas" ? (c.schemas || []) : (c.tables || []);
+        return src.filter(function (x) {
+            return !q || (rs.scope === "schemas" ? x.name : x.fq).toLowerCase().indexOf(q) >= 0;
+        });
+    }
+
+    function pickListHtml(b) {
+        var rs = rsFor(b), items = pickItems(b);
+        if (!items.length) { return '<div class="gpr-more">Ничего не найдено</div>'; }
+        var schemas = rs.scope === "schemas";
+        return items.slice(0, PICK_LIMIT).map(function (x) {
+            var key = schemas ? x.name : x.fq;
+            var on = schemas ? rs.schemas[key] : rs.tables[key];
+            var off = !x.selectable;
+            var meta = schemas ? fmtInt(x.tables) + " табл."
+                               : (x.rows != null ? fmtInt(x.rows) + " стр." : "");
+            return '<label class="gpr-item' + (off ? " is-off" : "") + '"' +
+                (off ? ' title="Имя с особыми символами — укажите его в gprestore вручную"' : "") + ">" +
+                '<input type="checkbox" data-gpr-pick="' + esc(key) + '"' + (on ? " checked" : "") + (off ? " disabled" : "") + ">" +
+                '<span class="nm">' + (schemas ? esc(x.name) : "<small>" + esc(x.schema) + ".</small>" + esc(x.name)) + "</span>" +
+                (x.skipped ? '<span class="gpr-tag" title="Не попала в частичную копию — восстановится пустой">пропущена</span>' : "") +
+                '<span class="meta">' + meta + "</span></label>";
+        }).join("") + (items.length > PICK_LIMIT
+            ? '<div class="gpr-more">Показаны первые ' + PICK_LIMIT + " из " + fmtInt(items.length) + " — уточните поиск.</div>" : "");
+    }
+
+    function pickCountText(b) {
+        var n = rsSelected(b).length;
+        return "Выбрано: " + fmtInt(n);
+    }
+
+    function pickHtml(b) {
+        var rs = rsFor(b), c = state.contents[b.id];
+        var what = rs.scope === "schemas" ? "схемы" : "таблицы";
+
+        if (!c || c.tables === undefined) {
+            return '<div class="gpr-pick"><div class="gpr-more">Читаю состав копии…</div><div class="bk-skel" style="height: 90px; margin: 0 8px 8px;"></div></div>';
+        }
+
+        if (!c.tables) {
+            return '<label class="bk-lbl" for="gprManual">' + (rs.scope === "schemas" ? "Схемы" : "Таблицы") +
+                ' <span class="opt">— ' + (rs.scope === "schemas" ? "по одной в строке" : "schema.table, по одной в строке") + "</span></label>" +
+                '<textarea id="gprManual" class="bk-area" rows="3" placeholder="' +
+                (rs.scope === "schemas" ? "dwh_dm" : "dwh_dm.f_sales") + '">' + esc(rs.manual) + "</textarea>" +
+                (c.note || c.message ? '<div class="bk-hint">' + icon("alert") + "<span>" + esc(c.note || c.message) + "</span></div>" : "");
+        }
+
+        return '<div class="gpr-pick">' +
+            '<div class="gpr-tools">' +
+            '<input id="gprSearch" class="bk-input" type="search" autocomplete="off" placeholder="Найти ' +
+            (rs.scope === "schemas" ? "схему" : "таблицу (схема.таблица)") + '" value="' + esc(rs.q) + '" aria-label="Поиск: ' + what + '">' +
+            '<button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" data-gpr="all">Выбрать найденные</button>' +
+            '<button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" data-gpr="none">Снять</button>' +
+            '<span class="gpr-count" id="gprCount" aria-live="polite">' + pickCountText(b) + "</span></div>" +
+            '<div class="gpr-list" id="gprList">' + pickListHtml(b) + "</div></div>" +
+            (c.note ? '<div class="bk-hint">' + icon("alert") + "<span>" + esc(c.note) + "</span></div>" : "");
+    }
+
+    function restoreHtml(b) {
+        var rs = rsFor(b);
+        var scopes = [["full", "Вся БД"], ["schemas", "Схемы"], ["tables", "Таблицы"]];
+        var html = '<div class="bk-drawer"><h3>Восстановление копии ' + esc(fmtTs(b.backup_timestamp)) + "</h3>" +
+            '<fieldset class="gpr-sec"><legend class="bk-lbl">Что восстановить</legend>' +
+            '<div class="bk-seg gpr-scope">' + scopes.map(function (s) {
+                return '<label><input type="radio" name="gprScope" value="' + s[0] + '"' +
+                    (rs.scope === s[0] ? " checked" : "") + '><span class="dot"></span>' + s[1] + "</label>";
+            }).join("") + "</div></fieldset>";
+
+        if (rs.scope !== "full") {
+            html += '<div class="gpr-sec">' + pickHtml(b) + "</div>" +
+                '<fieldset class="gpr-sec gpr-conf"><legend class="bk-lbl">Если объект уже есть в целевой БД</legend>' +
+                '<label class="bk-check"><input type="radio" name="gprConflict" value="error"' + (rs.conflict === "error" ? " checked" : "") +
+                "><span>Остановиться с ошибкой<small>Безопасно: существующие таблицы не трогаются. Для таблиц, которых в БД нет (удалили) — они создадутся и заполнятся.</small></span></label>" +
+                (rs.scope === "tables"
+                    ? '<label class="bk-check"><input type="radio" name="gprConflict" value="truncate"' + (rs.conflict === "truncate" ? " checked" : "") +
+                      "><span>Заменить данные <code>--truncate-table</code><small>Таблицы должны существовать: их данные удаляются (TRUNCATE) и загружаются из копии. Структура не меняется.</small></span></label>"
+                    : "") +
+                '<label class="bk-check"><input type="radio" name="gprConflict" value="redirect"' + (rs.conflict === "redirect" ? " checked" : "") +
+                "><span>Восстановить в другую схему <code>--redirect-schema</code><small>Рядом с текущими данными, чтобы сравнить или перенести вручную. Схема должна существовать.</small></span></label>" +
+                (rs.conflict === "redirect"
+                    ? '<input id="gprRedirSchema" class="bk-input" placeholder="например, restore_tmp" autocomplete="off" value="' +
+                      esc(rs.redirect_schema) + '" aria-label="Схема для восстановления" style="max-width: 320px;">' : "") +
+                "</fieldset>";
+        }
+
+        html += '<div class="frow">' +
             '<div><label class="bk-lbl" for="gprConn">Куда (подключение)</label>' +
-            '<select id="gprConn" class="bk-select">' + connOptions(b.connection_id) + "</select></div>" +
+            '<select id="gprConn" class="bk-select">' + connOptions(rs.conn) + "</select></div>" +
             '<div><label class="bk-lbl" for="gprRedirect">Redirect-db</label>' +
-            '<input id="gprRedirect" class="bk-input" placeholder="пусто = исходная БД" autocomplete="off"></div>' +
-            '<label class="bk-check" style="padding-bottom: 10px;"><input type="checkbox" id="gprCreateDb"><span>создать БД</span></label>' +
-            '<label class="bk-check" style="padding-bottom: 10px;"><input type="checkbox" id="gprDataOnly"><span>только данные</span></label>' +
+            '<input id="gprRedirect" class="bk-input" placeholder="пусто = исходная БД" autocomplete="off" value="' + esc(rs.redirect_db) + '"></div>' +
+            (rs.conflict === "truncate" && rs.scope === "tables" ? "<span></span>"
+                : '<label class="bk-check" style="padding-bottom: 10px;"><input type="checkbox" id="gprCreateDb"' + (rs.create_db ? " checked" : "") + "><span>создать БД</span></label>") +
+            (rs.scope === "full"
+                ? '<label class="bk-check" style="padding-bottom: 10px;"><input type="checkbox" id="gprDataOnly"' + (rs.data_only ? " checked" : "") + "><span>только данные</span></label>"
+                : "<span></span>") +
             "</div>" +
             '<div style="display: flex; gap: 8px; flex-wrap: wrap;">' +
             '<button class="bk-btn bk-btn-primary bk-btn-sm" type="button" data-act="do-restore" data-id="' + b.id + '">' +
             icon("restore") + "Запустить восстановление</button>" +
             '<button class="bk-btn bk-btn-ghost bk-btn-sm" type="button" data-act="close" data-id="' + b.id + '">Отмена</button></div>' +
             skippedNote(b) + "</div>";
+        return html;
+    }
+
+    function refreshPick(b) {
+        var list = $("gprList"), count = $("gprCount");
+        if (list) { list.innerHTML = pickListHtml(b); }
+        if (count) { count.textContent = pickCountText(b); }
     }
 
     /* ------------------------------------------------------------ расписание */
@@ -1094,10 +1430,20 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             '<th scope="col">Дата и время</th><th scope="col">Операция</th>' +
             '<th scope="col">Статус</th><th scope="col" class="num">Длительность</th></tr></thead><tbody>' +
             list.slice(0, 6).map(function (j) {
-                return '<tr class="bk-r"><td>' + esc(fmtJobTime(j.started_at)) + "</td>" +
+                var bad = j.reason && ["failed", "interrupted", "cancelled"].indexOf(j.status) >= 0;
+                var open = bad && state.histOpen === j.id;
+                var html = '<tr class="bk-r' + (bad ? " has-err" : "") + '"><td>' + esc(fmtJobTime(j.started_at)) + "</td>" +
                     "<td>" + (j.job_type === "gprestore" ? "Восстановление" : "Создание бэкапа") + "</td>" +
                     "<td>" + statusPill(j.status) + "</td>" +
                     '<td class="num">' + esc(fmtDur(j.duration_sec)) + "</td></tr>";
+                if (bad) {
+                    html += '<tr class="bk-hist-err"><td colspan="4"><div class="bk-err">' + icon("alert") +
+                        "<span>" + esc(j.reason) + "</span>" +
+                        '<button type="button" data-hist="' + j.id + '" aria-expanded="' + (open ? "true" : "false") + '">' +
+                        (open ? "Скрыть" : "Подробнее") + "</button></div>" +
+                        (open ? '<pre class="bk-report">' + esc(j.error || "") + "</pre>" : "") + "</td></tr>";
+                }
+                return html;
             }).join("") + "</tbody></table></div>";
     }
 
@@ -1120,6 +1466,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         menuBtn = btn;
         var items = [];
         if (b.backup_timestamp) {
+            items.push('<button type="button" role="menuitem" data-act="info" data-id="' + b.id + '">' + icon("list") + "Состав копии</button>");
             items.push('<button type="button" role="menuitem" data-act="report" data-id="' + b.id + '">' + icon("file") + "Отчёт gpbackup</button>");
         }
         if (b.status === "partial") {
@@ -1177,6 +1524,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         if (!state.open || state.report[b.id] != null) { return; }
         api("/api/backup/report", {
             connection_id: b.connection_id, backup_timestamp: b.backup_timestamp,
+            backup_dir: b.backup_dir || "",
         }).then(function (d) {
             state.report[b.id] = d.ok ? d.report : (d.message || "Ошибка");
             if (state.open && state.open.id === b.id) { renderRows(); }
@@ -1186,32 +1534,83 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         });
     }
 
+    function listText(names, max) {
+        return names.slice(0, max).join(", ") + (names.length > max ? " и ещё " + (names.length - max) : "");
+    }
+
     function restore(b) {
+        var rs = rsFor(b);
+        var picked = rsSelected(b);
+        var partial = rs.scope !== "full";
+
+        if (partial && !picked.length) {
+            toast(rs.scope === "schemas" ? "Выберите хотя бы одну схему" : "Выберите хотя бы одну таблицу", "error");
+            return;
+        }
+        if (partial && rs.conflict === "redirect" && !rs.redirect_schema.trim()) {
+            toast("Укажите схему, в которую восстановить", "error");
+            return;
+        }
+
         var body = {
-            connection_id: parseInt($("gprConn").value, 10),
+            connection_id: parseInt(rs.conn, 10),
             backup_timestamp: b.backup_timestamp,
             backup_dir: b.backup_dir || "",
-            redirect_db: $("gprRedirect").value.trim(),
-            create_db: $("gprCreateDb").checked,
-            data_only: $("gprDataOnly").checked,
+            redirect_db: rs.redirect_db.trim(),
+            create_db: rs.create_db && !(rs.scope === "tables" && rs.conflict === "truncate"),
+            data_only: rs.scope === "full" && rs.data_only,
+            restore_scope: rs.scope,
+            include_schemas: rs.scope === "schemas" ? picked.join("\n") : "",
+            include_tables: rs.scope === "tables" ? picked.join("\n") : "",
+            on_conflict: partial ? rs.conflict : undefined,
+            redirect_schema: partial && rs.conflict === "redirect" ? rs.redirect_schema.trim() : "",
         };
-        var text = "Восстановить копию " + fmtTs(b.backup_timestamp) +
-            (body.redirect_db ? " в БД «" + body.redirect_db + "»" : " поверх исходной БД") +
-            "? Существующие данные могут быть перезаписаны.";
+
+        var where = body.redirect_db ? "в БД «" + body.redirect_db + "»" : "в исходную БД";
+        var text;
+        if (rs.scope === "full") {
+            text = "Восстановить всю копию " + fmtTs(b.backup_timestamp) + " " + where +
+                "? Существующие данные могут быть перезаписаны.";
+        } else {
+            text = "Восстановить из копии " + fmtTs(b.backup_timestamp) + " " +
+                (rs.scope === "schemas" ? "схемы: " : picked.length + " табл.: ") + listText(picked, 6) + " " + where + "?";
+            if (rs.conflict === "truncate") {
+                text += " Данные этих таблиц в целевой БД будут удалены (TRUNCATE) и загружены из копии.";
+            } else if (rs.conflict === "redirect") {
+                text += " Объекты будут созданы в схеме «" + body.redirect_schema + "».";
+            } else {
+                text += " Если какая-то таблица уже есть — восстановление остановится с ошибкой, данные не задублируются.";
+            }
+        }
         if (b.status === "partial") {
-            var n = skippedOf(b).length;
-            text += " Копия частичная: " + (n ? n + " табл." : "часть таблиц") +
-                " восстановятся пустыми (только структура). Если их добирали отдельным " +
-                "бэкапом — восстановите его следом с «только данные».";
+            var skipped = skippedOf(b);
+            var hit = rs.scope === "tables" ? picked.filter(function (t) { return skipped.indexOf(t) >= 0; }) : skipped;
+            if (rs.scope === "full" || hit.length) {
+                text += " Копия частичная: " + (hit.length ? hit.length + " табл." : "часть таблиц") +
+                    " восстановятся пустыми (только структура).";
+            }
         }
         confirmThen(text, function () {
             api("/api/backup/restore", body).then(function (d) {
                 if (!d.ok) { toast(d.message || "Ошибка", "error"); return; }
                 state.open = null;
-                toast("Восстановление запущено: задача #" + d.job_id, "success");
+                state.rs = null;
+                toast("Восстановление запущено: задача #" + d.job_id + ". Ход и ошибки — в «Истории операций».", "success");
                 load();
-            });
+            }).catch(function (e) { toast(String(e), "error"); });
         });
+    }
+
+    function showInfo(b) {
+        toggleOpen(b.id, "info");
+        if (state.open) { loadContents(b, false); }
+    }
+
+    function openRestore(b) {
+        var wasInfo = state.open && state.open.id === b.id && state.open.kind === "info";
+        if (wasInfo) { state.open = null; }
+        toggleOpen(b.id, "restore");
+        if (state.open) { rsFor(b); loadContents(b, true); }
     }
 
     function backupSkipped(b) {
@@ -1258,7 +1657,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         }
         closeMenu(false);
         if (act === "close") { state.open = null; renderRows(); }
-        if (act === "restore") { toggleOpen(b.id, "restore"); }
+        if (act === "restore") { openRestore(b); }
+        if (act === "info") { showInfo(b); }
         if (act === "do-restore") { restore(b); }
         if (act === "report") { showReport(b); }
         if (act === "skipped") { backupSkipped(b); }
@@ -1294,6 +1694,78 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                        : (d.message || "Не удалось переключить"), d.ok ? "success" : "error");
             load();
         }).catch(function (err) { toast(String(err), "error"); load(); });
+    });
+
+    /* форма восстановления: значения живут в state.rs, список — без перерисовки строки */
+    function rsTarget() {
+        var b = state.rs && byId(state.rs.id);
+        return b && state.open && state.open.id === b.id && state.open.kind === "restore" ? b : null;
+    }
+
+    root.addEventListener("input", function (e) {
+        var b = rsTarget(), t = e.target;
+        if (!b) { return; }
+        var rs = state.rs;
+        if (t.id === "gprSearch") { rs.q = t.value; refreshPick(b); }
+        if (t.id === "gprManual") { rs.manual = t.value; }
+        if (t.id === "gprRedirect") { rs.redirect_db = t.value; }
+        if (t.id === "gprRedirSchema") { rs.redirect_schema = t.value; }
+    });
+
+    root.addEventListener("change", function (e) {
+        var b = rsTarget(), t = e.target;
+        if (!b) { return; }
+        var rs = state.rs;
+        if (t.name === "gprScope") {
+            rs.scope = t.value;
+            rs.q = "";
+            if (rs.scope !== "tables" && rs.conflict === "truncate") { rs.conflict = "error"; }
+            renderRows();
+            var first = document.querySelector('input[name="gprScope"]:checked');
+            if (first) { first.focus({ preventScroll: true }); }
+        }
+        if (t.name === "gprConflict") {
+            rs.conflict = t.value;
+            renderRows();
+            var sel = document.querySelector('input[name="gprConflict"]:checked');
+            if (rs.conflict === "redirect" && $("gprRedirSchema")) { $("gprRedirSchema").focus({ preventScroll: true }); }
+            else if (sel) { sel.focus({ preventScroll: true }); }
+        }
+        if (t.matches("[data-gpr-pick]")) {
+            var bag = rs.scope === "schemas" ? rs.schemas : rs.tables;
+            if (t.checked) { bag[t.dataset.gprPick] = true; } else { delete bag[t.dataset.gprPick]; }
+            var cnt = $("gprCount");
+            if (cnt) { cnt.textContent = pickCountText(b); }
+        }
+        if (t.id === "gprConn") { rs.conn = t.value; }
+        if (t.id === "gprCreateDb") { rs.create_db = t.checked; }
+        if (t.id === "gprDataOnly") { rs.data_only = t.checked; }
+    });
+
+    root.addEventListener("click", function (e) {
+        var hist = e.target.closest("[data-hist]");
+        if (hist) {
+            var id = parseInt(hist.dataset.hist, 10);
+            state.histOpen = state.histOpen === id ? null : id;
+            renderHist();
+            var again = document.querySelector('[data-hist="' + id + '"]');
+            if (again) { again.focus({ preventScroll: true }); }
+            return;
+        }
+
+        var bulk = e.target.closest("[data-gpr]");
+        var b = bulk && rsTarget();
+        if (!b) { return; }
+        var rs = state.rs;
+        var bag = rs.scope === "schemas" ? rs.schemas : rs.tables;
+        if (bulk.dataset.gpr === "none") {
+            if (rs.scope === "schemas") { rs.schemas = {}; } else { rs.tables = {}; }
+        } else {
+            pickItems(b).slice(0, 5000).forEach(function (x) {
+                if (x.selectable) { bag[rs.scope === "schemas" ? x.name : x.fq] = true; }
+            });
+        }
+        refreshPick(b);
     });
 
     /* ------------------------------------------------------------ форма */
@@ -1354,7 +1826,9 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         var label = btn.lastElementChild;
         btn.disabled = true;
         label.textContent = "Читаю диск…";
-        api("/api/backup/sync-disk", { connection_id: state.cid }).then(function (d) {
+        api("/api/backup/sync-disk", {
+            connection_id: state.cid, backup_dir: $("gpbDir").value.trim(),
+        }).then(function (d) {
             btn.disabled = false;
             label.textContent = "С диска";
             toast(d.ok ? "На диске " + d.found + " копий, добавлено в реестр: " + d.added

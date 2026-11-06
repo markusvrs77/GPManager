@@ -153,6 +153,7 @@ POLICY = {
     "backups_page": "backups.view",
     "api_backup_list": "backups.view",
     "api_backup_overview": "backups.view",
+    "api_backup_details": "backups.view",
     "pg_backups_page": "backups.view",
     "api_pg_databases": "backups.view",
     "api_backup_start": "backups.run",

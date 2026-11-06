@@ -2982,7 +2982,7 @@ def api_backup_overview():
     from datetime import datetime, timedelta
 
     from modules.gpbackup import backup_dir_usage, list_connection_backups
-    from modules.gpbackup import duration_seconds
+    from modules.gpbackup import duration_seconds, error_reason
     from modules.web_auth import user_can
 
     connection_id = request.args.get("connection_id", type=int)
@@ -3044,6 +3044,10 @@ def api_backup_overview():
                 "finished_at": j.get("finished_at"),
                 "duration_sec": duration_seconds(
                     j.get("started_at"), j.get("finished_at")),
+                # почему не получилось: причина строкой и полный текст
+                "reason": error_reason(j.get("error_message"))
+                if j.get("error_message") else None,
+                "error": (j.get("error_message") or "")[-8000:] or None,
             })
             if len(history) == 8:
                 break
@@ -3347,23 +3351,20 @@ def api_backup_restore():
             "message": "connection_id и backup_timestamp обязательны",
         }), 400
 
-    config = {
-        "connection_id": int(connection_id),
-        "backup_timestamp": str(backup_timestamp),
-        "backup_dir": (data.get("backup_dir") or "").strip(),
-        "redirect_db": (data.get("redirect_db") or "").strip(),
-        "create_db": bool(data.get("create_db")),
-        "data_only": bool(data.get("data_only")),
-        "include_tables": data.get("include_tables") or "",
-        "jobs": data.get("jobs") or 1,
-        "gprestore_path": (data.get("gprestore_path") or "").strip(),
-    }
+    if not in_scope([int(connection_id)]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
 
     try:
-        from modules.gpbackup import build_gprestore_command
+        from modules.gpbackup import (
+            build_gprestore_command,
+            build_restore_config,
+            restore_item_label,
+        )
 
+        # вся БД / схемы / таблицы; без restore_scope — прежний формат
+        config = build_restore_config(data)
         build_gprestore_command(config)
-    except ValueError as e:
+    except (ValueError, TypeError) as e:
         return jsonify({"ok": False, "message": str(e)}), 400
 
     job_id = create_job(
@@ -3376,7 +3377,7 @@ def api_backup_restore():
         job_id=job_id,
         items=[{
             "schema_name": config["redirect_db"] or "",
-            "table_name": "gprestore {}".format(backup_timestamp),
+            "table_name": restore_item_label(config),
             "action": "GPRESTORE",
         }],
     )
@@ -3401,10 +3402,57 @@ def api_backup_sync_disk():
         result = sync_disk_backups(
             int(connection_id),
             manager_path=(data.get("gpbackup_manager_path") or "").strip() or None,
+            backup_dirs=[(data.get("backup_dir") or "").strip()],
         )
         return jsonify({"ok": True, **result})
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
+@app.route("/api/backup/details")
+def api_backup_details():
+    """
+    Состав копии: сколько таблиц и схем, размер БД, счётчики объектов и
+    список таблиц для выбора при восстановлении. Читается с координатора
+    (оглавление и отчёт gpbackup), сводка кэшируется в реестре.
+    """
+    backup_id = request.args.get("backup_id", type=int)
+    data = {
+        "with_tables": request.args.get("with_tables") == "1",
+        "refresh": request.args.get("refresh") == "1",
+    }
+
+    if not backup_id:
+        return jsonify({"ok": False, "message": "backup_id обязателен"}), 400
+
+    from modules.gpbackup import get_backup_record, get_backup_report
+    from modules.gpbackup_files import backup_contents
+
+    record = get_backup_record(int(backup_id))
+
+    if not record:
+        return jsonify({"ok": False, "message": "Копия не найдена"}), 404
+
+    if not in_scope([record.get("connection_id")]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    def report_loader(rec):
+        return get_backup_report(rec["connection_id"], rec["backup_timestamp"])
+
+    try:
+        contents = backup_contents(
+            record,
+            report_loader=report_loader,
+            use_catalog=bool(data.get("with_tables")),
+            refresh=bool(data.get("refresh")),
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+    if not data.get("with_tables"):
+        contents.pop("tables", None)
+
+    return jsonify({"ok": True, **contents})
 
 
 @app.route("/api/backup/report", methods=["POST"])
@@ -3422,7 +3470,10 @@ def api_backup_report():
     try:
         from modules.gpbackup import get_backup_report
 
-        report = get_backup_report(int(connection_id), str(backup_timestamp))
+        report = get_backup_report(
+            int(connection_id), str(backup_timestamp),
+            backup_dir=(data.get("backup_dir") or "").strip(),
+        )
         return jsonify({"ok": True, "report": report[-20000:]})
     except ValueError as e:
         return jsonify({"ok": False, "message": str(e)}), 400

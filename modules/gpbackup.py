@@ -294,10 +294,37 @@ def build_gprestore_command(config):
     if config.get("metadata_only"):
         cmd.append("--metadata-only")
 
-    for table in _clean_names(config.get("include_tables")):
+    schemas = _clean_names(config.get("include_schemas"))
+
+    for schema in schemas:
+        if "." in schema:
+            raise ValueError("Схема без точки: {}".format(schema))
+        cmd += ["--include-schema", schema]
+
+    tables = _clean_names(config.get("include_tables"))
+
+    for table in tables:
         if "." not in table:
             raise ValueError("Таблица должна быть schema.table: {}".format(table))
         cmd += ["--include-table", table]
+
+    # заменить данные выбранных таблиц: TRUNCATE + загрузка без DDL
+    if config.get("truncate_table"):
+        if not tables:
+            raise ValueError("TRUNCATE возможен только для списка таблиц")
+        if not config.get("data_only"):
+            raise ValueError("TRUNCATE требует режима «только данные»")
+        cmd.append("--truncate-table")
+
+    redirect_schema = (config.get("redirect_schema") or "").strip()
+
+    if redirect_schema:
+        if not _IDENT_RE.match(redirect_schema) or "." in redirect_schema:
+            raise ValueError("Некорректное имя схемы: {}".format(redirect_schema))
+        if not (schemas or tables):
+            raise ValueError("Восстановление в другую схему — только для "
+                             "выбранных схем или таблиц")
+        cmd += ["--redirect-schema", redirect_schema]
 
     jobs = int(config.get("jobs") or 1)
 
@@ -313,6 +340,108 @@ def build_gprestore_command(config):
         cmd += extra.split()
 
     return cmd
+
+
+RESTORE_SCOPES = ("full", "schemas", "tables")
+RESTORE_CONFLICTS = ("error", "truncate", "redirect")
+
+
+def build_restore_config(data):
+    """
+    Запрос «Восстановить» -> конфиг задачи gprestore. Чистая функция.
+
+    restore_scope: full — вся БД (как раньше), schemas — выбранные схемы,
+    tables — выбранные таблицы. Для схем и таблиц on_conflict решает, что
+    делать, если объект уже есть в целевой БД:
+      error    — остановиться на первой ошибке (без --on-error-continue,
+                 иначе gprestore пропустит CREATE и допишет данные: дубли);
+      truncate — заменить данные: --data-only --truncate-table (таблицы);
+      redirect — восстановить в другую существующую схему.
+    Без restore_scope — прежнее поведение (совместимость API).
+    """
+    data = data or {}
+
+    config = {
+        "connection_id": int(data.get("connection_id")),
+        "backup_timestamp": str(data.get("backup_timestamp") or ""),
+        "backup_dir": (data.get("backup_dir") or "").strip(),
+        "redirect_db": (data.get("redirect_db") or "").strip(),
+        "create_db": bool(data.get("create_db")),
+        "data_only": bool(data.get("data_only")),
+        "include_tables": data.get("include_tables") or "",
+        "jobs": data.get("jobs") or 1,
+        "gprestore_path": (data.get("gprestore_path") or "").strip(),
+    }
+
+    scope = data.get("restore_scope")
+
+    if not scope:
+        return config
+
+    if scope not in RESTORE_SCOPES:
+        raise ValueError("Неизвестная область восстановления: {}".format(scope))
+
+    config["restore_scope"] = scope
+
+    if scope == "full":
+        config["include_tables"] = ""
+        return config
+
+    if scope == "schemas":
+        config["include_tables"] = ""
+        config["include_schemas"] = data.get("include_schemas") or ""
+
+        if not _clean_names(config["include_schemas"]):
+            raise ValueError("Выберите хотя бы одну схему")
+    elif not _clean_names(config["include_tables"]):
+        raise ValueError("Выберите хотя бы одну таблицу")
+
+    conflict = data.get("on_conflict") or "error"
+
+    if conflict not in RESTORE_CONFLICTS:
+        raise ValueError("Неизвестный режим: {}".format(conflict))
+
+    config["on_conflict"] = conflict
+    config["on_error_continue"] = False
+
+    if conflict == "truncate":
+        if scope != "tables":
+            raise ValueError("Замена данных (TRUNCATE) — только для таблиц: "
+                             "выберите таблицы схемы списком")
+        if config["create_db"]:
+            raise ValueError("TRUNCATE заменяет данные в существующих "
+                             "таблицах — «создать БД» с ним не сочетается")
+        config["data_only"] = True
+        config["truncate_table"] = True
+    elif conflict == "redirect":
+        config["redirect_schema"] = (data.get("redirect_schema") or "").strip()
+
+        if not config["redirect_schema"]:
+            raise ValueError("Укажите схему, в которую восстановить")
+
+    return config
+
+
+def restore_item_label(config):
+    """Подпись строки задачи gprestore: что восстанавливается."""
+    label = "gprestore {}".format(config.get("backup_timestamp"))
+    scope = config.get("restore_scope")
+
+    if scope == "schemas":
+        names = _clean_names(config.get("include_schemas"))
+        label += " · схемы: " + ", ".join(names[:5]) + (
+            " +{}".format(len(names) - 5) if len(names) > 5 else "")
+    elif scope == "tables":
+        names = _clean_names(config.get("include_tables"))
+        label += " · таблиц: {}".format(len(names))
+
+    if config.get("truncate_table"):
+        label += " (TRUNCATE)"
+
+    if config.get("redirect_schema"):
+        label += " → схема {}".format(config["redirect_schema"])
+
+    return label[:250]
 
 
 def build_pg_env(conn_cfg):
@@ -355,6 +484,34 @@ def backup_outcome(text):
         return "partial"
 
     return "failed"
+
+
+_LOG_PREFIX_RE = re.compile(
+    r"^\d{8}:\d{2}:\d{2}:\d{2}\s+\S+:\S+:\S+:\S*-\[(?:CRITICAL|ERROR|WARNING)\]:-")
+
+
+def error_reason(text):
+    """
+    Короткая причина сбоя для истории операций: первая строка
+    CRITICAL/ERROR лога без префикса времени и хоста, иначе первая
+    содержательная строка текста ошибки задачи.
+    """
+    errors = extract_backup_errors(text, limit=50)
+
+    for line in errors:
+        if "[CRITICAL]" in line.upper():
+            return _LOG_PREFIX_RE.sub("", line).strip()[:500]
+
+    if errors:
+        return _LOG_PREFIX_RE.sub("", errors[0]).strip()[:500]
+
+    for line in (text or "").splitlines():
+        line = line.strip()
+
+        if line and not line.startswith("Команда:"):
+            return line[:500]
+
+    return None
 
 
 def extract_backup_errors(text, limit=10):
@@ -440,17 +597,8 @@ def run_manager_command(conn_cfg, action, timestamp=None,
     return proc.returncode, proc.stdout or ""
 
 
-def sync_disk_backups(connection_id, manager_path=None):
-    """
-    Синхронизация реестра с диском: list-backups с координатора и
-    добавление копий, которых нет в нашем реестре (в т.ч. сделанных
-    мимо GPManager). -> {found, added}.
-    """
-    conn_cfg = get_connection_by_id(int(connection_id))
-
-    if not conn_cfg:
-        raise ValueError("Подключение не найдено")
-
+def _manager_disk_backups(conn_cfg, manager_path=None):
+    """Запасной путь: `gpbackup_manager list-backups`."""
     rc, output = run_manager_command(conn_cfg, "list-backups",
                                      manager_path=manager_path, timeout=120)
 
@@ -460,19 +608,63 @@ def sync_disk_backups(connection_id, manager_path=None):
             "\n".join(errors) or "gpbackup_manager rc={}".format(rc)
         )
 
-    disk = parse_manager_backups(output)
+    return [dict(e, status="done", backup_dir="", skipped_file=None)
+            for e in parse_manager_backups(output)]
+
+
+def sync_disk_backups(connection_id, manager_path=None, backup_dirs=()):
+    """
+    Синхронизация реестра с диском: копии, которых нет в нашем реестре
+    (в т.ч. сделанные мимо GPManager), добавляются. -> {found, added, source}.
+
+    Основной источник — файлы gpbackup на координаторе (история и
+    каталоги копий, modules.gpbackup_files); gpbackup_manager — только
+    если файлов отсюда не видно.
+    """
+    from modules.gpbackup_files import list_disk_backups
+
+    conn_cfg = get_connection_by_id(int(connection_id))
+
+    if not conn_cfg:
+        raise ValueError("Подключение не найдено")
 
     with sqlite_cursor() as cur:
         cur.execute(
-            "SELECT backup_timestamp FROM backups WHERE connection_id = ?",
+            "SELECT backup_timestamp, backup_dir FROM backups "
+            "WHERE connection_id = ?",
             (int(connection_id),),
         )
-        known = {row["backup_timestamp"] for row in cur.fetchall()}
+        rows = cur.fetchall()
 
+    known = {row["backup_timestamp"] for row in rows}
+    dirs = [d for d in backup_dirs if d] + \
+        [row["backup_dir"] for row in rows if row["backup_dir"]]
+
+    listing = list_disk_backups(int(connection_id), dirs)
+    disk = listing["backups"]
+    source = "files"
+
+    if not listing["roots"] and not listing["history"]:
+        try:
+            disk = _manager_disk_backups(conn_cfg, manager_path)
+            source = "gpbackup_manager"
+        except Exception as e:
+            raise RuntimeError(
+                "Каталоги копий не видны с этого хоста ({}), а "
+                "gpbackup_manager не сработал: {}".format(
+                    listing["datadir"] or "каталог координатора неизвестен",
+                    str(e)[:500])
+            )
+
+    dbname = conn_cfg.get("database_name") or conn_cfg.get("database")
     added = 0
 
     for entry in disk:
         if entry["timestamp"] in known:
+            continue
+
+        # копии других баз этого кластера — не про это подключение
+        if dbname and entry.get("dbname") and entry["dbname"] != dbname:
             continue
 
         backup_type = entry["backup_type"]
@@ -486,16 +678,33 @@ def sync_disk_backups(connection_id, manager_path=None):
             backup_timestamp=entry["timestamp"],
             dbname=entry["dbname"],
             backup_type=backup_type,
-            backup_dir="",
-            status="done",
+            backup_dir=entry.get("backup_dir") or "",
+            status=entry.get("status") or "done",
+            skipped_file=entry.get("skipped_file"),
         )
+        known.add(entry["timestamp"])
         added += 1
 
-    return {"found": len(disk), "added": added}
+    return {"found": len(disk), "added": added, "source": source}
 
 
-def get_backup_report(connection_id, timestamp, manager_path=None):
-    """Отчёт по копии: `gpbackup_manager display-report <ts>` -> текст."""
+def get_backup_report(connection_id, timestamp, manager_path=None,
+                      backup_dir=""):
+    """
+    Отчёт по копии -> текст. Сначала файл gpbackup_<ts>_report на
+    координаторе, `gpbackup_manager display-report` — запасной путь.
+    """
+    from modules.gpbackup_files import read_report_text
+
+    text = read_report_text({
+        "connection_id": int(connection_id),
+        "backup_timestamp": str(timestamp),
+        "backup_dir": backup_dir or _registry_backup_dir(connection_id, timestamp),
+    })
+
+    if text:
+        return text
+
     conn_cfg = get_connection_by_id(int(connection_id))
 
     if not conn_cfg:
@@ -573,10 +782,31 @@ def insert_backup(connection_id, job_id, backup_timestamp, dbname,
 
 
 def get_backup_record(backup_id):
+    """Запись реестра плюс config_json задачи, сделавшей копию (job_config)."""
     with sqlite_cursor() as cur:
-        cur.execute("SELECT * FROM backups WHERE id = ?", (int(backup_id),))
+        cur.execute(
+            """
+            SELECT b.*, j.config_json AS job_config
+            FROM backups b
+            LEFT JOIN jobs j ON j.id = b.job_id
+            WHERE b.id = ?
+            """,
+            (int(backup_id),),
+        )
         row = cur.fetchone()
         return dict(row) if row else None
+
+
+def _registry_backup_dir(connection_id, timestamp):
+    """Каталог копии по реестру (пусто — каталоги данных по умолчанию)."""
+    with sqlite_cursor() as cur:
+        cur.execute(
+            "SELECT backup_dir FROM backups WHERE connection_id = ? "
+            "AND backup_timestamp = ? AND COALESCE(backup_dir, '') <> '' LIMIT 1",
+            (int(connection_id), str(timestamp)),
+        )
+        row = cur.fetchone()
+        return row["backup_dir"] if row else ""
 
 
 def _parse_job_time(value):
@@ -647,6 +877,12 @@ def list_connection_backups(connection_id, limit=200):
             config = json.loads(row.pop("job_config", None) or "null")
         except ValueError:
             config = None
+
+        # сводка состава (таблиц/схем), если её уже читали с координатора
+        try:
+            row["details"] = json.loads(row.pop("details_json", None) or "null")
+        except ValueError:
+            row["details"] = None
 
         row["duration_sec"] = duration_seconds(
             row.pop("job_started_at", None), row.pop("job_finished_at", None))
