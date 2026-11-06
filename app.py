@@ -3039,6 +3039,11 @@ def api_backup_overview():
     # задача gpbackup, давшая частичную копию, в истории — «Частично», а не сбой
     partial_jobs = {b["job_id"]: b for b in backups
                     if b.get("job_id") and b.get("status") == "partial"}
+    for b in backups:
+        for t in b.get("topups") or []:
+            if t.get("job_id") and t.get("status") == "partial":
+                partial_jobs[t["job_id"]] = {"skipped_tables": _json.dumps(
+                    ["?"] * int(t.get("skipped") or 0))}
 
     if user_can("jobs.view"):
         for j in list_recent_jobs(["gpbackup", "gprestore"], 100):
@@ -3057,6 +3062,15 @@ def api_backup_overview():
                 if j.get("error_message") else None,
                 "error": (j.get("error_message") or "")[-8000:] or None,
             })
+            try:
+                jcfg = _json.loads(j.get("config_json") or "{}")
+            except ValueError:
+                jcfg = {}
+            # добор пропущенных и его догрузка при восстановлении
+            if jcfg.get("skipped_from"):
+                history[-1]["topup_of"] = str(jcfg["skipped_from"])
+            if jcfg.get("topup_of"):
+                history[-1]["topup_of"] = str(jcfg["topup_of"])
             item = history[-1]
             copy = partial_jobs.get(j["id"]) if j["job_type"] == "gpbackup" else None
             if copy and item["status"] in ("failed", "done"):
@@ -3358,13 +3372,29 @@ def api_backup_backup_skipped():
         skipped_backup_config,
     )
 
+    from modules.gpbackup import backup_with_topups
+
     record = get_backup_record(int(backup_id))
 
     if not record:
         return jsonify({"ok": False, "message": "Копия не найдена"}), 404
 
+    family = backup_with_topups(int(backup_id))
+
+    if family and family.get("completed"):
+        return jsonify({"ok": False,
+                        "message": "Пропущенные таблицы уже добраны"}), 400
+
+    # после частичного добора добираем то, что не попало уже в него
+    usable = [t for t in (family or {}).get("topups") or []
+              if t["status"] in ("done", "partial")]
+
+    if usable:
+        record = get_backup_record(usable[-1]["id"]) or record
+
     try:
         config = skipped_backup_config(record)
+        config["parent_backup_id"] = family["id"] if family else record["id"]
         # в реестре копии БД может не быть (копия с диска, подхват
         # после рестарта) — тогда база подключения кластера
         config["dbname"] = connection_dbname(config)
@@ -3419,6 +3449,16 @@ def api_backup_restore():
         # вся БД / схемы / таблицы; без restore_scope — прежний формат
         config = build_restore_config(data)
         build_gprestore_command(config)
+
+        # частичная копия с добором: после основного gprestore — данные
+        # пропущенных таблиц из добора (сам находит связку)
+        from modules.gpbackup import backup_with_topups, restore_followups
+
+        family = backup_with_topups(int(data["backup_id"])) \
+            if data.get("backup_id") else None
+
+        if family and str(family.get("backup_timestamp")) == str(backup_timestamp):
+            config["followups"] = restore_followups(family, config)
     except (ValueError, TypeError) as e:
         return jsonify({"ok": False, "message": str(e)}), 400
 
@@ -3439,7 +3479,8 @@ def api_backup_restore():
 
     threading.Thread(target=run_gprestore_job, args=(job_id,), daemon=True).start()
 
-    return jsonify({"ok": True, "job_id": job_id, "message": "Восстановление запущено"})
+    return jsonify({"ok": True, "job_id": job_id, "message": "Восстановление запущено",
+                    "followups": len(config.get("followups") or [])})
 
 
 @app.route("/api/backup/sync-disk", methods=["POST"])
@@ -3742,10 +3783,29 @@ def api_backup_delete():
         }), 400
 
     try:
-        from modules.gpbackup import delete_disk_backup
+        from modules.gpbackup import delete_disk_backup, list_connection_backups
+
+        family = next((b for b in list_connection_backups(int(connection_id), limit=1000)
+                       if str(b.get("backup_timestamp")) == str(backup_timestamp)), None)
 
         delete_disk_backup(int(connection_id), str(backup_timestamp))
-        return jsonify({"ok": True, "message": "Копия удалена с диска"})
+
+        failed = []
+        topups = [t for t in (family or {}).get("topups") or []
+                  if t.get("backup_timestamp") and t.get("status") != "deleted"]
+
+        for t in topups:
+            try:
+                delete_disk_backup(int(connection_id), str(t["backup_timestamp"]))
+            except Exception as e:
+                failed.append("{}: {}".format(t["backup_timestamp"], str(e)[:300]))
+
+        if failed:
+            return jsonify({"ok": False, "message": "Копия удалена, но не доборы — " +
+                            "; ".join(failed)}), 500
+
+        return jsonify({"ok": True, "message": "Копия удалена с диска" + (
+            " вместе с доборами ({})".format(len(topups)) if topups else "")})
     except ValueError as e:
         return jsonify({"ok": False, "message": str(e)}), 400
     except Exception as e:

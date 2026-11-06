@@ -666,6 +666,13 @@ def init_db():
         "ALTER TABLE backups ADD COLUMN details_json TEXT"
     )
 
+    # добор пропущенных таблиц — дочерняя копия основной (частичной)
+    ensure_column_exists(
+        "backups",
+        "parent_id",
+        "ALTER TABLE backups ADD COLUMN parent_id INTEGER"
+    )
+
     # каталог бэкапа кластера — запоминается между запусками (NULL — не задавали)
     ensure_column_exists(
         "backup_hosts",

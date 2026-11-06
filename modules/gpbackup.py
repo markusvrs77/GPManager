@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 
 from db import sqlite_cursor
 
@@ -252,6 +253,8 @@ def skipped_backup_config(backup_row):
         "backup_dir": backup_row.get("backup_dir") or "",
         "on_error_continue": True,
         "skipped_from": backup_row.get("backup_timestamp"),
+        # основная копия: добор хранится внутри неё, а не отдельной копией
+        "parent_backup_id": backup_row.get("parent_id") or backup_row.get("id"),
     }
 
     skipped_file = (backup_row.get("skipped_file") or "").strip()
@@ -460,6 +463,9 @@ def restore_item_label(config):
 
     if config.get("redirect_schema"):
         label += " → схема {}".format(config["redirect_schema"])
+
+    if config.get("topup_of"):
+        label += " · добор к {}".format(config["topup_of"])
 
     return label[:250]
 
@@ -1047,16 +1053,16 @@ def delete_disk_backup(connection_id, timestamp, manager_path=None):
 
 def insert_backup(connection_id, job_id, backup_timestamp, dbname,
                   backup_type, backup_dir, status, tool="gpbackup",
-                  skipped_tables=None, skipped_file=None):
+                  skipped_tables=None, skipped_file=None, parent_id=None):
     with sqlite_cursor(commit=True) as cur:
         cur.execute(
             """
             INSERT INTO backups (
                 connection_id, job_id, backup_timestamp,
                 dbname, backup_type, backup_dir, status, tool,
-                skipped_tables, skipped_file
+                skipped_tables, skipped_file, parent_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 connection_id, job_id, backup_timestamp,
@@ -1064,6 +1070,7 @@ def insert_backup(connection_id, job_id, backup_timestamp, dbname,
                 json.dumps(skipped_tables, ensure_ascii=False)
                 if skipped_tables is not None else None,
                 skipped_file,
+                int(parent_id) if parent_id else None,
             ),
         )
         return cur.lastrowid
@@ -1166,6 +1173,9 @@ def list_connection_backups(connection_id, limit=200):
         except ValueError:
             config = None
 
+        # добор, сделанный до появления parent_id, узнаётся по задаче
+        row["_skipped_from"] = (config or {}).get("skipped_from")
+
         # сводка состава (таблиц/схем), если её уже читали с координатора
         try:
             row["details"] = json.loads(row.pop("details_json", None) or "null")
@@ -1176,7 +1186,223 @@ def list_connection_backups(connection_id, limit=200):
             row.pop("job_started_at", None), row.pop("job_finished_at", None))
         row["scope"] = backup_scope(config) if config is not None else None
 
-    return rows
+    return link_topups(rows)
+
+
+# ------------------------------------------------------------------
+# добор пропущенных таблиц: дочерние копии основной
+# ------------------------------------------------------------------
+
+# leaf-партиция Greenplum: <корень>_1_prt_<имя>
+_LEAF_RE = re.compile(r"^(.+?)_\d+_prt_")
+
+
+def table_root(name):
+    """schema.t_1_prt_467 -> schema.t (корень секционированной таблицы)."""
+    schema, dot, table = str(name).partition(".")
+    match = _LEAF_RE.match(table)
+
+    return "{}.{}".format(schema, match.group(1)) if dot and match else str(name)
+
+
+def _skipped_list(row):
+    try:
+        names = json.loads(row.get("skipped_tables") or "[]")
+    except ValueError:
+        names = []
+
+    return [n for n in names if isinstance(n, str) and n]
+
+
+def link_topups(rows):
+    """
+    Доборы (бэкап пропущенных таблиц частичной копии) — внутрь основной.
+
+    Возвращает только основные копии. У каждой — topups (доборы по
+    времени: метка, статус, covered — какие таблицы добор закрыл, None
+    если имена неизвестны); у частичной ещё missing — чего нет ни в одном
+    доборе (None — неизвестно) и completed — всё добрано.
+    """
+    by_id = {r["id"]: r for r in rows}
+    by_ts = {}
+
+    for r in sorted(rows, key=lambda r: r["id"]):
+        if r.get("backup_timestamp") and r.get("status") != "deleted":
+            by_ts.setdefault(str(r["backup_timestamp"]), r)
+
+    def parent_of(r):
+        if r.get("parent_id"):
+            return by_id.get(r["parent_id"])
+        if r.get("_skipped_from"):
+            p = by_ts.get(str(r["_skipped_from"]))
+            return p if p is not r else None
+        return None
+
+    top, children = [], {}
+
+    for r in rows:
+        parent, seen = parent_of(r), {r["id"]}
+
+        # добор добора сводится к основной копии
+        while parent is not None and parent["id"] not in seen:
+            seen.add(parent["id"])
+            up = parent_of(parent)
+            if up is None or up["id"] in seen:
+                break
+            parent = up
+
+        if parent is not None and parent["id"] != r["id"]:
+            children.setdefault(parent["id"], []).append(r)
+        else:
+            top.append(r)
+
+    for r in rows:
+        r.pop("_skipped_from", None)
+
+    for r in top:
+        kids = sorted(children.get(r["id"], []),
+                      key=lambda k: (str(k.get("backup_timestamp") or ""), k["id"]))
+        partial = r.get("status") == "partial"
+        missing = _skipped_list(r) if partial else []
+        known = bool(missing) or not partial
+        topups = []
+
+        for k in kids:
+            own = _skipped_list(k)
+            usable = k.get("status") in ("done", "partial") and k.get("backup_timestamp")
+            covered = None
+
+            if usable:
+                if known:
+                    covered = [t for t in missing if t not in set(own)]
+                if k["status"] == "done":
+                    missing, known = [], True
+                else:
+                    missing, known = own, bool(own)
+
+            topups.append({
+                "id": k["id"],
+                "job_id": k.get("job_id"),
+                "backup_timestamp": k.get("backup_timestamp"),
+                "backup_dir": k.get("backup_dir") or "",
+                "status": k.get("status"),
+                "duration_sec": k.get("duration_sec"),
+                "skipped": len(own),
+                "covered": covered,
+            })
+
+        r["topups"] = topups
+
+        if partial:
+            r["missing"] = missing if known else None
+            r["completed"] = bool(topups) and known and not missing
+
+    return top
+
+
+def backup_with_topups(backup_id):
+    """Основная копия реестра вместе с доборами (None — нет или это добор)."""
+    record = get_backup_record(int(backup_id))
+
+    if not record:
+        return None
+
+    for row in list_connection_backups(int(record.get("connection_id") or 0), limit=1000):
+        if row["id"] == int(backup_id):
+            return row
+
+    return None
+
+
+def restore_followups(record, config):
+    """
+    Шаги gprestore после основного: данные из доборов копии, только по
+    таблицам из области восстановления. Таблицы к этому моменту уже
+    созданы основным шагом — в частичной копии их DDL есть, поэтому
+    добор грузится --data-only. Пустой список — догружать нечего.
+    """
+    if not record or not record.get("topups"):
+        return []
+
+    scope = config.get("restore_scope") or (
+        "tables" if _clean_names(config.get("include_tables")) else "full")
+    steps = []
+
+    for t in record["topups"]:
+        if t.get("status") not in ("done", "partial") or not t.get("backup_timestamp"):
+            continue
+
+        step = {
+            "connection_id": int(config["connection_id"]),
+            "backup_timestamp": str(t["backup_timestamp"]),
+            "backup_dir": t.get("backup_dir") or "",
+            "redirect_db": config.get("redirect_db") or "",
+            "data_only": True,
+            "jobs": config.get("jobs") or 1,
+            "gprestore_path": config.get("gprestore_path") or "",
+            "on_error_continue": config.get("on_error_continue", True),
+            "topup_of": str(record.get("backup_timestamp") or ""),
+        }
+        covered = t.get("covered")
+
+        if scope != "full":
+            # без списка таблиц добора фильтр по схемам/таблицам не построить
+            if not covered:
+                continue
+
+            if scope == "schemas":
+                chosen = set(_clean_names(config.get("include_schemas")))
+                hit = sorted({n.split(".", 1)[0] for n in covered} & chosen)
+                if not hit:
+                    continue
+                step["restore_scope"] = "schemas"
+                step["include_schemas"] = "\n".join(hit)
+            else:
+                chosen = set(_clean_names(config.get("include_tables")))
+                hit = [n for n in covered if n in chosen or table_root(n) in chosen]
+                if not hit:
+                    continue
+                step["restore_scope"] = "tables"
+                step["include_tables"] = "\n".join(hit)
+                if config.get("truncate_table"):
+                    step["truncate_table"] = True
+
+            if config.get("redirect_schema"):
+                step["redirect_schema"] = config["redirect_schema"]
+
+        build_gprestore_command(step)
+        steps.append(step)
+
+    return steps
+
+
+def _spawn(target, *args):
+    threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def start_next_restore(config):
+    """Основной gprestore прошёл — запустить следующий шаг (добор)."""
+    steps = list((config or {}).get("followups") or [])
+
+    if not steps:
+        return None
+
+    from job_manager import create_job, create_job_items
+
+    step = dict(steps[0])
+    step["followups"] = steps[1:]
+
+    job_id = create_job(job_type="gprestore",
+                        connection_id=int(step["connection_id"]), config=step)
+    create_job_items(job_id=job_id, items=[{
+        "schema_name": step.get("redirect_db") or "",
+        "table_name": restore_item_label(step),
+        "action": "GPRESTORE",
+    }])
+
+    _spawn(run_gprestore_job, job_id)
+
+    return job_id
 
 
 def backup_dir_usage(path):
@@ -1436,6 +1662,7 @@ def _finalize_backup_job(job_id, job_type, config, items, log_text, rc,
             status="done" if ok else ("partial" if partial else "failed"),
             skipped_tables=partial["tables"] if partial else None,
             skipped_file=partial["file"] if partial else None,
+            parent_id=config.get("parent_backup_id"),
         )
 
     if ok:
@@ -1444,6 +1671,9 @@ def _finalize_backup_job(job_id, job_type, config, items, log_text, rc,
 
         refresh_job_progress(job_id)
         mark_job_done(job_id)
+
+        if job_type == "gprestore":
+            start_next_restore(config)
         return
 
     if partial:
@@ -1502,6 +1732,14 @@ def _finalize_backup_job(job_id, job_type, config, items, log_text, rc,
         failed_block = "\n\nИз лога gpAdminLogs ({}):\n{}".format(
             len(admin_errors), "\n".join("- " + e for e in admin_errors))
         errors = errors + admin_errors
+
+    followups = (config or {}).get("followups") or []
+
+    if job_type == "gprestore" and followups:
+        failed_block += (
+            "\n\nДобор не применён: данные из {} (пропущенные таблицы) не "
+            "загружены — сначала исправьте ошибку и восстановите заново."
+        ).format(", ".join(s["backup_timestamp"] for s in followups))
 
     report = "Команда: {}\n\n{}{}\n\nХвост лога:\n{}".format(
         command_text,

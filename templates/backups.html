@@ -422,6 +422,11 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 .bk-smtp-form .s3 { grid-column: 1 / -1; }
 
 .bk-skipped { font-size: 13px; color: var(--warn); display: flex; gap: 8px; margin-top: 12px; }
+.bk-skipped.ok { color: var(--ok); }
+.bk-topups { margin-top: 8px; }
+.bk-topup { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--text-muted);
+  padding: 4px 0; }
+.bk-topup b { color: var(--text); font-weight: 600; }
 .bk-skipped .ic { width: 16px; height: 16px; flex: none; margin-top: 1px; }
 .bk-skipped code { color: inherit; font-size: 12.5px; }
 
@@ -1030,9 +1035,27 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         catch (e) { return []; }
     }
 
+    /* чего ещё нет ни в копии, ни в её доборах */
+    function missingOf(b) {
+        return Array.isArray(b.missing) ? b.missing : skippedOf(b);
+    }
+
+    function usableTopups(b) {
+        return (b.topups || []).filter(function (t) { return t.status === "done" || t.status === "partial"; });
+    }
+
+    /* schema.t_1_prt_467 -> schema.t */
+    function rootOf(name) {
+        var i = name.indexOf(".");
+        if (i < 0) { return name; }
+        var m = /^(.+?)_\d+_prt_/.exec(name.slice(i + 1));
+        return m ? name.slice(0, i + 1) + m[1] : name;
+    }
+
     var STATUS = {
         done: ["ok", "check", "Успешно"],
         partial: ["warn", "alert", "Частично"],
+        topped: ["ok", "check", "Добрано"],
         failed: ["crit", "x-circle", "Ошибка"],
         deleted: ["idle", "trash", "Удалена"],
         running: ["run", "clock", "Идёт"],
@@ -1226,10 +1249,10 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         var last = live[0];
 
         if (last) {
-            var tone = { done: "ok", partial: "warn", failed: "crit" }[last.status] || "idle";
+            var tone = { done: "ok", partial: "warn", failed: "crit" }[last.completed ? "done" : last.status] || "idle";
             $("gpbStatLastIco").className = "bk-stat-ico " + tone;
             $("gpbStatLast").textContent = fmtTs(last.backup_timestamp);
-            $("gpbStatLastSub").innerHTML = statusPill(last.status) + "<span>" +
+            $("gpbStatLastSub").innerHTML = statusPill(last.completed ? "topped" : last.status) + "<span>" +
                 esc(TYPE_LABELS[last.backup_type] || last.backup_type || "") + "</span>";
         } else {
             $("gpbStatLastIco").className = "bk-stat-ico idle";
@@ -1337,7 +1360,12 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 
         $("gpbRows").innerHTML = rows.map(function (b) {
             var partial = b.status === "partial";
-            var skipped = partial ? skippedOf(b) : [];
+            var skipped = partial && !b.completed ? missingOf(b) : [];
+            var tops = usableTopups(b);
+            var stTitle = b.completed
+                ? "Пропущенные таблицы добраны: " + tops.map(function (t) { return fmtTs(t.backup_timestamp); }).join(", ") +
+                  ". При восстановлении догрузятся автоматически."
+                : skipped.length ? "Не хватает таблиц: " + skipped.length + (tops.length ? " (после добора)" : "") : "";
             var restorable = (b.status === "done" || partial) && b.backup_timestamp;
             var isOpen = state.open && state.open.id === b.id;
 
@@ -1351,8 +1379,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                     ? '<button type="button" class="bk-scope-btn" data-act="info" data-id="' + b.id + '" title="' +
                       esc(scopeTitle(b)) + '">' + scopeText(b) + "</button>"
                     : scopeText(b)) + "</td>" +
-                '<td class="c-st"' + (skipped.length ? ' title="Пропущено таблиц: ' + skipped.length + '"' : "") + ">" +
-                statusPill(b.status, skipped.length ? String(skipped.length) : "") + "</td>" +
+                '<td class="c-st"' + (stTitle ? ' title="' + esc(stTitle) + '"' : "") + ">" +
+                statusPill(b.completed ? "topped" : b.status, skipped.length ? String(skipped.length) : "") + "</td>" +
                 '<td class="act"><span class="act-in">' +
                 (restorable
                     ? '<button class="bk-btn bk-btn-outline bk-btn-sm" type="button" data-act="restore" title="Восстановить копию" data-id="' + b.id +
@@ -1522,13 +1550,35 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         }).join("");
     }
 
+    function topupsHtml(b) {
+        var list = b.topups || [];
+        if (!list.length) { return ""; }
+        return '<div class="bk-topups"><div class="bk-sub-h">Добор пропущенных — часть этой копии</div>' +
+            list.map(function (t) {
+                return '<div class="bk-topup">' +
+                    statusPill(t.status, t.status === "partial" && t.skipped ? "не вошло " + t.skipped : "") +
+                    "<span><b>" + esc(fmtTs(t.backup_timestamp)) + "</b>" +
+                    (t.covered ? " · " + t.covered.length + " " + plural(t.covered.length, "таблица", "таблицы", "таблиц") : "") +
+                    (t.duration_sec != null ? " · " + esc(fmtDur(t.duration_sec)) : "") + "</span></div>";
+            }).join("") + "</div>";
+    }
+
     function skippedNote(b) {
         if (b.status !== "partial") { return ""; }
-        var skipped = skippedOf(b);
+        if (b.completed) {
+            var base = skippedOf(b);
+            return '<div class="bk-skipped ok">' + icon("check") + "<span>Пропущенные таблицы" +
+                (base.length ? " (" + base.length + ")" : "") + " добраны. При восстановлении копии они " +
+                "догрузятся из добора автоматически — вторым шагом, <code>gprestore --data-only</code>.</span></div>" + topupsHtml(b);
+        }
+        var skipped = missingOf(b);
+        var tops = usableTopups(b);
         return '<div class="bk-skipped">' + icon("alert") + "<span>" + (skipped.length
-            ? "Не попали в копию и восстановятся пустыми: <code>" + esc(skipped.slice(0, 12).join(", ")) + "</code>" +
+            ? (tops.length ? "Ещё не добрано, восстановятся пустыми: " : "Не попали в копию и восстановятся пустыми: ") +
+              "<code>" + esc(skipped.slice(0, 12).join(", ")) + "</code>" +
               (skipped.length > 12 ? " … и ещё " + (skipped.length - 12) : "")
-            : "Копия частичная — список пропущенных таблиц в отчёте.") + "</span></div>";
+            : "Копия частичная — список пропущенных таблиц в отчёте.") +
+            (tops.length ? " Добранное догрузится при восстановлении автоматически." : "") + "</span></div>" + topupsHtml(b);
     }
 
     function detailHtml(b) {
@@ -1743,7 +1793,9 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                 var bad = j.reason && ["failed", "interrupted", "cancelled", "partial"].indexOf(j.status) >= 0;
                 var open = bad && state.histOpen === j.id;
                 var html = '<tr class="bk-r' + (bad ? " has-err" : "") + '"><td>' + esc(fmtJobTime(j.started_at)) + "</td>" +
-                    "<td>" + (j.job_type === "gprestore" ? "Восстановление" : "Создание бэкапа") + "</td>" +
+                    "<td" + (j.topup_of ? ' title="Добор к копии ' + esc(fmtTs(j.topup_of)) + '"' : "") + ">" +
+                    (j.job_type === "gprestore" ? (j.topup_of ? "Восстановление · добор" : "Восстановление")
+                                                : (j.topup_of ? "Добор пропущенных" : "Создание бэкапа")) + "</td>" +
                     "<td>" + statusPill(j.status) + "</td>" +
                     '<td class="num">' + esc(fmtDur(j.duration_sec)) + "</td></tr>";
                 if (bad) {
@@ -1801,8 +1853,9 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             items.push('<button type="button" role="menuitem" data-act="info" data-id="' + b.id + '">' + icon("list") + "Состав копии</button>");
             items.push('<button type="button" role="menuitem" data-act="report" data-id="' + b.id + '">' + icon("file") + "Отчёт gpbackup</button>");
         }
-        if (b.status === "partial") {
-            items.push('<button type="button" role="menuitem" data-act="skipped" data-id="' + b.id + '">' + icon("plus-square") + "Добрать пропущенные</button>");
+        if (b.status === "partial" && !b.completed) {
+            items.push('<button type="button" role="menuitem" data-act="skipped" data-id="' + b.id + '">' + icon("plus-square") +
+                (usableTopups(b).length ? "Добрать оставшиеся" : "Добрать пропущенные") + "</button>");
         }
         if (b.status !== "deleted" && b.backup_timestamp) {
             items.push("<hr>");
@@ -1886,6 +1939,7 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 
         var body = {
             connection_id: parseInt(rs.conn, 10),
+            backup_id: b.id,
             backup_timestamp: b.backup_timestamp,
             backup_dir: b.backup_dir || "",
             redirect_db: rs.redirect_db.trim(),
@@ -1915,11 +1969,22 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             }
         }
         if (b.status === "partial") {
-            var skipped = skippedOf(b);
-            var hit = rs.scope === "tables" ? picked.filter(function (t) { return skipped.indexOf(t) >= 0; }) : skipped;
-            if (rs.scope === "full" || hit.length) {
-                text += " Копия частичная: " + (hit.length ? hit.length + " табл." : "часть таблиц") +
-                    " восстановятся пустыми (только структура).";
+            var tops = usableTopups(b);
+            if (tops.length) {
+                text += " Пропущенные таблицы догрузятся из добора " +
+                    tops.map(function (t) { return fmtTs(t.backup_timestamp); }).join(", ") +
+                    " автоматически — вторым шагом (только данные).";
+            }
+            if (!b.completed) {
+                var skipped = missingOf(b);
+                var hit = rs.scope === "tables" ? skipped.filter(function (t) {
+                    return picked.indexOf(t) >= 0 || picked.indexOf(rootOf(t)) >= 0;
+                }) : skipped;
+                if (rs.scope === "full" || hit.length) {
+                    text += (tops.length ? " Не добрано: " : " Копия частичная: ") +
+                        (hit.length ? hit.length + " табл." : "часть таблиц") +
+                        " восстановятся пустыми (только структура).";
+                }
             }
         }
         confirmThen(text, function () {
@@ -1927,7 +1992,9 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                 if (!d.ok) { toast(d.message || "Ошибка", "error"); return; }
                 state.open = null;
                 state.rs = null;
-                toast("Восстановление запущено: задача #" + d.job_id + ". Ход — над списком копий, ошибки — в «Истории операций».", "success");
+                toast("Восстановление запущено: задача #" + d.job_id +
+                    (d.followups ? ", затем догрузка из добора" : "") +
+                    ". Ход — над списком копий, ошибки — в «Истории операций».", "success");
                 load();
                 setTimeout(pollRun, 1200);
             }).catch(function (e) { toast(String(e), "error"); });
@@ -1947,9 +2014,10 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
     }
 
     function backupSkipped(b) {
-        var n = skippedOf(b).length;
-        confirmThen("Запустить отдельный бэкап " + (n ? n + " пропущенных таблиц" : "пропущенных таблиц") +
-            " из копии " + fmtTs(b.backup_timestamp) + "?", function () {
+        var n = missingOf(b).length;
+        confirmThen("Добрать " + (n ? n + " пропущенных таблиц" : "пропущенные таблицы") +
+            " копии " + fmtTs(b.backup_timestamp) + "? Добор станет частью этой копии: при восстановлении " +
+            "он догрузится автоматически.", function () {
             api("/api/backup/backup-skipped", { backup_id: b.id }).then(function (d) {
                 toast(d.ok ? "Запущено: задача #" + d.job_id : (d.message || "Ошибка"),
                       d.ok ? "success" : "error");
@@ -1959,7 +2027,9 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
     }
 
     function del(b) {
+        var nt = (b.topups || []).filter(function (t) { return t.status !== "deleted"; }).length;
         confirmThen("Удалить копию " + fmtTs(b.backup_timestamp) +
+            (nt ? " вместе с доборами (" + nt + ")" : "") +
             " с диска (gpbackup_manager delete-backup)? Восстановить её будет нельзя.", function () {
             api("/api/backup/delete", {
                 connection_id: b.connection_id, backup_timestamp: b.backup_timestamp,
