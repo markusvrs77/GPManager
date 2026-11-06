@@ -252,3 +252,65 @@ def test_backup_catalog_api(client, monkeypatch):
 
     d = client.get("/api/backup/catalog?connection_id=1").get_json()
     assert d["ok"] is True and d["tables"][0]["name"] == "dwh.t"
+
+
+# ------------------------------------------------------------ zstd и автодобор
+
+def test_compression_type_flag():
+    assert "--compression-type" not in gb.build_gpbackup_command({"dbname": "adb", "compression_type": "gzip"})
+    cmd = gb.build_gpbackup_command({"dbname": "adb", "compression_type": "zstd", "compression_level": 3})
+    assert cmd[cmd.index("--compression-type") + 1] == "zstd"
+    assert cmd[cmd.index("--compression-level") + 1] == "3"
+    with pytest.raises(ValueError):
+        gb.build_gpbackup_command({"dbname": "adb", "compression_type": "lz4; rm -rf /"})
+
+
+def test_auto_topup_inherits_settings_and_limits_attempts(client, spawned, monkeypatch):
+    cid = 933
+    base = {"connection_id": cid, "dbname": "adb", "backup_type": "full", "jobs": 4,
+            "compression_type": "zstd", "compression_level": 3,
+            "on_error_continue": True, "auto_topup": True}
+    parent_job = _finish("gpbackup", base, _log("20261106205400", ["s.t_1_prt_1"]), 3)
+    parent = _row(parent_job)
+
+    # частичный бэкап -> автодобор, попытка 1
+    assert spawned and spawned[-1] == (parent["id"], 1)
+
+    monkeypatch.setattr(gb, "AUTO_TOPUP_DELAY", 0)
+    ran = []
+    monkeypatch.setattr(gb, "run_gpbackup_job", lambda job_id: ran.append(job_id))
+    gb._auto_topup(parent["id"], 1)
+
+    cfg = json.loads(get_job(ran[0])["config_json"])
+    assert cfg["jobs"] == 4 and cfg["compression_type"] == "zstd" and cfg["compression_level"] == 3
+    assert cfg["topup_attempt"] == 1 and cfg["auto_topup"] is True
+    assert "автодобор, попытка 1" in get_job_items(ran[0])[0]["table_name"]
+
+    # пока добор идёт — второй (ручной) не создаётся
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute("UPDATE jobs SET status = 'running' WHERE id = ?", (ran[0],))
+    r = client.post("/api/backup/backup-skipped", json={"backup_id": parent["id"]})
+    assert r.status_code == 400 and "уже идёт" in r.get_json()["message"]
+
+    # добор снова частичный -> попытка 2; после неё — хватит
+    assert gb.schedule_auto_topup(dict(cfg, topup_attempt=1), 999) == 2
+    assert gb.schedule_auto_topup(dict(cfg, topup_attempt=2), 999) is None
+    assert gb.schedule_auto_topup(dict(base, auto_topup=False), 999) is None
+
+
+def test_start_route_passes_compression_type_and_auto_topup(client, monkeypatch):
+    monkeypatch.setattr(app_module, "run_gpbackup_job", lambda job_id: None)
+    monkeypatch.setattr(gb, "get_connection_by_id", lambda cid: {"database_name": "adb"})
+    import modules.connections as mc
+    monkeypatch.setattr(mc, "get_connection_by_id", lambda cid: {"database_name": "adb"})
+
+    r = client.post("/api/backup/start", json={
+        "connection_id": 934, "backup_type": "full", "compression_type": "zstd",
+        "on_error_continue": True, "auto_topup": True}).get_json()
+    assert r["ok"] is True, r
+    cfg = json.loads(get_job(r["job_id"])["config_json"])
+    assert cfg["compression_type"] == "zstd" and cfg["auto_topup"] is True
+
+    r = client.post("/api/backup/start", json={
+        "connection_id": 934, "on_error_continue": False, "auto_topup": True}).get_json()
+    assert json.loads(get_job(r["job_id"])["config_json"])["auto_topup"] is False

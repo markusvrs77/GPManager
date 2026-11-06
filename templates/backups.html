@@ -200,6 +200,7 @@
   width: 17px; height: 17px; color: var(--text-muted); pointer-events: none; }
 .bk-affix .bk-input { padding-left: 38px; }
 .bk-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.bk-row3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 
 .bk-seg { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .bk-seg label { position: relative; display: flex; align-items: center; gap: 8px;
@@ -769,9 +770,9 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                     <textarea id="gpbTables" hidden aria-hidden="true"></textarea>
                 </fieldset>
 
-                <div class="bk-row2">
+                <div class="bk-row3">
                     <div>
-                        <label class="bk-lbl" for="gpbJobs">Потоки (--jobs)</label>
+                        <label class="bk-lbl" for="gpbJobs">Потоки</label>
                         <select id="gpbJobs" class="bk-select">
                             {% for n in [1, 2, 4, 6, 8, 12, 16, 24, 32] %}
                             <option value="{{ n }}"{% if n == 4 %} selected{% endif %}>{{ n }}</option>
@@ -779,9 +780,16 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                         </select>
                     </div>
                     <div>
-                        <label class="bk-lbl" for="gpbCompression">Сжатие (1–9)</label>
+                        <label class="bk-lbl" for="gpbCompType">Сжатие</label>
+                        <select id="gpbCompType" class="bk-select" title="zstd — быстрее и легче для процессора сегментов, сжимает не хуже gzip. Нужен zstd на всех хостах.">
+                            <option value="gzip">gzip</option>
+                            <option value="zstd">zstd</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="bk-lbl" for="gpbCompression">Уровень</label>
                         <select id="gpbCompression" class="bk-select">
-                            <option value="">По умолчанию</option>
+                            <option value="">По умолч.</option>
                             {% for n in range(1, 10) %}<option value="{{ n }}">{{ n }}</option>{% endfor %}
                         </select>
                     </div>
@@ -791,6 +799,12 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
                     <input type="checkbox" id="gpbOnErr" checked>
                     <span>Не останавливаться на сбойной таблице <code>--on-error-continue</code>
                         <small>Таблица, на которой упал COPY, пропускается: копия получит статус «частично» и останется восстановимой. Нужна сборка gpbackup-resilient 1.30.9+.</small></span>
+                </label>
+
+                <label class="bk-check bk-span">
+                    <input type="checkbox" id="gpbAutoTop" checked>
+                    <span>Добирать пропущенные автоматически
+                        <small>Через 2 минуты после частичного бэкапа — добор внутри той же копии, до 2 попыток. Сбои записи обычно разовые: добор проходит за секунды.</small></span>
                 </label>
 
                 <button class="bk-btn bk-btn-primary bk-btn-block bk-span" id="gpbStart" type="button">
@@ -1204,6 +1218,9 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
         loadHost();
         loadDir();
         gbsReset();
+        var ctype = null;
+        try { ctype = localStorage.getItem("gpb-ctype-" + state.cid); } catch (e) {}
+        $("gpbCompType").value = ctype === "zstd" ? "zstd" : "gzip";
     }
 
     /* ------------------------------------------- что бэкапить (схемы/таблицы) */
@@ -1957,10 +1974,12 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             "<li>" + icon("clock") + "<span>Запуск</span><b>" + esc(cronText(s.cron_expr)) + "</b></li>" +
             "<li>" + icon("database") + "<span>Тип бэкапа</span><b>" + esc(TYPE_LABELS[s.backup_type] || s.backup_type) + "</b></li>" +
             "<li>" + icon("cpu") + "<span>Потоки (--jobs)</span><b>" + esc(s.jobs) + "</b></li>" +
-            "<li>" + icon("archive") + "<span>Сжатие</span><b>" + esc(s.compression_level || "По умолчанию") + "</b></li>" +
+            "<li>" + icon("archive") + "<span>Сжатие</span><b>" + esc((s.compression_type || "gzip") +
+                (s.compression_level ? " · уровень " + s.compression_level : "")) + "</b></li>" +
             "<li>" + icon("list") + '<span>Схемы / таблицы</span><b title="' + esc(scope.join("\n")) + '">' +
             esc(scope.length ? scope.slice(0, 2).join(", ") + (scope.length > 2 ? " +" + (scope.length - 2) : "") : "Вся БД") + "</b></li>" +
-            "<li>" + icon("shield") + "<span>Пропуск сбойных таблиц</span><b>" + (s.on_error_continue ? "Да" : "Нет") + "</b></li>" +
+            "<li>" + icon("shield") + "<span>Пропуск сбойных таблиц</span><b>" + (s.on_error_continue
+                ? (s.auto_topup ? "Да, с автодобором" : "Да") : "Нет") + "</b></li>" +
             (s.next_run_at ? "<li>" + icon("calendar") + "<span>Следующий запуск</span><b>" + esc(fmtJobTime(s.next_run_at)) + "</b></li>" : "") +
             "</ul>" +
             (list.length > 1 ? '<div class="bk-more-sched">Ещё расписаний для кластера: ' + (list.length - 1) + " — на вкладке «Расписания».</div>" : "");
@@ -2807,9 +2826,23 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             include_tables: $("gpbTables").value,
             jobs: parseInt($("gpbJobs").value, 10) || 1,
             compression_level: parseInt($("gpbCompression").value, 10) || null,
+            compression_type: $("gpbCompType").value,
             on_error_continue: $("gpbOnErr").checked,
+            auto_topup: $("gpbOnErr").checked && $("gpbAutoTop").checked,
         };
     }
+
+    function syncAutoTop() {
+        var on = $("gpbOnErr").checked;
+        $("gpbAutoTop").disabled = !on;
+        $("gpbAutoTop").closest("label").classList.toggle("is-off", !on);
+    }
+    $("gpbOnErr").addEventListener("change", syncAutoTop);
+    syncAutoTop();
+
+    $("gpbCompType").addEventListener("change", function () {
+        try { localStorage.setItem("gpb-ctype-" + state.cid, this.value); } catch (e) {}
+    });
 
     $("gpbStart").addEventListener("click", function () {
         var btn = this;

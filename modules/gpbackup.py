@@ -48,6 +48,17 @@ DEFAULT_GPBACKUP_MANAGER_PATH = "/usr/local/gpdb/greenplum-db/bin/gpbackup_manag
 
 BACKUP_TYPES = ("full", "metadata_only", "data_only", "incremental")
 
+# --compression-type (gpbackup 1.23+); gzip — по умолчанию, флаг не нужен
+COMPRESSION_TYPES = ("gzip", "zstd")
+
+# автодобор пропущенных после частичного бэкапа
+AUTO_TOPUP_DELAY = 120
+AUTO_TOPUP_ATTEMPTS = 2
+
+# настройки основной задачи, которые добор берёт себе
+_TOPUP_INHERIT = ("jobs", "compression_level", "compression_type",
+                  "gpbackup_path", "auto_topup")
+
 MANAGER_ACTIONS = ("list-backups", "display-report", "delete-backup")
 
 _TIMESTAMP_RE = re.compile(r"Backup Timestamp\s*=\s*(\d{14})")
@@ -166,6 +177,14 @@ def build_gpbackup_command(config):
     if jobs > 1:
         cmd += ["--jobs", str(jobs)]
 
+    compression_type = str(config.get("compression_type") or "").strip().lower()
+
+    if compression_type:
+        if compression_type not in COMPRESSION_TYPES:
+            raise ValueError("Тип сжатия: gzip или zstd")
+        if compression_type != "gzip":
+            cmd += ["--compression-type", compression_type]
+
     compression = config.get("compression_level")
 
     if compression:
@@ -256,6 +275,16 @@ def skipped_backup_config(backup_row):
         # основная копия: добор хранится внутри неё, а не отдельной копией
         "parent_backup_id": backup_row.get("parent_id") or backup_row.get("id"),
     }
+
+    # потоки, сжатие, автодобор — как у задачи, сделавшей копию
+    try:
+        source = json.loads(backup_row.get("job_config") or "{}") or {}
+    except ValueError:
+        source = {}
+
+    for key in _TOPUP_INHERIT:
+        if source.get(key) not in (None, ""):
+            config[key] = source[key]
 
     skipped_file = (backup_row.get("skipped_file") or "").strip()
 
@@ -1456,6 +1485,112 @@ def restore_followups(record, config):
     return steps
 
 
+def _active_topup_job(parent_id):
+    """Идущая задача-добор этой копии (двойной клик, автодобор + ручной)."""
+    with sqlite_cursor() as cur:
+        cur.execute(
+            "SELECT id, config_json FROM jobs WHERE job_type = 'gpbackup' "
+            "AND status IN ('queued', 'pending', 'running', 'stopping')"
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    for row in rows:
+        try:
+            cfg = json.loads(row.get("config_json") or "{}")
+        except ValueError:
+            continue
+        if str(cfg.get("parent_backup_id") or "") == str(parent_id):
+            return row["id"]
+
+    return None
+
+
+def prepare_topup_job(backup_id, attempt=0):
+    """
+    Задача-добор пропущенных таблиц копии (создана, не запущена) -> job_id.
+    Добирает от основной копии или от последнего частичного добора.
+    ValueError — добирать нечего, уже идёт или нельзя.
+    """
+    from job_manager import create_job, create_job_items
+
+    record = get_backup_record(int(backup_id))
+
+    if not record:
+        raise LookupError("Копия не найдена")
+
+    family = backup_with_topups(int(backup_id))
+
+    if family and family.get("completed"):
+        raise ValueError("Пропущенные таблицы уже добраны")
+
+    parent_id = family["id"] if family else record["id"]
+    running = _active_topup_job(parent_id)
+
+    if running:
+        raise ValueError("Добор этой копии уже идёт — задача #{}".format(running))
+
+    # после частичного добора добираем то, что не попало уже в него
+    usable = [t for t in (family or {}).get("topups") or []
+              if t["status"] in ("done", "partial")]
+
+    if usable:
+        record = get_backup_record(usable[-1]["id"]) or record
+
+    config = skipped_backup_config(record)
+    config["parent_backup_id"] = parent_id
+    config["topup_attempt"] = int(attempt or 0)
+    # в реестре копии БД может не быть (копия с диска, подхват после
+    # рестарта) — тогда база подключения кластера
+    config["dbname"] = connection_dbname(config)
+    build_gpbackup_command(config)
+
+    job_id = create_job(job_type="gpbackup",
+                        connection_id=config["connection_id"], config=config)
+    create_job_items(job_id=job_id, items=[{
+        "schema_name": config["dbname"],
+        "table_name": "gpbackup (пропущенные из {}){}".format(
+            record.get("backup_timestamp"),
+            " · автодобор, попытка {}".format(attempt) if attempt else ""),
+        "action": "GPBACKUP",
+    }])
+
+    return job_id
+
+
+def schedule_auto_topup(config, backup_id):
+    """
+    Частичный бэкап с автодобором -> через AUTO_TOPUP_DELAY сек добор
+    пропущенных, не больше AUTO_TOPUP_ATTEMPTS попыток подряд. Номер
+    попытки или None, если автодобор не положен.
+    """
+    config = config or {}
+
+    if not backup_id or not config.get("auto_topup") or not config.get("on_error_continue"):
+        return None
+
+    attempt = int(config.get("topup_attempt") or 0) + 1
+
+    if attempt > AUTO_TOPUP_ATTEMPTS:
+        return None
+
+    _spawn(_auto_topup, backup_id, attempt)
+    return attempt
+
+
+def _auto_topup(backup_id, attempt):
+    import time
+
+    time.sleep(AUTO_TOPUP_DELAY)
+
+    try:
+        job_id = prepare_topup_job(backup_id, attempt=attempt)
+    except Exception:
+        # уже добрано, добор идёт вручную или копия пропала — молча
+        return
+
+    run_gpbackup_job(job_id)
+
+
 def _spawn(target, *args):
     threading.Thread(target=target, args=args, daemon=True).start()
 
@@ -1733,8 +1868,10 @@ def _finalize_backup_job(job_id, job_type, config, items, log_text, rc,
         if partial is None and rc == PARTIAL_EXIT_CODE:
             partial = {"count": 0, "tables": [], "file": None}
 
+    backup_id = None
+
     if job_type == "gpbackup" and not _backup_recorded_for_job(job_id):
-        insert_backup(
+        backup_id = insert_backup(
             connection_id=int(config.get("connection_id") or 0),
             job_id=job_id,
             backup_timestamp=parse_backup_timestamp(log_text),
@@ -1778,6 +1915,7 @@ def _finalize_backup_job(job_id, job_type, config, items, log_text, rc,
         refresh_job_progress(job_id)
         mark_job_failed(job_id, "{}\n\nКоманда: {}\n\nХвост лога:\n{}".format(
             message, command_text, (log_text or "")[-5000:])[:12000])
+        schedule_auto_topup(config, backup_id)
         return
 
     errors = extract_backup_errors(log_text)

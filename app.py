@@ -3030,6 +3030,8 @@ def api_backup_overview():
                 "backup_type": cfg.get("backup_type") or "full",
                 "jobs": cfg.get("jobs") or 1,
                 "compression_level": cfg.get("compression_level"),
+                "compression_type": cfg.get("compression_type") or "gzip",
+                "auto_topup": bool(cfg.get("auto_topup")),
                 "include_schemas": cfg.get("include_schemas") or "",
                 "include_tables": cfg.get("include_tables") or "",
                 "on_error_continue": bool(cfg.get("on_error_continue")),
@@ -3300,10 +3302,13 @@ def api_backup_start():
         "include_tables": data.get("include_tables") or "",
         "jobs": data.get("jobs") or 1,
         "compression_level": data.get("compression_level"),
+        "compression_type": (data.get("compression_type") or "").strip().lower(),
         "gpbackup_path": (data.get("gpbackup_path") or "").strip(),
         "extra_args": data.get("extra_args") or "",
         # gpbackup-resilient: пропускать упавшие таблицы (статус Partial)
         "on_error_continue": bool(data.get("on_error_continue")),
+        # и сам добирать их через пару минут
+        "auto_topup": bool(data.get("auto_topup")) and bool(data.get("on_error_continue")),
     }
 
     try:
@@ -3365,58 +3370,20 @@ def api_backup_backup_skipped():
     if not backup_id:
         return jsonify({"ok": False, "message": "backup_id обязателен"}), 400
 
-    from modules.gpbackup import (
-        build_gpbackup_command,
-        connection_dbname,
-        get_backup_record,
-        skipped_backup_config,
-    )
-
-    from modules.gpbackup import backup_with_topups
+    from modules.gpbackup import get_backup_record, prepare_topup_job
 
     record = get_backup_record(int(backup_id))
 
     if not record:
         return jsonify({"ok": False, "message": "Копия не найдена"}), 404
 
-    family = backup_with_topups(int(backup_id))
-
-    if family and family.get("completed"):
-        return jsonify({"ok": False,
-                        "message": "Пропущенные таблицы уже добраны"}), 400
-
-    # после частичного добора добираем то, что не попало уже в него
-    usable = [t for t in (family or {}).get("topups") or []
-              if t["status"] in ("done", "partial")]
-
-    if usable:
-        record = get_backup_record(usable[-1]["id"]) or record
+    if not in_scope([int(record.get("connection_id") or 0)]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
 
     try:
-        config = skipped_backup_config(record)
-        config["parent_backup_id"] = family["id"] if family else record["id"]
-        # в реестре копии БД может не быть (копия с диска, подхват
-        # после рестарта) — тогда база подключения кластера
-        config["dbname"] = connection_dbname(config)
-        build_gpbackup_command(config)
-    except ValueError as e:
+        job_id = prepare_topup_job(int(backup_id))
+    except (ValueError, LookupError) as e:
         return jsonify({"ok": False, "message": str(e)}), 400
-
-    job_id = create_job(
-        job_type="gpbackup",
-        connection_id=config["connection_id"],
-        config=config,
-    )
-
-    create_job_items(
-        job_id=job_id,
-        items=[{
-            "schema_name": config["dbname"],
-            "table_name": "gpbackup (пропущенные из {})".format(
-                record.get("backup_timestamp")),
-            "action": "GPBACKUP",
-        }],
-    )
 
     threading.Thread(target=run_gpbackup_job, args=(job_id,), daemon=True).start()
 
