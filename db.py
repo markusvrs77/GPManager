@@ -594,6 +594,20 @@ def init_db():
         "ALTER TABLE backups ADD COLUMN tool TEXT DEFAULT 'gpbackup'"
     )
 
+    # частичный бэкап (gpbackup --on-error-continue, статус Partial):
+    # какие таблицы не попали в копию и файл со списком на координаторе
+    ensure_column_exists(
+        "backups",
+        "skipped_tables",
+        "ALTER TABLE backups ADD COLUMN skipped_tables TEXT"
+    )
+
+    ensure_column_exists(
+        "backups",
+        "skipped_file",
+        "ALTER TABLE backups ADD COLUMN skipped_file TEXT"
+    )
+
     # вес таблицы (байты) для взвешенного прогресса и live-счётчик
     ensure_column_exists(
         "job_items",

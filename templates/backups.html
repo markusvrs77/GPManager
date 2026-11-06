@@ -34,6 +34,8 @@
   padding: 2px 9px; flex: none; margin-left: auto; }
 .gpb-st.done { color: var(--ok); border: 1px solid var(--ok); }
 .gpb-st.failed { color: var(--crit); border: 1px solid var(--crit); }
+.gpb-st.partial { color: var(--warn); border: 1px solid var(--warn); }
+.gpb-skipped { width: 100%; margin-top: 6px; font-size: 12px; color: var(--warn); }
 .gpb-st.deleted { color: var(--text-muted); border: 1px solid var(--hairline); }
 
 .gpb-report { width: 100%; margin-top: 8px; background: var(--surface-2);
@@ -106,6 +108,18 @@
                     <input id="gpbCompression" type="number" min="0" max="9"
                            placeholder="по умолч." class="form-control form-control-sm">
                 </div>
+            </div>
+
+            <div class="form-check mb-1">
+                <input class="form-check-input" type="checkbox" id="gpbOnErr" checked>
+                <label class="form-check-label" for="gpbOnErr">
+                    Не останавливаться на сбойной таблице (--on-error-continue)
+                </label>
+            </div>
+            <div class="gpb-hint mb-3">
+                Таблица, на которой упал COPY, пропускается, бэкап доходит до
+                конца со статусом <b>partial</b> и остаётся восстановимым.
+                Нужна сборка gpbackup-resilient 1.30.9+.
             </div>
 
             <button class="btn btn-primary w-100" id="gpbStart" type="button">
@@ -181,6 +195,12 @@
     }
 
     var openRestore = null;
+    var rowsById = {};          // id -> запись реестра (для подтверждений)
+
+    function skippedList(b) {
+        try { return JSON.parse(b.skipped_tables || "[]") || []; }
+        catch (e) { return []; }
+    }
     var openReport = null;      // {id, text} — развёрнутый отчёт display-report
 
     window.gpbLoad = function () {
@@ -195,8 +215,13 @@
                     return;
                 }
 
+                rowsById = {};
                 box.innerHTML = d.backups.map(function (b) {
-                    var restorable = b.status === "done" && b.backup_timestamp;
+                    rowsById[b.id] = b;
+                    var partial = b.status === "partial";
+                    var skipped = partial ? skippedList(b) : [];
+                    var restorable = (b.status === "done" || partial) &&
+                        b.backup_timestamp;
                     var deletable = b.status !== "deleted" && b.backup_timestamp;
                     return '<div class="gpb-row" style="flex-wrap: wrap;">' +
                         '<span class="gpb-tag">' +
@@ -209,7 +234,20 @@
                         " · " + esc(b.dbname || "") +
                         (b.backup_dir ? " · " + esc(b.backup_dir) : " · каталог по умолчанию") +
                         "</div></div>" +
-                        '<span class="gpb-st ' + esc(b.status) + '">' + esc(b.status) + "</span>" +
+                        '<span class="gpb-st ' + esc(b.status) + '"' +
+                        (partial
+                            ? ' title="Не попали в копию: ' +
+                              esc(skipped.join(", ") || "список в отчёте") + '"'
+                            : "") + ">" + esc(b.status) +
+                        (partial && skipped.length
+                            ? " · " + skipped.length + " пропущ." : "") +
+                        "</span>" +
+                        (partial
+                            ? ' <button class="btn btn-sm btn-outline-warning" ' +
+                              'title="Отдельный бэкап только пропущенных таблиц" ' +
+                              'onclick="gpbBackupSkipped(' + b.id + ')">' +
+                              "Добрать пропущенные</button>"
+                            : "") +
                         (b.backup_timestamp
                             ? ' <button class="btn btn-sm btn-outline-secondary" ' +
                               'onclick="gpbToggleReport(' + b.id + ', \'' +
@@ -225,6 +263,13 @@
                               'title="Удалить копию с диска (gpbackup_manager delete-backup)" ' +
                               'onclick="gpbDelete(\'' + esc(b.backup_timestamp) +
                               '\', ' + b.connection_id + ')">✕</button>'
+                            : "") +
+                        (partial && skipped.length
+                            ? '<div class="gpb-skipped">Не попали в копию: ' +
+                              esc(skipped.slice(0, 10).join(", ")) +
+                              (skipped.length > 10
+                                  ? " … и ещё " + (skipped.length - 10) : "") +
+                              "</div>"
                             : "") +
                         (openRestore === b.id ? restoreFormHtml(b) : "") +
                         (openReport && openReport.id === b.id
@@ -351,6 +396,44 @@
             (body.redirect_db ? " в БД «" + body.redirect_db + "»" : " поверх исходной БД") +
             "? Существующие данные могут быть перезаписаны.";
 
+        var row = rowsById[id] || {};
+
+        if (row.status === "partial") {
+            var skipped = skippedList(row);
+            text += " Копия частичная: " +
+                (skipped.length ? skipped.length + " табл." : "часть таблиц") +
+                " восстановятся пустыми (только структура). Если их добирали " +
+                "отдельным бэкапом — восстанови его следом с «только данные».";
+        }
+
+        if (window.gpConfirm) {
+            window.gpConfirm(text).then(function (yes) { if (yes) { go(); } });
+        } else if (confirm(text)) { go(); }
+    };
+
+    window.gpbBackupSkipped = function (id) {
+        var row = rowsById[id] || {};
+        var n = skippedList(row).length;
+        var text = "Запустить отдельный бэкап " +
+            (n ? n + " пропущенных таблиц" : "пропущенных таблиц") +
+            " из копии " + (row.backup_timestamp || "") + "?";
+
+        var go = function () {
+            fetch("/api/backup/backup-skipped", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ backup_id: id }),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                if (window.gpToast) {
+                    gpToast(d.ok ? "Запущено: задача #" + d.job_id : d.message,
+                            d.ok ? "success" : "error");
+                }
+                if (d.ok) { setTimeout(gpbLoad, 1500); }
+            }).catch(function (e) {
+                if (window.gpToast) { gpToast(String(e), "error"); }
+            });
+        };
+
         if (window.gpConfirm) {
             window.gpConfirm(text).then(function (yes) { if (yes) { go(); } });
         } else if (confirm(text)) { go(); }
@@ -373,6 +456,7 @@
                 jobs: parseInt(document.getElementById("gpbJobs").value, 10) || 1,
                 compression_level:
                     parseInt(document.getElementById("gpbCompression").value, 10) || null,
+                on_error_continue: document.getElementById("gpbOnErr").checked,
             }),
         }).then(function (r) { return r.json(); }).then(function (d) {
             btn.disabled = false;
@@ -477,6 +561,8 @@
                         compression_level: parseInt(
                             document.getElementById("gpbCompression").value,
                             10) || null,
+                        on_error_continue:
+                            document.getElementById("gpbOnErr").checked,
                     },
                 }),
             }).then(function (r) { return r.json(); }).then(function (d) {

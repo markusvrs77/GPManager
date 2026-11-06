@@ -37,6 +37,12 @@
                         <label class="form-label">Каталог бэкапа</label>
                         <input type="text" id="schBackupDir" class="form-control"
                                placeholder="/data/backups (для pg_dump обязателен)">
+                        <div id="schOnErrBox" class="form-check mt-2" style="display:none">
+                            <input class="form-check-input" type="checkbox" id="schOnErr" checked>
+                            <label class="form-check-label" for="schOnErr">
+                                Не останавливаться на сбойной таблице (--on-error-continue, статус partial)
+                            </label>
+                        </div>
                     </div>
 
                     <div id="schWatermarkBox" class="mb-3" style="display:none">
@@ -183,5 +189,5 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/schedules.js') }}?v=4"></script>
+<script src="{{ url_for('static', filename='js/schedules.js') }}?v=5"></script>
 {% endblock %}

@@ -155,6 +155,7 @@ POLICY = {
     "pg_backups_page": "backups.view",
     "api_pg_databases": "backups.view",
     "api_backup_start": "backups.run",
+    "api_backup_backup_skipped": "backups.run",
     "api_backup_restore": "backups.run",
     "api_backup_sync_disk": "backups.run",
     "api_backup_report": "backups.run",

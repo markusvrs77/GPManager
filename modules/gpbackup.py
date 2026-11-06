@@ -56,6 +56,33 @@ _MANAGER_ROW_RE = re.compile(r"^\s*(\d{14})\s+(\S+)\s+(\S+)")
 
 _IDENT_RE = re.compile(r"^[A-Za-z0-9_$.]+$")
 
+# --- частичный бэкап (сборка gpbackup-resilient 1.30.9+) ---
+#
+# С --on-error-continue таблица, на которой упал COPY, пропускается, а
+# бэкап завершается со статусом Partial и кодом возврата 3. Копия
+# восстановима: пропущенные таблицы восстанавливаются пустыми (только DDL).
+PARTIAL_EXIT_CODE = 3
+
+# финальная строка лога (FormatPartialBackupSummary)
+_PARTIAL_SUMMARY_RE = re.compile(
+    r"Backup completed with status Partial: (\d+) table\(s\) were skipped"
+    r" and are NOT in this backup: (.*?)"
+    r"(?:\. Full list: (\S+)\. To back up only these tables:.*)?$",
+    re.MULTILINE,
+)
+
+# по строке на каждую пропущенную таблицу — полный список, в отличие от
+# итоговой строки, где не больше 10 имён
+_SKIPPED_TABLE_RE = re.compile(r"skipping table (.+?) due to error: ")
+
+_SKIPPED_FILE_LOG_RE = re.compile(r"List of skipped tables written to (\S+)")
+
+# файл, который пишет gpbackup рядом с отчётом
+_SKIPPED_FILE_RE = re.compile(r"^/[A-Za-z0-9_./-]*/gpbackup_\d{14}_skipped_tables$")
+
+# сколько имён хранить в реестре
+MAX_SKIPPED_STORED = 1000
+
 
 def _clean_names(raw):
     """Список schema или schema.table из textarea (по одной в строке)."""
@@ -128,12 +155,110 @@ def build_gpbackup_command(config):
     if compression:
         cmd += ["--compression-level", str(int(compression))]
 
+    # список таблиц из файла пропущенных (кнопка «Добрать пропущенные»)
+    table_file = str(config.get("include_table_file") or "").strip()
+
+    if table_file:
+        if ".." in table_file or not _SKIPPED_FILE_RE.match(table_file):
+            raise ValueError(
+                "include_table_file должен быть файлом "
+                "gpbackup_<метка>_skipped_tables: {}".format(table_file)
+            )
+        cmd += ["--include-table-file", table_file]
+
     extra = (config.get("extra_args") or "").strip()
+
+    # пропускать таблицы, на которых упал COPY, вместо остановки бэкапа
+    if config.get("on_error_continue") and "--on-error-continue" not in extra.split():
+        cmd.append("--on-error-continue")
 
     if extra:
         cmd += extra.split()
 
     return cmd
+
+
+def parse_partial_backup(text):
+    """
+    Итог частичного бэкапа из лога gpbackup -> {count, tables, file}
+    или None, если бэкап не частичный.
+
+    tables — полный список из построчных «skipping table …»; если их в
+    логе нет (обрезан), берём до 10 имён из итоговой строки.
+    """
+    text = text or ""
+    summary = None
+
+    for summary in _PARTIAL_SUMMARY_RE.finditer(text):
+        pass
+
+    if summary is None:
+        return None
+
+    tables = []
+
+    for match in _SKIPPED_TABLE_RE.finditer(text):
+        name = match.group(1).strip()
+
+        if name and name not in tables:
+            tables.append(name)
+
+    if not tables:
+        listed = re.sub(r" \.\.\. and \d+ more$", "", summary.group(2).strip())
+        tables = [n.strip() for n in listed.split(", ") if n.strip()]
+
+    skipped_file = summary.group(3)
+
+    if not skipped_file:
+        found = _SKIPPED_FILE_LOG_RE.search(text)
+        skipped_file = found.group(1) if found else None
+
+    return {
+        "count": int(summary.group(1)),
+        "tables": tables[:MAX_SKIPPED_STORED],
+        "file": skipped_file,
+    }
+
+
+def skipped_backup_config(backup_row):
+    """
+    Конфиг задачи «забэкапить только пропущенные таблицы» по записи
+    реестра частичной копии. Файл со списком предпочтительнее: в нём все
+    таблицы, в том числе с кавычками в имени. ValueError — добирать нечего
+    или не из чего.
+    """
+    if (backup_row or {}).get("status") != "partial":
+        raise ValueError("Копия не частичная — добирать нечего")
+
+    config = {
+        "connection_id": int(backup_row.get("connection_id") or 0),
+        "dbname": backup_row.get("dbname") or "",
+        "backup_type": "full",
+        "backup_dir": backup_row.get("backup_dir") or "",
+        "on_error_continue": True,
+        "skipped_from": backup_row.get("backup_timestamp"),
+    }
+
+    skipped_file = (backup_row.get("skipped_file") or "").strip()
+
+    if skipped_file and _SKIPPED_FILE_RE.match(skipped_file) \
+            and ".." not in skipped_file:
+        config["include_table_file"] = skipped_file
+        return config
+
+    try:
+        tables = json.loads(backup_row.get("skipped_tables") or "[]")
+    except ValueError:
+        tables = []
+
+    if not tables or not all(_IDENT_RE.match(t) and "." in t for t in tables):
+        raise ValueError(
+            "Нет файла со списком пропущенных таблиц, а имена в реестре "
+            "неполные — запусти бэкап этих таблиц вручную из формы"
+        )
+
+    config["include_tables"] = "\n".join(tables)
+    return config
 
 
 def build_gprestore_command(config):
@@ -216,11 +341,18 @@ def parse_backup_timestamp(text):
 
 
 def backup_outcome(text):
-    """'done' | 'failed' по финальным строкам лога gpbackup/gprestore."""
-    tail = (text or "")[-4000:]
+    """
+    'done' | 'partial' | 'failed' по финальным строкам лога
+    gpbackup/gprestore. 'partial' — gpbackup с --on-error-continue
+    пропустил часть таблиц, копия восстановима.
+    """
+    tail = (text or "")[-20000:]
 
-    if "completed successfully" in tail:
+    if "completed successfully" in tail[-4000:]:
         return "done"
+
+    if "Backup completed with status Partial" in tail:
+        return "partial"
 
     return "failed"
 
@@ -417,22 +549,34 @@ def delete_disk_backup(connection_id, timestamp, manager_path=None):
 # ------------------------------------------------------------------
 
 def insert_backup(connection_id, job_id, backup_timestamp, dbname,
-                  backup_type, backup_dir, status, tool="gpbackup"):
+                  backup_type, backup_dir, status, tool="gpbackup",
+                  skipped_tables=None, skipped_file=None):
     with sqlite_cursor(commit=True) as cur:
         cur.execute(
             """
             INSERT INTO backups (
                 connection_id, job_id, backup_timestamp,
-                dbname, backup_type, backup_dir, status, tool
+                dbname, backup_type, backup_dir, status, tool,
+                skipped_tables, skipped_file
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 connection_id, job_id, backup_timestamp,
                 dbname, backup_type, backup_dir, status, tool,
+                json.dumps(skipped_tables, ensure_ascii=False)
+                if skipped_tables is not None else None,
+                skipped_file,
             ),
         )
         return cur.lastrowid
+
+
+def get_backup_record(backup_id):
+    with sqlite_cursor() as cur:
+        cur.execute("SELECT * FROM backups WHERE id = ?", (int(backup_id),))
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 
 def list_backups(limit=100, tool=None):
@@ -473,7 +617,18 @@ def finalize_backup_job(job_id, job_type, config, items, log_text, rc,
     переподхвате после рестарта (rc=None — код возврата неизвестен,
     судим по логу).
     """
-    ok = rc in (0, None) and backup_outcome(log_text) == "done"
+    outcome = backup_outcome(log_text)
+    ok = rc in (0, None) and outcome == "done"
+
+    # Partial: код 3 (или неизвестный код после рестарта) + итоговая строка.
+    # Код 2 при статусе Partial — фатальная ошибка или сигнал: это сбой.
+    partial = None
+
+    if job_type == "gpbackup" and not ok and rc in (PARTIAL_EXIT_CODE, None):
+        partial = parse_partial_backup(log_text)
+
+        if partial is None and rc == PARTIAL_EXIT_CODE:
+            partial = {"count": 0, "tables": [], "file": None}
 
     if job_type == "gpbackup" and not _backup_recorded_for_job(job_id):
         insert_backup(
@@ -483,7 +638,9 @@ def finalize_backup_job(job_id, job_type, config, items, log_text, rc,
             dbname=config.get("dbname"),
             backup_type=config.get("backup_type") or "full",
             backup_dir=config.get("backup_dir") or "",
-            status="done" if ok else "failed",
+            status="done" if ok else ("partial" if partial else "failed"),
+            skipped_tables=partial["tables"] if partial else None,
+            skipped_file=partial["file"] if partial else None,
         )
 
     if ok:
@@ -492,6 +649,27 @@ def finalize_backup_job(job_id, job_type, config, items, log_text, rc,
 
         refresh_job_progress(job_id)
         mark_job_done(job_id)
+        return
+
+    if partial:
+        # копия есть и восстановима, но не целиком — строку done не ставим
+        names = partial["tables"]
+        shown = ", ".join(names[:20]) + (
+            " … и ещё {}".format(len(names) - 20) if len(names) > 20 else ""
+        )
+        message = (
+            "Частичный бэкап: {} табл. не попали в копию{}. Копия "
+            "восстановима, эти таблицы восстановятся пустыми. Добрать их — "
+            "кнопка «Добрать пропущенные» на странице бэкапов."
+        ).format(partial["count"] or len(names),
+                 ": " + shown if shown else "")
+
+        for item in items:
+            mark_item_failed(item["id"], message[:2000])
+
+        refresh_job_progress(job_id)
+        mark_job_failed(job_id, "{}\n\nКоманда: {}\n\nХвост лога:\n{}".format(
+            message, command_text, (log_text or "")[-5000:])[:12000])
         return
 
     errors = extract_backup_errors(log_text)

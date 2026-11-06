@@ -27,6 +27,8 @@ function onJobTypeChange() {
         type === "gpcopy_date" ? "" : "none";
     document.getElementById("schBackupDirBox").style.display =
         (type === "gpbackup" || type === "pg_dump") ? "" : "none";
+    document.getElementById("schOnErrBox").style.display =
+        type === "gpbackup" ? "" : "none";
     document.getElementById("schWatermarkBox").style.display =
         type === "gpcopy_increment" ? "" : "none";
     document.getElementById("schDestConnBox").style.display =
@@ -125,6 +127,11 @@ async function createSchedule() {
         config.backup_dir =
             (document.getElementById("schBackupDir").value || "").trim();
         config.include_tables = document.getElementById("schTables").value;
+
+        if (jobType === "gpbackup") {
+            config.on_error_continue =
+                document.getElementById("schOnErr").checked;
+        }
 
         if (jobType === "pg_dump" && !config.backup_dir) {
             errEl.textContent = "Для pg_dump укажи каталог бэкапа";

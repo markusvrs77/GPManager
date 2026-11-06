@@ -3153,6 +3153,8 @@ def api_backup_start():
         "compression_level": data.get("compression_level"),
         "gpbackup_path": (data.get("gpbackup_path") or "").strip(),
         "extra_args": data.get("extra_args") or "",
+        # gpbackup-resilient: пропускать упавшие таблицы (статус Partial)
+        "on_error_continue": bool(data.get("on_error_continue")),
     }
 
     try:
@@ -3192,6 +3194,57 @@ def api_backup_start():
     threading.Thread(target=run_gpbackup_job, args=(job_id,), daemon=True).start()
 
     return jsonify({"ok": True, "job_id": job_id, "message": "Бэкап запущен"})
+
+
+@app.route("/api/backup/backup-skipped", methods=["POST"])
+def api_backup_backup_skipped():
+    """
+    Частичная копия -> отдельный бэкап только пропущенных таблиц
+    (gpbackup --include-table-file <файл пропущенных>).
+    """
+    data = request.get_json(silent=True) or {}
+    backup_id = data.get("backup_id")
+
+    if not backup_id:
+        return jsonify({"ok": False, "message": "backup_id обязателен"}), 400
+
+    from modules.gpbackup import (
+        build_gpbackup_command,
+        get_backup_record,
+        skipped_backup_config,
+    )
+
+    record = get_backup_record(int(backup_id))
+
+    if not record:
+        return jsonify({"ok": False, "message": "Копия не найдена"}), 404
+
+    try:
+        config = skipped_backup_config(record)
+        build_gpbackup_command(config)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    job_id = create_job(
+        job_type="gpbackup",
+        connection_id=config["connection_id"],
+        config=config,
+    )
+
+    create_job_items(
+        job_id=job_id,
+        items=[{
+            "schema_name": config["dbname"],
+            "table_name": "gpbackup (пропущенные из {})".format(
+                record.get("backup_timestamp")),
+            "action": "GPBACKUP",
+        }],
+    )
+
+    threading.Thread(target=run_gpbackup_job, args=(job_id,), daemon=True).start()
+
+    return jsonify({"ok": True, "job_id": job_id,
+                    "message": "Бэкап пропущенных таблиц запущен"})
 
 
 @app.route("/api/backup/restore", methods=["POST"])
