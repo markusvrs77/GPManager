@@ -401,3 +401,15 @@ textarea.form-control { min-height: 56px; font-size: 13px; }
 /* KPI numbers from theme.css: console scale */
 .gp-stat .gp-v { font-size: 22px; margin-top: 3px; letter-spacing: -.5px; }
 .gp-stat .gp-k { font-size: 11px; }
+
+/* compact top bar: no tabs row under it any more — title lines sit close */
+.gp-top { padding: 0 22px; }
+.gp-top-row { padding: 10px 0; gap: 14px; }
+.gp-top-id { gap: 11px; }
+.gp-top .pg-ico { width: 40px; height: 40px; border-radius: 11px; }
+.gp-top .pg-ico .ic { width: 21px; height: 21px; }
+.gp-top .tk-name { font-size: 11.5px; line-height: 1.25; }
+.gp-top .pgtitle { font-size: 19px; margin: 0; line-height: 1.2; }
+.gp-top .pgcrumb { font-size: 12px; line-height: 1.3; }
+.gp-iconbtn { width: 34px; height: 34px; border-radius: 9px; }
+.gp-shell-content { padding: 16px 22px 32px; }

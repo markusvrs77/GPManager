@@ -26,7 +26,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}?v=3">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css') }}?v=7">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css') }}?v=8">
 </head>
 <body>
 
@@ -274,14 +274,8 @@
                     {% endif %}
                 </div>
             </div>
-
-            <nav class="gp-tabs" aria-label="Функции набора {{ tk_name }}">
-                {% for href, label, is_active, need, icon in tk_tabs %}
-                {% if can(need) %}
-                <a href="{{ href }}"{% if is_active %} aria-current="page"{% endif %}>{{ ic(icon) }}<span>{{ label }}</span></a>
-                {% endif %}
-                {% endfor %}
-            </nav>
+            {# вкладки набора убраны: те же страницы — в боковом меню
+               (на узком экране оно сворачивается в рельс с иконками) #}
         </header>
 
         <main class="gp-shell-content container-fluid">
