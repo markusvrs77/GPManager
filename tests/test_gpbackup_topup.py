@@ -314,3 +314,53 @@ def test_start_route_passes_compression_type_and_auto_topup(client, monkeypatch)
     r = client.post("/api/backup/start", json={
         "connection_id": 934, "on_error_continue": False, "auto_topup": True}).get_json()
     assert json.loads(get_job(r["job_id"])["config_json"])["auto_topup"] is False
+
+
+# ------------------------------------------------------------ причины пропуска
+
+SCHEMA_ERR = ('20261107:14:25:20 gpbackup:gpadmin:mdw:1-[WARNING]:-Worker 1: skipping table '
+              'dwh_dm.t due to error: ERROR: column "wf_runid$" specified more than once '
+              '(SQLSTATE 42701)\n')
+
+
+def test_parse_skip_errors_and_permanence():
+    errors = gb.parse_skip_errors(SCHEMA_ERR + "[WARNING]:-Worker 2: skipping table s.x due to "
+                                  "error: gzip: standard input: Bad file descriptor\n")
+
+    assert errors["dwh_dm.t"] == 'column "wf_runid$" specified more than once (SQLSTATE 42701)'
+    assert gb.is_permanent_error(errors["dwh_dm.t"])
+    assert not gb.is_permanent_error(errors["s.x"])           # сбой записи — повтор поможет
+    assert gb.all_permanent(["dwh_dm.t"], errors)
+    assert not gb.all_permanent(["dwh_dm.t", "s.x"], errors)
+
+
+def test_schema_error_is_not_auto_retried_and_reason_is_shown(client, spawned):
+    cid = 951
+    base = {"connection_id": cid, "dbname": "adb", "backup_type": "full",
+            "on_error_continue": True, "auto_topup": True}
+    log = _log("20261107142501").split("\n")[0] + "\n" + SCHEMA_ERR + (
+        "[WARNING]:-Backup completed with status Partial: 1 table(s) were skipped "
+        "and are NOT in this backup: dwh_dm.t")
+    job_id = _finish("gpbackup", base, log, 3)
+
+    assert spawned == []                                       # повтор упал бы так же
+    assert "повтор её не исправит" in get_job(job_id)["error_message"]
+
+    rows = gb.list_connection_backups(cid)
+    assert "SQLSTATE 42701" in rows[0]["skip_errors"]["dwh_dm.t"]
+
+
+def test_auto_topup_counts_manual_topups_of_the_copy(spawned):
+    cid = 952
+    base = {"connection_id": cid, "dbname": "adb", "backup_type": "full",
+            "on_error_continue": True, "auto_topup": True}
+    parent = _row(_finish("gpbackup", base, _log("20261107100000", ["s.a"]), 3))
+    spawned.clear()
+
+    # два ручных добора уже было — новых автоматических не будет
+    for ts in ("20261107110000", "20261107120000"):
+        _finish("gpbackup", dict(base, parent_backup_id=parent["id"]),
+                _log(ts, ["s.a"]), 3)
+
+    assert gb.schedule_auto_topup(dict(base, parent_backup_id=parent["id"]),
+                                  parent["id"], ["s.a"]) is None

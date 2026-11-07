@@ -435,6 +435,10 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
 
 .bk-skipped { font-size: 13px; color: var(--warn); display: flex; gap: 8px; margin-top: 12px; }
 .bk-skipped.ok { color: var(--ok); }
+.bk-skip-why { font-size: 12.5px; color: var(--text-muted); margin: 6px 0 0 24px;
+  display: grid; gap: 4px; word-break: break-word; }
+.bk-skip-why code { color: var(--text); }
+.bk-skip-perm { color: var(--warn); font-weight: 600; }
 .bk-del-err { color: var(--crit); vertical-align: middle; }
 .bk-del-err .ic { width: 14px; height: 14px; }
 .bk-topups { margin-top: 8px; }
@@ -1794,6 +1798,32 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
             }).join("") + "</div>";
     }
 
+    /* почему таблица не попала: последняя известная причина (основная копия, затем доборы) */
+    function skipReasons(b) {
+        var out = {};
+        [b].concat(b.topups || []).forEach(function (x) {
+            var e = x.skip_errors || {};
+            Object.keys(e).forEach(function (t) { out[t] = e[t]; });
+        });
+        return out;
+    }
+
+    function isPermanentError(text) {
+        return /SQLSTATE (42|0A|22)/.test(String(text || ""));
+    }
+
+    function skipWhyHtml(b, tables) {
+        var why = skipReasons(b);
+        var rows = tables.filter(function (t) { return why[t]; }).slice(0, 12);
+        if (!rows.length) { return ""; }
+        return '<div class="bk-skip-why">' + rows.map(function (t) {
+            return "<div><code>" + esc(t) + "</code> — " + esc(why[t]) +
+                (isPermanentError(why[t])
+                    ? ' <span class="bk-skip-perm">ошибка схемы или данных: повтор не поможет, автодобор её не повторяет</span>'
+                    : "") + "</div>";
+        }).join("") + "</div>";
+    }
+
     function skippedNote(b) {
         if (b.status !== "partial") { return ""; }
         if (b.completed) {
@@ -1809,7 +1839,8 @@ th[aria-sort] .bk-sort .ic { opacity: 1; color: var(--a1); }
               "<code>" + esc(skipped.slice(0, 12).join(", ")) + "</code>" +
               (skipped.length > 12 ? " … и ещё " + (skipped.length - 12) : "")
             : "Копия частичная — список пропущенных таблиц в отчёте.") +
-            (tops.length ? " Добранное догрузится при восстановлении автоматически." : "") + "</span></div>" + topupsHtml(b);
+            (tops.length ? " Добранное догрузится при восстановлении автоматически." : "") + "</span></div>" +
+            skipWhyHtml(b, skipped) + topupsHtml(b);
     }
 
     function detailHtml(b) {

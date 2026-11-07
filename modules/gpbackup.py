@@ -29,6 +29,7 @@ from job_manager import (
     mark_job_running,
     refresh_job_progress,
     set_job_runtime,
+    update_job_config,
 )
 
 try:
@@ -88,6 +89,14 @@ _PARTIAL_SUMMARY_RE = re.compile(
 _SKIPPED_TABLE_RE = re.compile(r"skipping table (.+?) due to error: ")
 
 _SKIPPED_FILE_LOG_RE = re.compile(r"List of skipped tables written to (\S+)")
+
+# причина по каждой пропущенной таблице
+_SKIP_ERROR_RE = re.compile(r"skipping table (\S+) due to error: (.+?)\s*$", re.M)
+_SQLSTATE_RE = re.compile(r"SQLSTATE ([0-9A-Z]{5})")
+
+# классы SQLSTATE, которые повтор не исправит: ошибка в запросе/схеме (42),
+# неподдерживаемое (0A), данные (22). Сбой записи, сети, отмена — временные.
+PERMANENT_SQLSTATE_CLASSES = ("42", "0A", "22")
 
 # файл, который пишет gpbackup рядом с отчётом
 _SKIPPED_FILE_RE = re.compile(r"^/[A-Za-z0-9_./-]*/gpbackup_\d{14}_skipped_tables$")
@@ -253,6 +262,32 @@ def parse_partial_backup(text):
         "tables": tables[:MAX_SKIPPED_STORED],
         "file": skipped_file,
     }
+
+
+def parse_skip_errors(text):
+    """{таблица: текст ошибки} из строк «skipping table X due to error: …»."""
+    errors = {}
+
+    for match in _SKIP_ERROR_RE.finditer(text or ""):
+        err = re.sub(r"^ERROR:\s*", "", match.group(2).strip())
+        errors.setdefault(match.group(1).strip(), err[:300])
+
+        if len(errors) >= MAX_SKIPPED_STORED:
+            break
+
+    return errors
+
+
+def is_permanent_error(error):
+    """Ошибка, которую повтор не исправит (по классу SQLSTATE)."""
+    match = _SQLSTATE_RE.search(str(error or ""))
+    return bool(match) and match.group(1)[:2] in PERMANENT_SQLSTATE_CLASSES
+
+
+def all_permanent(tables, errors):
+    """У каждой пропущенной таблицы известна постоянная ошибка."""
+    tables = list(tables or [])
+    return bool(tables) and all(is_permanent_error((errors or {}).get(t)) for t in tables)
 
 
 def skipped_backup_config(backup_row):
@@ -1240,6 +1275,8 @@ def list_connection_backups(connection_id, limit=200):
 
         # добор, сделанный до появления parent_id, узнаётся по задаче
         row["_skipped_from"] = (config or {}).get("skipped_from")
+        # почему таблицы не попали в копию (из лога задачи)
+        row["skip_errors"] = (config or {}).get("skip_errors") or {}
 
         # сводка состава (таблиц/схем), если её уже читали с координатора
         try:
@@ -1354,6 +1391,7 @@ def link_topups(rows):
                 "duration_sec": k.get("duration_sec"),
                 "skipped": len(own),
                 "covered": covered,
+                "skip_errors": k.get("skip_errors") or {},
             })
 
         r["topups"] = topups
@@ -1673,10 +1711,12 @@ def prepare_topup_job(backup_id, attempt=0):
     return job_id
 
 
-def schedule_auto_topup(config, backup_id):
+def schedule_auto_topup(config, backup_id, skipped=None):
     """
     Частичный бэкап с автодобором -> через AUTO_TOPUP_DELAY сек добор
-    пропущенных, не больше AUTO_TOPUP_ATTEMPTS попыток подряд. Номер
+    пропущенных, не больше AUTO_TOPUP_ATTEMPTS доборов на копию (ручные
+    тоже считаются). Не запускается, если у всех пропущенных таблиц
+    постоянная ошибка (схема, данные): повтор упал бы так же. Номер
     попытки или None, если автодобор не положен.
     """
     config = config or {}
@@ -1684,9 +1724,20 @@ def schedule_auto_topup(config, backup_id):
     if not backup_id or not config.get("auto_topup") or not config.get("on_error_continue"):
         return None
 
+    if all_permanent(skipped, config.get("skip_errors")):
+        return None
+
     attempt = int(config.get("topup_attempt") or 0) + 1
 
     if attempt > AUTO_TOPUP_ATTEMPTS:
+        return None
+
+    try:
+        family = backup_with_topups(int(config.get("parent_backup_id") or backup_id))
+    except Exception:
+        family = None
+
+    if family and len(family.get("topups") or []) >= AUTO_TOPUP_ATTEMPTS:
         return None
 
     _spawn(_auto_topup, backup_id, attempt)
@@ -2025,13 +2076,30 @@ def _finalize_backup_job(job_id, job_type, config, items, log_text, rc,
         ).format(partial["count"] or len(names),
                  ": " + shown if shown else "")
 
+        errors = parse_skip_errors(log_text)
+
+        if errors:
+            config["skip_errors"] = errors
+
+            try:
+                update_job_config(job_id, config)
+            except Exception:
+                pass
+
+            reasons = "; ".join("{} — {}".format(t, e) for t, e in list(errors.items())[:5])
+            message += " Причина: {}.".format(reasons)
+
+            if all_permanent(names, errors):
+                message += (" Это ошибка схемы или данных: повтор её не исправит, "
+                            "автодобор не запускается.")
+
         for item in items:
             mark_item_failed(item["id"], message[:2000])
 
         refresh_job_progress(job_id)
         mark_job_failed(job_id, "{}\n\nКоманда: {}\n\nХвост лога:\n{}".format(
             message, command_text, (log_text or "")[-5000:])[:12000])
-        schedule_auto_topup(config, backup_id)
+        schedule_auto_topup(config, backup_id, names)
         return
 
     errors = extract_backup_errors(log_text)
