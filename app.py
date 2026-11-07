@@ -814,6 +814,32 @@ def api_gpcopy_retry_failed():
     })
 
 
+@app.route("/api/sync/lock-settings", methods=["GET", "POST"])
+def api_sync_lock_settings():
+    """
+    Сторож блокировок синхронизации (GPCOPY, по ключу): сколько ждать чужую
+    блокировку, сколько раз догружать отложенное, чей ETL в приоритете.
+    """
+    from modules import lock_guard
+    from job_manager import current_username
+
+    if request.method == "POST":
+        try:
+            settings = lock_guard.save_settings(
+                request.get_json(silent=True) or {}, user=current_username())
+        except ValueError as e:
+            return jsonify({"ok": False, "message": str(e)}), 400
+    else:
+        settings = lock_guard.load_settings()
+
+    return jsonify({
+        "ok": True,
+        "settings": settings,
+        "priority_text": "\n".join(
+            lock_guard.rule_label(r) for r in settings["priority"]),
+    })
+
+
 @app.route("/api/gpcopy/jobs/<int:job_id>/drop-stages", methods=["POST"])
 def api_gpcopy_drop_stages(job_id):
     """«Удалить промежуточные»: отказаться от дозагрузки упавшей задачи."""
@@ -1116,6 +1142,13 @@ def api_jobs_recent():
 
         # сохранённые промежуточные таблицы (дозагрузка или удаление)
         j["stage_kept"] = len(cfg.get("stage_kept") or [])
+
+        # сторож блокировок: отложенное, пауза ради ETL, догрузка
+        lock = cfg.get("lock_state")
+
+        if lock:
+            j["lock"] = {k: v for k, v in lock.items()
+                         if k not in ("leaf_roots", "left_leaves")}
 
         sides = []
         for side in (src, dst):

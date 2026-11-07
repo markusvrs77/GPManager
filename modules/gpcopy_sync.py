@@ -7,7 +7,7 @@ import traceback
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import config
 
@@ -18,7 +18,19 @@ from job_manager import (
     mark_job_done,
     mark_item_running,
     refresh_job_progress,
+    update_job_config,
 )
+
+try:
+    from modules import lock_guard
+except ImportError:
+    import lock_guard
+
+LOCK_SIDE_SOURCE = "источник"
+LOCK_SIDE_DEST = "приёмник"
+# что берёт синхронизация: чтение на проде, DML (UPDATE/DELETE/INSERT) на тесте
+LOCK_NEED_SYNC = {LOCK_SIDE_SOURCE: "AccessShareLock",
+                  LOCK_SIDE_DEST: "RowExclusiveLock"}
 
 
 def get_item_value(obj, key, default=None):
@@ -153,13 +165,52 @@ def apply_sync_targets(table_configs, raw_targets):
     return configs, targets
 
 
+def _communicate_guarded(process, guard):
+    """
+    Загрузка в staging под сторожем блокировок. Как только он отложил
+    таблицу (ждала чужую блокировку / мешала приоритетному ETL), staging всё
+    равно неполный — отменяем свои запросы и останавливаем gpcopy, чтобы
+    сразу освободить таблицу на проде.
+    """
+    import threading
+
+    out = {}
+
+    def read():
+        out["stdout"], out["stderr"] = process.communicate()
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    guard.start_watch()
+
+    try:
+        while reader.is_alive():
+            reader.join(1)
+
+            if guard.round_roots and process.poll() is None:
+                guard.cancel_ours()
+
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+
+                reader.join(60)
+                break
+    finally:
+        guard.stop_watch()
+
+    return out.get("stdout") or "", out.get("stderr") or ""
+
+
 def copy_source_to_stage_via_gpcopy(source_connection_id, dest_connection_id,
                                     source_schema, source_table,
                                     stage_schema, stage_table,
-                                    gpcopy_path, jobs):
+                                    gpcopy_path, jobs, guard=None):
     """
     Перенос source -> staging бинарём gpcopy (segment-to-segment),
-    а не построчной перекачкой через psycopg2.
+    а не построчной перекачкой через psycopg2. guard — сторож блокировок:
+    таблица отложена -> lock_guard.LockDeferred.
     """
     source_cfg = get_connection_by_id(int(source_connection_id))
     dest_cfg = get_connection_by_id(int(dest_connection_id))
@@ -183,11 +234,21 @@ def copy_source_to_stage_via_gpcopy(source_connection_id, dest_connection_id,
 
     print(f"[gpcopy_sync] gpcopy stage load: {' '.join(cmd)}")
 
+    if guard is not None:
+        guard.new_round()   # сессии, открытые до старта, — не наши
+
     process = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         universal_newlines=True,
     )
-    stdout_data, stderr_data = process.communicate()
+
+    if guard is None:
+        stdout_data, stderr_data = process.communicate()
+    else:
+        stdout_data, stderr_data = _communicate_guarded(process, guard)
+
+        if guard.round_roots:
+            raise lock_guard.LockDeferred(guard.round_reason() or "блокировка")
 
     if process.returncode != 0:
         raise Exception(
@@ -196,6 +257,52 @@ def copy_source_to_stage_via_gpcopy(source_connection_id, dest_connection_id,
                 (stderr_data or stdout_data or "")[-2000:],
             )
         )
+
+
+def start_sync_lock_guard(job_id, config, source_connection_id,
+                          dest_connection_id, table_configs, settings):
+    """Сторож блокировок на прод и тест; None — выключен или не подключился."""
+    if not settings.get("enabled"):
+        return None
+
+    src_pairs, dst_pairs = [], []
+
+    for cfg in table_configs:
+        source_full, target_full = resolve_sync_names(cfg)
+        src_pairs.append(split_table_name(source_full))
+        dst_pairs.append(split_table_name(target_full))
+
+    state = config.setdefault("lock_state", {})
+    state.update({"enabled": True, "phase": "copy", "attempt": 0,
+                  "attempts": int(settings["attempts"]),
+                  "wait_seconds": int(settings["wait_seconds"])})
+
+    def save(guard=None):
+        if guard is not None:
+            state.update(guard.summary())
+
+        try:
+            update_job_config(job_id, config)
+        except Exception:
+            pass
+
+    guard = lock_guard.LockGuard(
+        [lock_guard.Side(LOCK_SIDE_SOURCE, lambda: open_conn(source_connection_id),
+                         src_pairs),
+         lock_guard.Side(LOCK_SIDE_DEST, lambda: open_conn(dest_connection_id),
+                         dst_pairs)],
+        settings, on_change=save)
+
+    guard.open()
+    guard.save = save
+
+    if not guard.sides:
+        state.update({"enabled": False, "warnings": guard.warnings})
+        save()
+        return None
+
+    save(guard)
+    return guard
 
 
 def run_gpcopy_sync_job(job_id):
@@ -261,314 +368,466 @@ def run_gpcopy_sync_job(job_id):
         target_conn = open_conn(dest_connection_id)
         target_conn.autocommit = False
 
-        try:
-            for item in items:
-                # переподхват после рестарта: готовые строки не переделываем
-                if get_item_value(item, "status") in (
-                        "done", "failed", "skipped"):
-                    continue
+        # блокировки: заблокированное не ждём, приоритетному ETL не мешаем —
+        # отложенные таблицы догружаются в конце, не больше attempts раз
+        lock_settings = lock_guard.load_settings()
+        guard = start_sync_lock_guard(
+            job_id, config, source_connection_id, dest_connection_id,
+            table_configs, lock_settings)
 
-                item_id = get_item_value(item, "id")
-                schema_name = get_item_value(item, "schema_name", "")
-                table_name = get_item_value(item, "table_name", "")
+        try:
+            lock_attempt = 0
+            lock_reasons = {}
+            lock_tables = {}
+            pending = list(items)
+
+            def _save_lock_state(phase, **extra):
+                if guard is None:
+                    return
+
+                state = config.setdefault("lock_state", {})
+                state.update(guard.summary())
+                state["deferred"] = [{"table": t, "parts": 1, "reason": r}
+                                     for t, r in sorted(lock_tables.items())]
+                state.update({"phase": phase, "attempt": lock_attempt}, **extra)
 
                 try:
-                    if is_stop_requested(job_id):
+                    update_job_config(job_id, config)
+                except Exception:
+                    pass
+
+            while pending:
+                deferred = []
+
+                for item in pending:
+                    # переподхват после рестарта: готовые строки не переделываем
+                    if get_item_value(item, "status") in (
+                            "done", "failed", "skipped"):
+                        continue
+
+                    item_id = get_item_value(item, "id")
+                    schema_name = get_item_value(item, "schema_name", "")
+                    table_name = get_item_value(item, "table_name", "")
+
+                    try:
+                        if is_stop_requested(job_id):
+                            if item_id:
+                                sync_update_item_status(item_id, "cancelled", "Stop requested")
+
+                            sync_update_job_status(job_id, "cancelled", "Stop requested")
+                            refresh_job_progress(job_id)
+                            return
+
                         if item_id:
-                            sync_update_item_status(item_id, "cancelled", "Stop requested")
+                            sync_update_item_status(item_id, "running")
 
-                        sync_update_job_status(job_id, "cancelled", "Stop requested")
-                        refresh_job_progress(job_id)
-                        return
+                        print(f"[gpcopy_sync] processing {schema_name}.{table_name}")
 
-                    if item_id:
-                        sync_update_item_status(item_id, "running")
+                        table_cfg = None
 
-                    print(f"[gpcopy_sync] processing {schema_name}.{table_name}")
+                        for cfg in table_configs:
+                            cfg_schema = cfg.get("schema") or ""
+                            cfg_table = cfg.get("table") or ""
 
-                    table_cfg = None
+                            if cfg_schema == schema_name and cfg_table == table_name:
+                                table_cfg = cfg
+                                break
 
-                    for cfg in table_configs:
-                        cfg_schema = cfg.get("schema") or ""
-                        cfg_table = cfg.get("table") or ""
+                        if not table_cfg:
+                            raise Exception(f"Config not found for {schema_name}.{table_name}")
 
-                        if cfg_schema == schema_name and cfg_table == table_name:
-                            table_cfg = cfg
-                            break
+                        source_full, target_full = resolve_sync_names(table_cfg)
+                        source_schema, source_table = split_table_name(source_full)
+                        target_schema, target_table = split_table_name(target_full)
 
-                    if not table_cfg:
-                        raise Exception(f"Config not found for {schema_name}.{table_name}")
+                        # таблица сейчас занята — не начинаем
+                        if guard is not None:
+                            busy = guard.busy(
+                                [guard.root_of_name(source_schema, source_table)
+                                 or (source_schema, source_table),
+                                 guard.root_of_name(target_schema, target_table)
+                                 or (target_schema, target_table)],
+                                LOCK_NEED_SYNC)
 
-                    source_full, target_full = resolve_sync_names(table_cfg)
-                    source_schema, source_table = split_table_name(source_full)
-                    target_schema, target_table = split_table_name(target_full)
+                            if busy:
+                                raise lock_guard.LockDeferred(
+                                    "; ".join(sorted(set(busy.values()))))
 
-                    key_columns = table_cfg.get("key_columns") or []
-                    compare_columns = table_cfg.get("compare_columns") or ["*"]
-                    delete_missing = bool(table_cfg.get("delete_missing"))
+                        key_columns = table_cfg.get("key_columns") or []
+                        compare_columns = table_cfg.get("compare_columns") or ["*"]
+                        delete_missing = bool(table_cfg.get("delete_missing"))
 
-                    if not key_columns:
-                        raise Exception(f"Key columns empty for {schema_name}.{table_name}")
+                        if not key_columns:
+                            raise Exception(f"Key columns empty for {schema_name}.{table_name}")
 
-                    # цель с картой: нет в приёмнике — создаём по структуре
-                    # источника (DDL только на приёмнике). Не вышло —
-                    # таблица падает без загрузки.
-                    if is_mapped(targets, source_schema, source_table):
-                        try:
-                            from modules.ddl_check import ensure_target_table
-                        except ImportError:
-                            from ddl_check import ensure_target_table
+                        # цель с картой: нет в приёмнике — создаём по структуре
+                        # источника (DDL только на приёмнике). Не вышло —
+                        # таблица падает без загрузки.
+                        if is_mapped(targets, source_schema, source_table):
+                            try:
+                                from modules.ddl_check import ensure_target_table
+                            except ImportError:
+                                from ddl_check import ensure_target_table
 
-                        try:
-                            if ensure_target_table(
-                                    source_conn, target_conn,
-                                    source_schema, source_table,
-                                    target_schema, target_table):
-                                print(f"[gpcopy_sync] created target "
-                                      f"{target_schema}.{target_table}")
-                            target_conn.commit()
-                        except Exception as create_error:
+                            try:
+                                if ensure_target_table(
+                                        source_conn, target_conn,
+                                        source_schema, source_table,
+                                        target_schema, target_table):
+                                    print(f"[gpcopy_sync] created target "
+                                          f"{target_schema}.{target_table}")
+                                target_conn.commit()
+                            except Exception as create_error:
+                                raise Exception(
+                                    f"Цели {target_schema}.{target_table} нет в "
+                                    f"приёмнике, и создать её по "
+                                    f"{source_schema}.{source_table} не удалось: "
+                                    f"{create_error}")
+
+                        common_cols, compare_cols = normalize_columns(
+                            source_conn,
+                            target_conn,
+                            source_schema,
+                            source_table,
+                            target_schema,
+                            target_table,
+                            key_columns,
+                            compare_columns,
+                        )
+
+                        if not common_cols:
+                            raise Exception("No common columns found")
+
+                        stage_schema = "gpmanager_sync_stage"
+                        stage_table = safe_stage_name(target_schema, target_table, job_id)
+
+                        target_full = full_table(target_schema, target_table)
+                        stage_full = full_table(stage_schema, stage_table)
+
+                        # 1. Create stage schema/table on TEST
+                        print(f"[gpcopy_sync] create staging {stage_schema}.{stage_table}")
+
+                        run_sql_execute(
+                            target_conn,
+                            f"CREATE SCHEMA IF NOT EXISTS {qident(stage_schema)}"
+                        )
+
+                        run_sql_execute(
+                            target_conn,
+                            f"DROP TABLE IF EXISTS {stage_full}"
+                        )
+
+                        run_sql_execute(
+                            target_conn,
+                            f"""
+                            CREATE TABLE {stage_full}
+                            AS
+                            SELECT {build_cols_list(common_cols)}
+                            FROM {target_full}
+                            WHERE 1 = 0
+                            DISTRIBUTED RANDOMLY
+                            """
+                        )
+
+                        target_conn.commit()
+
+                        # 2. Copy source -> staging бинарём gpcopy
+                        print(
+                            f"[gpcopy_sync] copy source to staging via gpcopy: "
+                            f"{source_schema}.{source_table} -> {stage_schema}.{stage_table}"
+                        )
+
+                        copy_source_to_stage_via_gpcopy(
+                            source_connection_id=source_connection_id,
+                            dest_connection_id=dest_connection_id,
+                            source_schema=source_schema,
+                            source_table=source_table,
+                            stage_schema=stage_schema,
+                            stage_table=stage_table,
+                            gpcopy_path=gpcopy_path,
+                            jobs=jobs,
+                            guard=guard,
+                        )
+
+
+                        # 3. Проверяем, сколько строк пришло в staging
+                        stage_count_row = run_sql_fetch_one(
+                            target_conn,
+                            f"SELECT COUNT(*) AS cnt FROM {stage_full}"
+                        )
+
+                        stage_count = int(stage_count_row.get("cnt") or 0)
+
+                        print(f"[gpcopy_sync] staging rows: {stage_count}")
+
+                        # 4. Проверяем дубли ключа в staging
+                        key_cols_expr = build_cols_list(key_columns)
+
+                        duplicate_row = run_sql_fetch_one(
+                            target_conn,
+                            f"""
+                            SELECT COUNT(*) AS duplicate_keys
+                            FROM (
+                                SELECT {key_cols_expr}
+                                FROM {stage_full}
+                                GROUP BY {key_cols_expr}
+                                HAVING COUNT(*) > 1
+                                LIMIT 1
+                            ) x
+                            """
+                        )
+
+                        duplicate_keys = int(duplicate_row.get("duplicate_keys") or 0)
+
+                        if duplicate_keys > 0:
                             raise Exception(
-                                f"Цели {target_schema}.{target_table} нет в "
-                                f"приёмнике, и создать её по "
-                                f"{source_schema}.{source_table} не удалось: "
-                                f"{create_error}")
+                                f"Duplicate key detected in source/staging for {schema_name}.{table_name}. "
+                                f"Key columns: {', '.join(key_columns)}"
+                            )
 
-                    common_cols, compare_cols = normalize_columns(
-                        source_conn,
-                        target_conn,
-                        source_schema,
-                        source_table,
-                        target_schema,
-                        target_table,
-                        key_columns,
-                        compare_columns,
-                    )
+                        key_cond = build_key_condition("t", "s", key_columns)
 
-                    if not common_cols:
-                        raise Exception("No common columns found")
+                        target_hash = build_hash_expr("t", compare_cols)
+                        stage_hash = build_hash_expr("s", compare_cols)
 
-                    stage_schema = "gpmanager_sync_stage"
-                    stage_table = safe_stage_name(target_schema, target_table, job_id)
+                        insert_cols = build_cols_list(common_cols)
+                        insert_select_cols = build_cols_list(common_cols, "s")
 
-                    target_full = full_table(target_schema, target_table)
-                    stage_full = full_table(stage_schema, stage_table)
+                        update_set = ", ".join([
+                            f"{qident(c)} = s.{qident(c)}"
+                            for c in compare_cols
+                        ])
 
-                    # 1. Create stage schema/table on TEST
-                    print(f"[gpcopy_sync] create staging {stage_schema}.{stage_table}")
-
-                    run_sql_execute(
-                        target_conn,
-                        f"CREATE SCHEMA IF NOT EXISTS {qident(stage_schema)}"
-                    )
-
-                    run_sql_execute(
-                        target_conn,
-                        f"DROP TABLE IF EXISTS {stage_full}"
-                    )
-
-                    run_sql_execute(
-                        target_conn,
-                        f"""
-                        CREATE TABLE {stage_full}
-                        AS
-                        SELECT {build_cols_list(common_cols)}
-                        FROM {target_full}
-                        WHERE 1 = 0
-                        DISTRIBUTED RANDOMLY
-                        """
-                    )
-
-                    target_conn.commit()
-
-                    # 2. Copy source -> staging бинарём gpcopy
-                    print(
-                        f"[gpcopy_sync] copy source to staging via gpcopy: "
-                        f"{source_schema}.{source_table} -> {stage_schema}.{stage_table}"
-                    )
-
-                    copy_source_to_stage_via_gpcopy(
-                        source_connection_id=source_connection_id,
-                        dest_connection_id=dest_connection_id,
-                        source_schema=source_schema,
-                        source_table=source_table,
-                        stage_schema=stage_schema,
-                        stage_table=stage_table,
-                        gpcopy_path=gpcopy_path,
-                        jobs=jobs,
-                    )
-
-
-                    # 3. Проверяем, сколько строк пришло в staging
-                    stage_count_row = run_sql_fetch_one(
-                        target_conn,
-                        f"SELECT COUNT(*) AS cnt FROM {stage_full}"
-                    )
-
-                    stage_count = int(stage_count_row.get("cnt") or 0)
-
-                    print(f"[gpcopy_sync] staging rows: {stage_count}")
-
-                    # 4. Проверяем дубли ключа в staging
-                    key_cols_expr = build_cols_list(key_columns)
-
-                    duplicate_row = run_sql_fetch_one(
-                        target_conn,
-                        f"""
-                        SELECT COUNT(*) AS duplicate_keys
-                        FROM (
-                            SELECT {key_cols_expr}
-                            FROM {stage_full}
-                            GROUP BY {key_cols_expr}
-                            HAVING COUNT(*) > 1
-                            LIMIT 1
-                        ) x
-                        """
-                    )
-
-                    duplicate_keys = int(duplicate_row.get("duplicate_keys") or 0)
-
-                    if duplicate_keys > 0:
-                        raise Exception(
-                            f"Duplicate key detected in source/staging for {schema_name}.{table_name}. "
-                            f"Key columns: {', '.join(key_columns)}"
-                        )
-
-                    key_cond = build_key_condition("t", "s", key_columns)
-
-                    target_hash = build_hash_expr("t", compare_cols)
-                    stage_hash = build_hash_expr("s", compare_cols)
-
-                    insert_cols = build_cols_list(common_cols)
-                    insert_select_cols = build_cols_list(common_cols, "s")
-
-                    update_set = ", ".join([
-                        f"{qident(c)} = s.{qident(c)}"
-                        for c in compare_cols
-                    ])
-
-                    # 5. Preview counts
-                    insert_count = int(run_sql_fetch_one(
-                        target_conn,
-                        f"""
-                        SELECT COUNT(*) AS cnt
-                        FROM {stage_full} s
-                        WHERE NOT EXISTS (
-                            SELECT 1
-                            FROM {target_full} t
-                            WHERE {key_cond}
-                        )
-                        """
-                    ).get("cnt") or 0)
-
-                    update_count = int(run_sql_fetch_one(
-                        target_conn,
-                        f"""
-                        SELECT COUNT(*) AS cnt
-                        FROM {target_full} t
-                        JOIN {stage_full} s
-                          ON {key_cond}
-                        WHERE {target_hash} <> {stage_hash}
-                        """
-                    ).get("cnt") or 0)
-
-                    delete_count = 0
-
-                    if delete_missing:
-                        delete_count = int(run_sql_fetch_one(
+                        # 5. Preview counts
+                        insert_count = int(run_sql_fetch_one(
                             target_conn,
                             f"""
                             SELECT COUNT(*) AS cnt
-                            FROM {target_full} t
+                            FROM {stage_full} s
                             WHERE NOT EXISTS (
                                 SELECT 1
-                                FROM {stage_full} s
+                                FROM {target_full} t
                                 WHERE {key_cond}
                             )
                             """
                         ).get("cnt") or 0)
 
-                    print(
-                        f"[gpcopy_sync] diff {schema_name}.{table_name}: "
-                        f"insert={insert_count}, update={update_count}, delete={delete_count}"
-                    )
+                        update_count = int(run_sql_fetch_one(
+                            target_conn,
+                            f"""
+                            SELECT COUNT(*) AS cnt
+                            FROM {target_full} t
+                            JOIN {stage_full} s
+                              ON {key_cond}
+                            WHERE {target_hash} <> {stage_hash}
+                            """
+                        ).get("cnt") or 0)
 
-                    # 6. DELETE missing
-                    if delete_missing:
+                        delete_count = 0
+
+                        if delete_missing:
+                            delete_count = int(run_sql_fetch_one(
+                                target_conn,
+                                f"""
+                                SELECT COUNT(*) AS cnt
+                                FROM {target_full} t
+                                WHERE NOT EXISTS (
+                                    SELECT 1
+                                    FROM {stage_full} s
+                                    WHERE {key_cond}
+                                )
+                                """
+                            ).get("cnt") or 0)
+
+                        print(
+                            f"[gpcopy_sync] diff {schema_name}.{table_name}: "
+                            f"insert={insert_count}, update={update_count}, delete={delete_count}"
+                        )
+
+                        # чужую блокировку на тесте ждём не дольше порога:
+                        # иначе откат и таблица в конец очереди
+                        if guard is not None:
+                            run_sql_execute(
+                                target_conn,
+                                "SET LOCAL lock_timeout = '{}s'".format(
+                                    int(lock_settings["wait_seconds"])))
+
+                        # 6. DELETE missing
+                        if delete_missing:
+                            run_sql_execute(
+                                target_conn,
+                                f"""
+                                DELETE FROM {target_full} t
+                                WHERE NOT EXISTS (
+                                    SELECT 1
+                                    FROM {stage_full} s
+                                    WHERE {key_cond}
+                                )
+                                """
+                            )
+
+                        # 7. UPDATE changed
+                        if update_set:
+                            run_sql_execute(
+                                target_conn,
+                                f"""
+                                UPDATE {target_full} t
+                                SET {update_set}
+                                FROM {stage_full} s
+                                WHERE {key_cond}
+                                  AND {target_hash} <> {stage_hash}
+                                """
+                            )
+
+                        # 8. INSERT new
                         run_sql_execute(
                             target_conn,
                             f"""
-                            DELETE FROM {target_full} t
+                            INSERT INTO {target_full} ({insert_cols})
+                            SELECT {insert_select_cols}
+                            FROM {stage_full} s
                             WHERE NOT EXISTS (
                                 SELECT 1
-                                FROM {stage_full} s
+                                FROM {target_full} t
                                 WHERE {key_cond}
                             )
                             """
                         )
 
-                    # 7. UPDATE changed
-                    if update_set:
-                        run_sql_execute(
-                            target_conn,
-                            f"""
-                            UPDATE {target_full} t
-                            SET {update_set}
-                            FROM {stage_full} s
-                            WHERE {key_cond}
-                              AND {target_hash} <> {stage_hash}
-                            """
-                        )
-
-                    # 8. INSERT new
-                    run_sql_execute(
-                        target_conn,
-                        f"""
-                        INSERT INTO {target_full} ({insert_cols})
-                        SELECT {insert_select_cols}
-                        FROM {stage_full} s
-                        WHERE NOT EXISTS (
-                            SELECT 1
-                            FROM {target_full} t
-                            WHERE {key_cond}
-                        )
-                        """
-                    )
-
-                    target_conn.commit()
-
-                    # 9. Drop staging
-                    try:
-                        run_sql_execute(
-                            target_conn,
-                            f"DROP TABLE IF EXISTS {stage_full}"
-                        )
                         target_conn.commit()
-                    except Exception:
+
+                        # 9. Drop staging
+                        try:
+                            run_sql_execute(
+                                target_conn,
+                                f"DROP TABLE IF EXISTS {stage_full}"
+                            )
+                            target_conn.commit()
+                        except Exception:
+                            target_conn.rollback()
+
+                        done_message = (
+                            f"stage={stage_count}; "
+                            f"insert={insert_count}; "
+                            f"update={update_count}; "
+                            f"delete={delete_count}"
+                        )
+
+                        if item_id:
+                            sync_update_item_status(item_id, "done", done_message)
+
+                        refresh_job_progress(job_id)
+
+                    except Exception as item_error:
                         target_conn.rollback()
 
-                    done_message = (
-                        f"stage={stage_count}; "
-                        f"insert={insert_count}; "
-                        f"update={update_count}; "
-                        f"delete={delete_count}"
-                    )
+                        # таблица занята (блокировка, приоритетный ETL) —
+                        # не ждём: откладываем и догружаем в конце
+                        if guard is not None and (
+                                isinstance(item_error, lock_guard.LockDeferred)
+                                or lock_guard.is_lock_timeout(item_error)):
+                            reason = (
+                                str(item_error)
+                                if isinstance(item_error, lock_guard.LockDeferred)
+                                else "{}: блокировку не дали за {} с".format(
+                                    LOCK_SIDE_DEST, lock_settings["wait_seconds"]))
+                            deferred.append(item)
+                            lock_reasons[item_id] = reason
+                            lock_tables["{}.{}".format(schema_name, table_name)] = reason
+                            print(f"[gpcopy_sync] отложена {schema_name}.{table_name}: {reason}")
 
-                    if item_id:
-                        sync_update_item_status(item_id, "done", done_message)
+                            if item_id:
+                                sync_update_item_status(
+                                    item_id, "queued", "Отложена: " + reason[:1500])
 
+                            _save_lock_state("copy")
+                            refresh_job_progress(job_id)
+                            continue
+
+                        print(f"[gpcopy_sync] item failed: {schema_name}.{table_name}: {item_error}")
+                        traceback.print_exc()
+
+                        if item_id:
+                            sync_update_item_status(item_id, "failed", str(item_error))
+
+                        refresh_job_progress(job_id)
+
+                if not deferred:
+                    break
+
+                lock_tables = {
+                    "{}.{}".format(get_item_value(i, "schema_name", ""),
+                                   get_item_value(i, "table_name", "")):
+                    lock_reasons.get(get_item_value(i, "id"), "")
+                    for i in deferred
+                }
+
+                if lock_attempt >= int(lock_settings["attempts"]):
+                    for item in deferred:
+                        iid = get_item_value(item, "id")
+
+                        if iid:
+                            sync_update_item_status(
+                                iid, "failed",
+                                "Не догружено из-за блокировок (попыток: {}): {}".format(
+                                    lock_settings["attempts"],
+                                    lock_reasons.get(iid, ""))[:2000])
+
+                    _save_lock_state("done", left=len(deferred))
+                    break
+
+                lock_attempt += 1
+                retry_seconds = int(lock_settings["retry_minutes"]) * 60
+                _save_lock_state(
+                    "waiting", left=len(deferred),
+                    next_at=(datetime.now() + timedelta(seconds=retry_seconds))
+                    .strftime("%Y-%m-%d %H:%M:%S"))
+
+                def _should_stop():
+                    return is_stop_requested(job_id)
+
+                stopped = not lock_guard.sleep_unless_stopped(retry_seconds, _should_stop)
+
+                if not stopped:
+                    _save_lock_state("waiting_free", next_at=None)
+                    roots = set()
+
+                    for item in deferred:
+                        cfg = next((c for c in table_configs
+                                    if c.get("schema") == get_item_value(item, "schema_name")
+                                    and c.get("table") == get_item_value(item, "table_name")),
+                                   None)
+
+                        if cfg:
+                            for full in resolve_sync_names(cfg):
+                                pair = split_table_name(full)
+                                roots.add(guard.root_of_name(*pair) or pair)
+
+                    def _on_wait(busy):
+                        _save_lock_state("waiting_free", busy=[
+                            "{}.{} — {}".format(r[0], r[1], why)
+                            for r, why in sorted(busy.items())][:20])
+
+                    stopped = lock_guard.wait_until_free(
+                        guard, roots, LOCK_NEED_SYNC,
+                        int(lock_settings["max_wait_minutes"]) * 60,
+                        _should_stop, on_wait=_on_wait) is None
+
+                if stopped:
+                    for item in deferred:
+                        iid = get_item_value(item, "id")
+
+                        if iid:
+                            sync_update_item_status(iid, "cancelled", "Stop requested")
+
+                    sync_update_job_status(job_id, "cancelled", "Stop requested")
                     refresh_job_progress(job_id)
+                    return
 
-                except Exception as item_error:
-                    target_conn.rollback()
-
-                    print(f"[gpcopy_sync] item failed: {schema_name}.{table_name}: {item_error}")
-                    traceback.print_exc()
-
-                    if item_id:
-                        sync_update_item_status(item_id, "failed", str(item_error))
-
-                    refresh_job_progress(job_id)
+                _save_lock_state("retry", busy=[])
+                print(f"[gpcopy_sync] догрузка отложенного: {len(deferred)} таблиц, "
+                      f"попытка {lock_attempt}/{lock_settings['attempts']}")
+                pending = deferred
 
             refresh_job_progress(job_id)
 
@@ -600,6 +859,9 @@ def run_gpcopy_sync_job(job_id):
             print(f"[gpcopy_sync] job {job_id} finished")
 
         finally:
+            if guard is not None:
+                guard.close()
+
             source_conn.close()
             target_conn.close()
 

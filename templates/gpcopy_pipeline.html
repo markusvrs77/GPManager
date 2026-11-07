@@ -134,6 +134,18 @@
 .gpp-hint .bad { color: var(--crit); }
 details.gpp-exp { margin-top: 12px; }
 details.gpp-exp summary { font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
+/* блокировки и приоритет ETL */
+.gpp-lock textarea { width: 100%; min-height: 64px; background: var(--solid);
+  border: 1px solid var(--hairline); color: var(--text); border-radius: 8px;
+  padding: 7px 10px; font-size: 12.5px; font-family: var(--font-mono); resize: vertical; }
+.gpp-lock .gpp-f input { min-width: 0; width: 110px; }
+.gpp-lock summary .warn { color: var(--warn); }
+.gpp-lock-run { border: 1px solid var(--warn); border-radius: var(--radius-sm);
+  padding: 8px 12px; margin: 6px 0 10px; font-size: 12.5px; }
+.gpp-lock-run .t { font-weight: 600; margin-bottom: 4px; }
+.gpp-lock-run ul { margin: 4px 0 0; padding-left: 18px; }
+.gpp-lock-run li { margin: 2px 0; word-break: break-word; }
+.gpp-lock-run .mut { color: var(--text-muted); }
 
 .gpp-when { display: flex; gap: 10px; margin-bottom: 14px; }
 .gpp-when .opt { flex: 1; text-align: center; padding: 10px; border: 1.5px solid var(--hairline);
@@ -771,6 +783,43 @@ details.gpp-tgt > summary { padding: 7px 11px; font-size: 13px; }
                 </div>
             </div>
         </details>
+
+        {% if (toolkit or 'gp') != 'pg' %}
+        <details class="gpp-exp gpp-lock" id="gppLockBox">
+            <summary>Блокировки и приоритет ETL <span id="gppLockSum"></span></summary>
+            <div class="gpp-params show" style="margin-top: 8px;">
+                <div class="gpp-hint" style="margin-top: 0;">
+                    Полная замена и синхронизация по ключу. Заблокированную таблицу
+                    синхронизация не ждёт: откладывает и догружает в конце задачи.
+                    Если приоритетная сессия (ETL) ждёт нашу блокировку, начатая
+                    партиция доделывается, остальные партиции этой таблицы идут после ETL.
+                    Настройки общие для всех запусков, включая расписание.</div>
+                <div class="gpp-row" style="margin-top: 10px;">
+                    <label class="gpp-hint" style="margin: 0 6px 6px 0; cursor: pointer;">
+                        <input type="checkbox" id="gppLockOn" style="accent-color: var(--a1);">
+                        Не ждать блокировок</label>
+                    <div class="gpp-f"><label for="gppLockWait">Ждать блокировку, сек</label>
+                        <input id="gppLockWait" type="number" min="5" max="3600"></div>
+                    <div class="gpp-f"><label for="gppLockAttempts">Попыток догрузки</label>
+                        <input id="gppLockAttempts" type="number" min="0" max="20"></div>
+                    <div class="gpp-f"><label for="gppLockRetry">Пауза перед догрузкой, мин</label>
+                        <input id="gppLockRetry" type="number" min="0" max="720"></div>
+                    <div class="gpp-f"><label for="gppLockMaxWait">Ждать освобождения, мин</label>
+                        <input id="gppLockMaxWait" type="number" min="0" max="1440"></div>
+                </div>
+                <div class="gpp-f" style="margin-top: 10px;">
+                    <label for="gppLockPrio">Приоритетные сессии (ETL), по одной в строке:
+                        учётка@IP, учётка или @IP / подсеть</label>
+                    <textarea id="gppLockPrio" rows="3" spellcheck="false"
+                              placeholder="etl_loader@10.20.30.40&#10;@10.20.31.0/24&#10;informatica"></textarea>
+                </div>
+                <div class="gpp-row" style="margin-top: 10px; align-items: center;">
+                    <button class="gpp-btn" id="gppLockSave">Сохранить</button>
+                    <span class="gpp-hint" id="gppLockMsg" style="margin: 0;"></span>
+                </div>
+            </div>
+        </details>
+        {% endif %}
     </div>
 
     <!-- STEP 3: WHEN -->

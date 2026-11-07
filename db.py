@@ -320,6 +320,19 @@ def init_db():
             """
         )
 
+        # сторож блокировок синхронизации (modules/lock_guard.py): одна
+        # строка на приложение — порог ожидания, попытки, приоритетный ETL
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_lock_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                settings_json TEXT,
+                updated_at TEXT,
+                updated_by TEXT
+            )
+            """
+        )
+
         # где запускать gpbackup/gprestore кластера: на этом хосте или по
         # SSH на его координаторе (gpbackup работает только оттуда)
         cur.execute(

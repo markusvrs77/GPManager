@@ -2430,7 +2430,8 @@ def build_include_json_for_date(source_db, dest_db, table_configs):
     return result
 
 
-def _watch_gpcopy_log(job_id, log_path, item_keys, process=None, pid=None):
+def _watch_gpcopy_log(job_id, log_path, item_keys, process=None, pid=None,
+                      start_offset=0):
     """
     Следит за лог-файлом gpcopy: live-процент, пер-табличные счётчики,
     остановка по кнопке. Работает и для только что запущенного процесса,
@@ -2568,6 +2569,10 @@ def _watch_gpcopy_log(job_id, log_path, item_keys, process=None, pid=None):
         return ""
 
     with lf:
+        # догрузка отложенного дописывает тот же лог — читаем только её часть
+        if start_offset:
+            lf.seek(start_offset)
+
         while True:
             line = lf.readline()
 
@@ -2622,6 +2627,15 @@ def finalize_gpcopy_job(job_id, items, rc, stdout_data, stderr_data,
     Общая точка для обычного запуска и переподхвата после рестарта
     (там rc неизвестен — ориентируемся на финальную сводку gpcopy).
     """
+    # задача с догрузкой отложенного из-за блокировок: несколько прогонов
+    # gpcopy в одном логе — догруженное больше не упавшее, сводка общая
+    if LOCK_ROUND_MARK in (stdout_data or ""):
+        stdout_data, complete = reconcile_round_logs(
+            stdout_data, _lock_leaf_roots(config))
+
+        if complete:
+            rc = None   # судим по общей сводке всех прогонов
+
     summary = parse_gpcopy_summary(stdout_data)
     ok = is_gpcopy_success(rc, summary)
 
@@ -2892,6 +2906,368 @@ def resume_unfinished_gpcopy_jobs():
             )
 
     return handled
+
+
+# ------------------------------------------------------------------
+# Блокировки: не ждать чужие, не мешать приоритетному ETL
+# ------------------------------------------------------------------
+
+LOCK_ROUND_MARK = "==== Opsentri: догрузка отложенного из-за блокировок"
+LOCK_SIDE_SOURCE = "источник"
+LOCK_SIDE_DEST = "приёмник"
+
+
+def _lock_guard_module():
+    try:
+        from modules import lock_guard
+    except ImportError:
+        import lock_guard
+    return lock_guard
+
+
+def lock_guard_skip_reason(mode, targets, dry_run, stage_resume, truncate, drop):
+    """
+    Почему сторож блокировок не включается (None — включается). Отложенное
+    догружается повторным gpcopy с --truncate по партициям — это безопасно
+    только для полной замены без карты целей. Чистая функция.
+    """
+    if dry_run:
+        return "пробный запуск"
+    if mode and mode != "full":
+        return "режим «{}»: догрузка партиций по окну дат не поддерживается".format(mode)
+    if targets:
+        return "есть загрузка в другую таблицу"
+    if stage_resume:
+        return "дозагрузка через промежуточные таблицы"
+    if not (truncate or drop):
+        return ("режим без очистки (append / skip-existing): повторная загрузка "
+                "дала бы дубли или пропуск")
+    return None
+
+
+def _lock_parent_guess(schema, table):
+    marker = table.find("_1_prt_")
+
+    if marker < 0:
+        marker = table.find("_1_def_")
+
+    return (schema, table[:marker]) if marker > 0 else None
+
+
+def reconcile_round_logs(text, leaf_roots=None):
+    """
+    Лог задачи с догрузкой отложенного (несколько прогонов gpcopy подряд):
+    партиция, догруженная следующим прогоном, больше не упавшая, сводка —
+    общая. -> (текст, все_прогоны_дошли_до_сводки). Если какой-то прогон
+    оборвался без сводки, свою сводку не подставляем. Чистая функция.
+    """
+    if LOCK_ROUND_MARK not in (text or ""):
+        return text, None
+
+    leaf_roots = leaf_roots or {}
+    parts = re.split(r"(?m)^" + re.escape(LOCK_ROUND_MARK) + r".*$", text)
+    summaries = [parse_gpcopy_summary(part) for part in parts]
+    complete = all(summaries)
+
+    finished = parse_finished_tables(text)
+    remaining = [p for p in parse_failed_leaf_tables(text) if p not in finished]
+
+    def parent(pair):
+        return leaf_roots.get(pair) or _lock_parent_guess(*pair)
+
+    open_parents = {parent(p) for p in remaining if parent(p)}
+    done_parents = {parent(p) for p in finished if parent(p)}
+    # корень отчитался Failed из-за своих партиций, а они догружены
+    remaining = [p for p in remaining
+                 if not (p in done_parents and p not in open_parents)]
+    left = set(remaining)
+
+    out = []
+
+    for line in text.splitlines(True):
+        failed = _FAILED_TABLE_RE.search(line)
+
+        if failed and (failed.group("schema"), failed.group("table")) not in left:
+            line = line.replace("Failed to copy table", "Догружено позже:")
+        elif complete and _SUMMARY_RE.search(line):
+            line = re.sub(r"(?i)successfully copied", "прогон: скопировано", line)
+
+        out.append(line)
+
+    if complete:
+        skipped = sum(int(sm.get("skipped") or 0) for sm in summaries)
+
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+
+        out.append("Opsentri, итог с догрузкой: successfully copied {} tables, "
+                   "skipped {} tables, failed {} tables\n".format(
+                       len(finished), skipped, len(remaining)))
+
+    return "".join(out), complete
+
+
+def _lock_leaf_roots(config):
+    """{(schema, партиция): (schema, корень)} отложенного — из конфига задачи."""
+    out = {}
+
+    for leaf, root in (config.get("lock_state") or {}).get("leaf_roots") or []:
+        out[tuple(leaf)] = tuple(root)
+
+    return out
+
+
+def lock_retry_leaves(round_text, round_roots, root_of, finished_all):
+    """
+    Что догружать после прогона: упавшее в нём по таблицам, где сторож
+    отменял запросы, минус доехавшее. Корень с упавшими партициями сам не
+    льётся (иначе --truncate перелил бы таблицу целиком). Чистая функция.
+    """
+    roots = set(round_roots)
+
+    def root(pair):
+        return root_of(*pair) or pair
+
+    failed = [p for p in parse_failed_leaf_tables(round_text) if root(p) in roots]
+    with_leaves = {root(p) for p in failed if root(p) != p}
+    failed = [p for p in failed if p not in with_leaves]
+
+    return dedupe_failed_leaves(failed, finished_all)
+
+
+def start_lock_guard(job_id, config, settings, source_connection,
+                     dest_connection, pairs):
+    """Сторож на обе базы; None — не подключился (причина в lock_state)."""
+    lg = _lock_guard_module()
+    state = config.setdefault("lock_state", {})
+    state.update({"enabled": True, "phase": "copy", "attempt": 0,
+                  "attempts": int(settings["attempts"]),
+                  "wait_seconds": int(settings["wait_seconds"])})
+
+    def save(guard=None):
+        if guard is not None:
+            state.update(guard.summary())
+
+            with guard.lock:
+                state["leaf_roots"] = [
+                    [list(leaf), list(root)]
+                    for root, v in guard.deferred.items()
+                    for leaf in v["leaves"]
+                    if root and leaf and leaf != root
+                ][:5000]
+
+        try:
+            update_job_config(job_id, config)
+        except Exception:
+            pass
+
+    def connector(cfg):
+        return lambda: open_psycopg2_connection_by_cfg(cfg)
+
+    guard = lg.LockGuard(
+        [lg.Side(LOCK_SIDE_SOURCE, connector(source_connection), pairs),
+         lg.Side(LOCK_SIDE_DEST, connector(dest_connection), pairs)],
+        settings, on_change=save)
+
+    guard.open()
+    guard.save = save
+
+    if not guard.sides:
+        state.update({"enabled": False, "warnings": guard.warnings})
+        save()
+        return None
+
+    save(guard)
+    return guard
+
+
+def _launch_gpcopy(job_id, cmd, log_path, item_keys, guard=None, header=None):
+    """
+    Один прогон gpcopy с логом в файл задачи (header — следующий прогон
+    дописывается в тот же лог). -> (rc, лог этого прогона).
+
+    Лог пишется в постоянный файл, процесс отвязан от родителя: рестарт
+    GPManager не убивает gpcopy, а при старте приложение переподхватывает
+    задачу по PID и лог-файлу.
+    """
+    if header:
+        with open(log_path, "a", encoding="utf-8", errors="replace") as f:
+            f.write("\n" + header + "\n")
+        start_offset = os.path.getsize(log_path)
+        log_handle = open(log_path, "a", encoding="utf-8", errors="replace")
+    else:
+        start_offset = 0
+        log_handle = open(log_path, "w", encoding="utf-8", errors="replace")
+
+    popen_kwargs = {
+        "stdout": log_handle,
+        "stderr": subprocess.STDOUT,
+        "universal_newlines": True,
+    }
+
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+    else:
+        popen_kwargs["creationflags"] = 0x00000200  # CREATE_NEW_PROCESS_GROUP
+
+    if guard is not None:
+        guard.new_round()   # сессии, открытые до старта, — не наши
+
+    try:
+        process = subprocess.Popen(cmd, **popen_kwargs)
+    finally:
+        try:
+            log_handle.close()
+        except Exception:
+            pass
+
+    set_job_runtime(job_id, pid=process.pid, log_file=log_path)
+
+    if guard is not None:
+        guard.start_watch()
+
+    try:
+        text = _watch_gpcopy_log(job_id, log_path, item_keys, process=process,
+                                 start_offset=start_offset)
+    finally:
+        if guard is not None:
+            guard.stop_watch()
+            guard.save(guard)
+
+    return process.returncode, text
+
+
+def _run_lock_rounds(job_id, config, guard, settings, cmd_kwargs, source_db,
+                     log_path, item_keys, first):
+    """
+    Догрузка отложенного в конце задачи: пауза, ожидание, пока таблицы
+    освободятся, и gpcopy только по отложенным партициям (--truncate) — не
+    больше attempts раз. -> (rc, общий лог) или None — задачу остановили.
+    """
+    from datetime import datetime, timedelta
+
+    lg = _lock_guard_module()
+    state = config["lock_state"]
+    rc, text = first
+    texts = [text]
+    attempts = int(settings["attempts"])
+    retry_seconds = int(settings["retry_minutes"]) * 60
+    need = {LOCK_SIDE_SOURCE: "AccessShareLock", LOCK_SIDE_DEST: "AccessExclusiveLock"}
+
+    def should_stop():
+        return is_stop_requested(job_id)
+
+    def pending():
+        finished = set()
+
+        for t in texts:
+            finished |= parse_finished_tables(t)
+
+        return lock_retry_leaves(texts[-1], guard.round_roots,
+                                 guard.root_of_name, finished)
+
+    leaves = pending()
+    attempt = 0
+
+    while leaves and attempt < attempts:
+        attempt += 1
+        roots = sorted({guard.root_of_name(*p) or p for p in leaves})
+        state.update({
+            "phase": "waiting", "attempt": attempt, "left": len(leaves),
+            "next_at": (datetime.now() + timedelta(seconds=retry_seconds))
+            .strftime("%Y-%m-%d %H:%M:%S"),
+            "busy": [],
+        })
+        guard.save(guard)
+
+        if not lg.sleep_unless_stopped(retry_seconds, should_stop):
+            return None
+
+        def on_wait(busy):
+            state["busy"] = ["{}.{} — {}".format(r[0], r[1], why)
+                             for r, why in sorted(busy.items())][:20]
+            guard.save(guard)
+
+        state.update({"phase": "waiting_free", "next_at": None})
+        guard.save(guard)
+
+        busy = lg.wait_until_free(guard, roots, need,
+                                  int(settings["max_wait_minutes"]) * 60,
+                                  should_stop, on_wait=on_wait)
+
+        if busy is None:
+            return None
+
+        state.update({"phase": "retry", "busy": []})
+        guard.save(guard)
+
+        include = make_include_table_file(
+            [{"schema_name": s, "table_name": t} for s, t in leaves], source_db)
+
+        try:
+            cmd = build_gpcopy_command(**dict(
+                cmd_kwargs, include_tables_file=include, include_json_file=None,
+                include_tables=None, dest_tables=None, truncate=True, drop=False,
+                append=False, skip_existing=False, rpc_port=pick_rpc_port()))
+            header = "{} {}/{}: {} объектов ({})".format(
+                LOCK_ROUND_MARK, attempt, attempts, len(leaves),
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            print("[gpcopy] " + header)
+            rc, text = _launch_gpcopy(job_id, cmd, log_path, item_keys,
+                                      guard=guard, header=header)
+        finally:
+            try:
+                os.remove(include)
+            except Exception:
+                pass
+
+        texts.append(header + "\n" + text)
+
+        if should_stop():
+            return None
+
+        leaves = pending()
+
+    state.update({"phase": "done", "next_at": None, "left": len(leaves),
+                  "left_leaves": [list(p) for p in leaves][:5000]})
+    guard.save(guard)
+
+    return rc, "\n".join(texts)
+
+
+def _lock_note_items(job_id, config):
+    """Таблицы, которые так и не догрузились из-за блокировок, — с причиной."""
+    state = config.get("lock_state") or {}
+    left = [tuple(p) for p in state.get("left_leaves") or []]
+
+    if not left:
+        return
+
+    reasons = {d["table"]: d.get("reason") or "" for d in state.get("deferred") or []}
+    leaf_roots = _lock_leaf_roots(config)
+
+    for item in get_job_items(job_id):
+        if get_item_value(item, "status") != "failed":
+            continue
+
+        ischema = get_item_value(item, "schema_name")
+        itable = get_item_value(item, "table_name")
+        mine = [p for p in left
+                if p == (ischema, itable)
+                or leaf_roots.get(p) == (ischema, itable)
+                or leaf_belongs_to_item(p[0], p[1], ischema, itable)]
+
+        if not mine:
+            continue
+
+        msg = "Не догружено из-за блокировок (попыток: {}): {} объектов".format(
+            state.get("attempts", 0), len(mine))
+        why = reasons.get("{}.{}".format(ischema, itable))
+
+        if why:
+            msg += " · " + why
+
+        safe_mark_item_failed(get_item_value(item, "id"), error_message=msg[:2000])
 
 
 def run_gpcopy_job(job_id):
@@ -3304,7 +3680,7 @@ def run_gpcopy_job(job_id):
                         schema_name, table_name, rows)
                 )
 
-        cmd = build_gpcopy_command(
+        cmd_kwargs = dict(
             gpcopy_path=gpcopy_path,
             source_host=source_host,
             dest_host=dest_host,
@@ -3327,8 +3703,9 @@ def run_gpcopy_job(job_id):
             dry_run=dry_run,
             extra_args=extra_args,
             dest_mapping_file=write_dest_mapping_file(dest_connection),
-            rpc_port=pick_rpc_port(),
         )
+
+        cmd = build_gpcopy_command(rpc_port=pick_rpc_port(), **cmd_kwargs)
 
         command_text = " ".join(cmd)
 
@@ -3369,37 +3746,50 @@ def run_gpcopy_job(job_id):
             refresh_job_progress(job_id)
             return
 
-        # Лог пишется в постоянный файл, процесс отвязан от родителя:
-        # рестарт GPManager не убивает gpcopy, а при старте приложение
-        # переподхватывает задачу по PID и лог-файлу.
         log_path = _job_log_path(job_id)
-        log_handle = open(log_path, "w", encoding="utf-8", errors="replace")
 
-        popen_kwargs = {
-            "stdout": log_handle,
-            "stderr": subprocess.STDOUT,
-            "universal_newlines": True,
-        }
+        # блокировки: заблокированное не ждём, приоритетному ETL не мешаем —
+        # отложенное догружается в конце этой же задачи
+        guard = None
+        lock_settings = _lock_guard_module().load_settings()
 
-        if os.name == "posix":
-            popen_kwargs["start_new_session"] = True
-        else:
-            popen_kwargs["creationflags"] = 0x00000200  # CREATE_NEW_PROCESS_GROUP
+        if lock_settings["enabled"]:
+            skip = lock_guard_skip_reason(
+                mode, targets, dry_run, config.get("stage_resume"),
+                truncate, drop)
 
-        process = subprocess.Popen(cmd, **popen_kwargs)
+            if skip:
+                config["lock_state"] = {
+                    "enabled": False,
+                    "warnings": ["Блокировки не отслеживаются: " + skip],
+                }
+                try:
+                    update_job_config(job_id, config)
+                except Exception:
+                    pass
+            else:
+                guard = start_lock_guard(
+                    job_id, config, lock_settings, source_connection,
+                    dest_connection,
+                    [(get_item_value(i, "schema_name"),
+                      get_item_value(i, "table_name")) for i in items])
 
         try:
-            log_handle.close()
-        except Exception:
-            pass
+            rc, stdout_data = _launch_gpcopy(
+                job_id, cmd, log_path, item_keys, guard=guard)
 
-        set_job_runtime(job_id, pid=process.pid, log_file=log_path)
+            if guard is not None and not is_stop_requested(job_id):
+                rounds = _run_lock_rounds(
+                    job_id, config, guard, lock_settings, cmd_kwargs,
+                    source_db, log_path, item_keys, (rc, stdout_data))
 
-        stdout_data = _watch_gpcopy_log(
-            job_id, log_path, item_keys, process=process
-        )
+                if rounds is not None:
+                    rc, stdout_data = rounds
+        finally:
+            if guard is not None:
+                guard.close()
+
         stderr_data = ""  # stderr слит в общий лог-файл
-        rc = process.returncode
 
         duration = time.time() - started
 
@@ -3413,6 +3803,9 @@ def run_gpcopy_job(job_id):
             job_id, items, rc, stdout_data, stderr_data,
             command_text, duration, config,
         )
+
+        if guard is not None:
+            _lock_note_items(job_id, config)
 
     except Exception as e:
         err = "{}\n{}".format(str(e), traceback.format_exc())

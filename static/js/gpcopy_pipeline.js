@@ -3170,6 +3170,132 @@
         });
     }
 
+    /* ---------------- блокировки и приоритет ETL ---------------- */
+
+    function gppLockSummary(st) {
+        var el = $("gppLockSum");
+        if (!el) { return; }
+        el.className = st.enabled ? "mut" : "mut warn";
+        el.textContent = st.enabled
+            ? "— ждём не дольше " + st.wait_seconds + " с, догрузка до " +
+              st.attempts + " раз" +
+              (st.priority.length ? ", приоритетных: " + st.priority.length : "")
+            : "— выключено: синхронизация ждёт блокировки";
+    }
+
+    function gppLockFill(d) {
+        var st = d.settings;
+        $("gppLockOn").checked = !!st.enabled;
+        $("gppLockWait").value = st.wait_seconds;
+        $("gppLockAttempts").value = st.attempts;
+        $("gppLockRetry").value = st.retry_minutes;
+        $("gppLockMaxWait").value = st.max_wait_minutes;
+        $("gppLockPrio").value = d.priority_text || "";
+        gppLockSummary(st);
+    }
+
+    function gppLockMsg(text, cls) {
+        var msg = $("gppLockMsg");
+        msg.className = "gpp-hint " + (cls || "");
+        msg.textContent = text;
+    }
+
+    function gppLockInit() {
+        if (!$("gppLockBox")) { return; }
+
+        api("/api/sync/lock-settings").then(function (d) {
+            if (d.ok) { gppLockFill(d); }
+        }).catch(function () { /* без прав на настройки — блок пустой */ });
+
+        $("gppLockSave").onclick = function () {
+            var btn = this;
+            btn.disabled = true;
+            api("/api/sync/lock-settings", "POST", {
+                enabled: $("gppLockOn").checked,
+                wait_seconds: $("gppLockWait").value,
+                attempts: $("gppLockAttempts").value,
+                retry_minutes: $("gppLockRetry").value,
+                max_wait_minutes: $("gppLockMaxWait").value,
+                priority: $("gppLockPrio").value,
+            }).then(function (d) {
+                btn.disabled = false;
+                if (!d.ok) {
+                    gppLockMsg(d.message || "Не сохранилось", "bad");
+                    return;
+                }
+                gppLockFill(d);
+                gppLockMsg("Сохранено — действует со следующего запуска", "good");
+            }).catch(function (e) {
+                btn.disabled = false;
+                gppLockMsg(String(e), "bad");
+            });
+        };
+    }
+
+    var LOCK_PHASES = {
+        copy: "идёт копирование",
+        waiting: "пауза перед догрузкой",
+        waiting_free: "ждём, пока таблицы освободятся",
+        retry: "догружаем отложенное",
+    };
+
+    // карточка запуска: что отложено из-за блокировок и что с догрузкой
+    function gppLockRunHtml(j) {
+        var L = j.lock;
+        if (!L) { return ""; }
+
+        var warn = L.warnings || [];
+        var deferred = L.deferred || [];
+        var active = isActiveStatus(j.status);
+
+        if (!L.enabled) {
+            return warn.length
+                ? '<div class="gpp-hint">' + esc(warn.join("; ")) + "</div>" : "";
+        }
+        if (!deferred.length && !(L.paused || []).length && !warn.length) {
+            return "";
+        }
+
+        var step = L.attempt ? "догрузка " + L.attempt + " из " + L.attempts : "";
+        if (active && LOCK_PHASES[L.phase]) {
+            step = (step ? step + " · " : "") + LOCK_PHASES[L.phase] +
+                (L.phase === "waiting" && L.next_at
+                    ? " до " + String(L.next_at).slice(11, 16) : "");
+        } else if (!active && deferred.length) {
+            step = L.left
+                ? "не догружено: " + fmtN(L.left) + " (попыток: " + L.attempts + ")"
+                : "всё отложенное догружено";
+        }
+
+        var html = '<div class="gpp-lock-run"><div class="t">' +
+            "Отложено из-за блокировок: " + fmtN(deferred.length) + " табл." +
+            (step ? ' <span class="mut">· ' + esc(step) + "</span>" : "") + "</div>";
+
+        if (deferred.length) {
+            html += "<ul>" + deferred.slice(0, 50).map(function (d) {
+                return "<li><b>" + esc(d.table) + "</b>" +
+                    (d.parts > 1 ? ' <span class="mut">· ' + fmtN(d.parts) +
+                        " парт.</span>" : "") +
+                    (d.reason ? ' <span class="mut">· ' + esc(d.reason) + "</span>" : "") +
+                    "</li>";
+            }).join("") + (deferred.length > 50
+                ? '<li class="mut">…ещё ' + fmtN(deferred.length - 50) + "</li>" : "") +
+                "</ul>";
+        }
+        if (active && (L.paused || []).length) {
+            html += '<div class="mut" style="margin-top: 4px;">Пауза ради ETL: ' +
+                esc(L.paused.map(function (p) { return p.table; }).join(", ")) + "</div>";
+        }
+        if (active && (L.busy || []).length) {
+            html += '<div class="mut" style="margin-top: 4px;">Ещё заняты: ' +
+                esc(L.busy.join("; ")) + "</div>";
+        }
+        if (warn.length) {
+            html += '<div class="mut" style="margin-top: 4px;">' + esc(warn.join("; ")) + "</div>";
+        }
+        return html + "</div>";
+    }
+
     /* ---------------- run details modal ---------------- */
 
     var RUN_STATUS_BADGES = {
@@ -3249,6 +3375,8 @@
                     : "") +
                 "</div>";
         }
+
+        html += gppLockRunHtml(j);
 
         if (j.error_message) {
             html += '<div class="gpp-err"><pre>' + esc(j.error_message) + "</pre></div>";
@@ -4072,6 +4200,7 @@
         }
 
         tgtWire();
+        gppLockInit();
         loadSel();
         tgtLoad();
         renderSelection();
