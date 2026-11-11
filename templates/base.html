@@ -58,6 +58,8 @@
     {% else %}
         {% set page_title, page_crumb = 'Синхронизация данных', 'перенос между кластерами' %}
     {% endif %}
+{% elif p.startswith('/smart-sync') %}
+    {% set page_title, page_crumb = 'Ежедневная синхронизация', 'прод → тест: только изменившееся, по волнам' %}
 {% elif p.startswith('/grants') %}
     {% set page_title, page_crumb = 'Пользователи и гранты', 'права на объекты' %}
 {% elif p.startswith('/schedules') %}
@@ -98,6 +100,7 @@
     ('/health',      'Здоровье БД',      p.startswith('/health'),           'health.view',      'health'),
     ('/connections', 'Подключения',      p.startswith('/connections') and tk == 'gp', 'connections.view', 'link'),
     ('/gpcopy',      'Синхронизация',    p.startswith('/gpcopy') and tk == 'gp',      'sync.view',        'sync'),
+    ('/smart-sync',  'Автосинхронизация', p.startswith('/smart-sync'), 'sync.view',  'calendar'),
     ('/maintenance', 'Maintenance',      p.startswith('/maintenance') or p.startswith('/skew') or p.startswith('/reorganize'), 'maintenance.view', 'wrench'),
     ('/vacuum',      'Vacuum / Analyze', p.startswith('/vacuum'),           'vacuum.view',      'sparkle'),
     ('/backups',     'Резервные копии',  p.startswith('/backups'),          'backups.view',     'database'),

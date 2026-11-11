@@ -106,6 +106,7 @@ def test_write_routes_never_settle_for_a_view_capability():
         "api_gpcopy_increment_preview", "api_gpcopy_partition_diff_preview",
         "api_gpcopy_partition_diff_preview_bulk", "api_gpcopy_sync_preview",
         "api_schedules_preview", "api_test_connection",
+            "api_smart_sync_analyze",
         # считает рекомендацию по pg_attribute и ничего не меняет
         "api_reorganize_recommendation",
         "kafka.api_kafka_ping", "kafka.api_kafka_overview_refresh",

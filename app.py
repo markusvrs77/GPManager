@@ -118,6 +118,10 @@ from modules.pg_backup import run_pg_dump_job, run_pg_restore_job
 gpm_scheduler.register_runner("pg_dump", run_pg_dump_job)
 gpm_scheduler.register_runner("pg_restore", run_pg_restore_job)
 
+from modules.smart_sync import run_smart_sync_job
+
+gpm_scheduler.register_runner("smart_sync", run_smart_sync_job)
+
 
 app = Flask(__name__)
 
@@ -814,6 +818,177 @@ def api_gpcopy_retry_failed():
     })
 
 
+# ------------------------------------------------------------------
+# Умная синхронизация: планы, анализ «что изменилось», запуск, расписание
+# ------------------------------------------------------------------
+
+def _smart_plan_or_404(plan_id):
+    from modules import smart_sync
+
+    plan = smart_sync.get_plan(plan_id)
+
+    if not plan:
+        return None, (jsonify({"ok": False, "message": "План не найден"}), 404)
+
+    if not in_scope([plan["source_connection_id"], plan["dest_connection_id"]]):
+        return None, (jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403)
+
+    return plan, None
+
+
+def _smart_plan_view(plan):
+    from modules import smart_sync
+
+    out = dict(plan)
+    out["schedules"] = {
+        str(w): {"id": s["id"], "cron": s["cron_expr"], "enabled": bool(s["enabled"]),
+                 "next_run_at": s.get("next_run_at"), "last_status": s.get("last_status"),
+                 "last_job_id": s.get("last_job_id")}
+        for w, s in smart_sync.plan_schedules(plan["id"]).items()
+    }
+    return out
+
+
+@app.route("/smart-sync")
+def smart_sync_page():
+    return render_template("smart_sync.html", connections=list_connections())
+
+
+@app.route("/api/smart-sync/plans", methods=["GET", "POST"])
+def api_smart_sync_plans():
+    from job_manager import current_username
+    from modules import smart_sync
+
+    if request.method == "GET":
+        plans = [p for p in smart_sync.list_plans()
+                 if in_scope([p["source_connection_id"], p["dest_connection_id"]])]
+        return jsonify({"ok": True, "plans": [_smart_plan_view(p) for p in plans],
+                        "defaults": smart_sync.DEFAULT_SETTINGS})
+
+    data = request.get_json(silent=True) or {}
+
+    if not in_scope([data.get("source_connection_id"), data.get("dest_connection_id")]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    try:
+        plan_id = smart_sync.save_plan(data, user=current_username())
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    return jsonify({"ok": True, "plan": _smart_plan_view(smart_sync.get_plan(plan_id))})
+
+
+@app.route("/api/smart-sync/plans/<int:plan_id>", methods=["PUT", "DELETE"])
+def api_smart_sync_plan(plan_id):
+    from modules import smart_sync
+
+    plan, err = _smart_plan_or_404(plan_id)
+
+    if err:
+        return err
+
+    if request.method == "DELETE":
+        smart_sync.drop_schedules(plan_id)
+        smart_sync.delete_plan(plan_id)
+        return jsonify({"ok": True})
+
+    data = request.get_json(silent=True) or {}
+
+    if not in_scope([data.get("source_connection_id"), data.get("dest_connection_id")]):
+        return jsonify({"ok": False, "message": "Нет доступа к кластеру"}), 403
+
+    try:
+        smart_sync.save_plan(data, plan_id=plan_id)
+        plan = smart_sync.get_plan(plan_id)
+
+        # расписание уже стоит — время волн могло поменяться
+        if smart_sync.plan_schedules(plan_id):
+            smart_sync.apply_schedules(plan)
+    except (ValueError, LookupError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    return jsonify({"ok": True, "plan": _smart_plan_view(plan)})
+
+
+@app.route("/api/smart-sync/plans/<int:plan_id>/analyze", methods=["POST"])
+def api_smart_sync_analyze(plan_id):
+    """Что изменилось на проде с прошлой синхронизации — только чтение."""
+    from modules import smart_sync
+
+    plan, err = _smart_plan_or_404(plan_id)
+
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    wave = data.get("wave")
+
+    try:
+        result = smart_sync.analyze(plan, None if wave in (None, "") else int(wave),
+                                    full=bool(data.get("full")) or None)
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:1000]}), 500
+
+    return jsonify(dict(smart_sync.public_analysis(result), ok=True))
+
+
+@app.route("/api/smart-sync/plans/<int:plan_id>/run", methods=["POST"])
+def api_smart_sync_run(plan_id):
+    from modules import smart_sync
+
+    plan, err = _smart_plan_or_404(plan_id)
+
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+
+    try:
+        wave = int(data.get("wave") or 0)
+    except (TypeError, ValueError):
+        wave = -1
+
+    if not 0 <= wave < len(plan["settings"]["waves"]):
+        return jsonify({"ok": False, "message": "Нет такой волны"}), 400
+
+    config = {"plan_id": plan_id, "wave": wave,
+              "source_connection_id": plan["source_connection_id"],
+              "dest_connection_id": plan["dest_connection_id"]}
+
+    if data.get("full"):
+        config["full"] = True
+
+    job_id = create_job("smart_sync", plan["source_connection_id"], config)
+    threading.Thread(target=smart_sync.run_smart_sync_job, args=(job_id,),
+                     daemon=True).start()
+
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/api/smart-sync/plans/<int:plan_id>/schedule", methods=["POST", "DELETE"])
+def api_smart_sync_schedule(plan_id):
+    from modules import smart_sync
+
+    plan, err = _smart_plan_or_404(plan_id)
+
+    if err:
+        return err
+
+    if request.method == "DELETE":
+        smart_sync.drop_schedules(plan_id)
+        return jsonify({"ok": True, "plan": _smart_plan_view(plan)})
+
+    data = request.get_json(silent=True) or {}
+
+    try:
+        made = smart_sync.apply_schedules(plan, days=data.get("days") or "*",
+                                          enabled=data.get("enabled", True))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+    return jsonify({"ok": True, "schedules": made, "plan": _smart_plan_view(plan)})
+
+
 @app.route("/api/sync/lock-settings", methods=["GET", "POST"])
 def api_sync_lock_settings():
     """
@@ -1142,6 +1317,11 @@ def api_jobs_recent():
 
         # сохранённые промежуточные таблицы (дозагрузка или удаление)
         j["stage_kept"] = len(cfg.get("stage_kept") or [])
+
+        # ежедневная синхронизация: сводка волны и её план
+        if cfg.get("smart") is not None or j.get("job_type") == "smart_sync":
+            j["smart"] = cfg.get("smart")
+            j["plan_id"] = cfg.get("plan_id")
 
         # сторож блокировок: отложенное, пауза ради ETL, догрузка
         lock = cfg.get("lock_state")

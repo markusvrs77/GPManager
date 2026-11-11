@@ -333,6 +333,36 @@ def init_db():
             """
         )
 
+        # умная синхронизация (modules/smart_sync.py): планы и отпечатки
+        # листьев, синхронизированных последний раз
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS smart_sync_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                source_connection_id INTEGER NOT NULL,
+                dest_connection_id INTEGER NOT NULL,
+                settings_json TEXT NOT NULL,
+                created_by TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS smart_sync_state (
+                plan_id INTEGER NOT NULL,
+                schema_name TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                fingerprint TEXT,
+                synced_at TEXT,
+                last_job_id INTEGER,
+                PRIMARY KEY (plan_id, schema_name, table_name)
+            )
+            """
+        )
+
         # где запускать gpbackup/gprestore кластера: на этом хосте или по
         # SSH на его координаторе (gpbackup работает только оттуда)
         cur.execute(

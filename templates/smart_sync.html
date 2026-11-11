@@ -1,0 +1,550 @@
+{% extends "base.html" %}
+
+{% block title %}Ежедневная синхронизация · Opsentri{% endblock %}
+
+{% block content %}
+<style>
+.ssync-page .card-header { flex-wrap: wrap; row-gap: 6px; }
+.ssync-page > [class*="col-"], .ssync-page .card { min-width: 0; }
+.ssync-page .card-header .form-select { flex: 1 1 140px; }
+.ssync-hint { font-size: 12.5px; color: var(--text-muted); }
+.ssync-wave { border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  padding: 10px 12px; margin-bottom: 10px; background: var(--surface-2); }
+.ssync-wave .head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.ssync-wave .head input { flex: 1; }
+.ssync-wave textarea { font-family: var(--font-mono); font-size: 12.5px; min-height: 38px; }
+.ssync-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.ssync-row > div { flex: 1 1 120px; min-width: 0; }
+.ssync-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px; margin: 8px 0; }
+.ssync-kpi { border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: 8px 10px; }
+.ssync-kpi b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.ssync-kpi span { font-size: 12px; color: var(--text-muted); }
+.ssync-wres { border-top: 1px solid var(--hairline); padding-top: 10px; margin-top: 10px; }
+.ssync-wres:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+.ssync-list { max-height: 260px; overflow: auto; font-size: 12.5px; }
+.ssync-list table { width: 100%; }
+.ssync-list td, .ssync-list th { padding: 3px 6px; border-bottom: 1px solid var(--hairline);
+  white-space: nowrap; }
+.ssync-list td:first-child { font-family: var(--font-mono); white-space: normal;
+  word-break: break-all; }
+.ssync-tag { font-size: 11px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--hairline); }
+.ssync-tag.new { color: var(--a1); border-color: var(--a1); }
+.ssync-tag.warn { color: var(--warn); border-color: var(--warn); }
+.ssync-msg { font-size: 13px; margin-top: 8px; }
+.ssync-msg.bad { color: var(--crit); }
+.ssync-msg.good { color: var(--ok); }
+.ssync-run { display: flex; gap: 10px; align-items: baseline; padding: 6px 0;
+  border-bottom: 1px solid var(--hairline); font-size: 13px; flex-wrap: wrap; }
+.ssync-run .st { font-weight: 600; min-width: 90px; }
+.ssync-run .st.done { color: var(--ok); }
+.ssync-run .st.failed, .ssync-run .st.cancelled { color: var(--crit); }
+.ssync-run .st.running, .ssync-run .st.stopping { color: var(--a1); }
+.ssync-sched { display: flex; gap: 10px; align-items: center; padding: 6px 0;
+  border-bottom: 1px solid var(--hairline); font-size: 13px; flex-wrap: wrap; }
+</style>
+
+<div class="row g-3 ssync-page">
+    <!-- ПЛАН -->
+    <div class="col-xl-5">
+        <div class="card shadow-sm">
+            <div class="card-header d-flex align-items-center gap-2">
+                <span class="me-auto">План синхронизации</span>
+                <select id="ssyncPlanPick" class="form-select form-select-sm" style="max-width: 220px;"
+                        aria-label="Выбрать план"></select>
+            </div>
+            <div class="card-body">
+                <div class="ssync-hint mb-3">
+                    Каждую ночь копируется только изменившееся на проде с прошлой синхронизации:
+                    изменения видны по каталогу, данные для этого не читаются. Волна — набор таблиц по
+                    маскам со своим окном: после срока новые таблицы не начинаются, остаток идёт
+                    первым в следующее окно.
+                </div>
+
+                <label class="form-label" for="ssyncName">Название</label>
+                <input id="ssyncName" class="form-control mb-2" placeholder="Прод → тест">
+
+                <div class="ssync-row mb-3">
+                    <div>
+                        <label class="form-label" for="ssyncSrc">Источник (прод)</label>
+                        <select id="ssyncSrc" class="form-select">
+                            {% for c in connections %}
+                            <option value="{{ c.id }}">{{ c.name }} · {{ c.database_name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label" for="ssyncDst">Приёмник (тест)</label>
+                        <select id="ssyncDst" class="form-select">
+                            {% for c in connections %}
+                            <option value="{{ c.id }}">{{ c.name }} · {{ c.database_name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div class="d-flex align-items-center mb-2">
+                    <b class="me-auto">Волны</b>
+                    <button class="btn btn-sm btn-outline-primary" id="ssyncAddWave" type="button">+ волна</button>
+                </div>
+                <div class="ssync-hint mb-2">
+                    Маски <code>схема.таблица</code> через пробел или с новой строки, можно <code>*</code> и
+                    <code>?</code>: <code>dwh_stage.*</code>, <code>*.*</code>. Таблица попадает в первую
+                    подходящую волну. Время — по часам сервера Opsentri; волна без старта запускается только вручную.
+                </div>
+                <div id="ssyncWaves"></div>
+
+                <label class="form-label mt-2" for="ssyncExclude">Не синхронизировать никогда (маски)</label>
+                <textarea id="ssyncExclude" class="form-control mb-3" rows="2"
+                          placeholder="*.*_bkp_*  tmp_*.*"></textarea>
+
+                <details class="mb-3">
+                    <summary class="ssync-hint">Нагрузка и полная сверка</summary>
+                    <div class="ssync-row mt-2">
+                        <div><label class="form-label" for="ssyncJobs">Потоки gpcopy</label>
+                            <input id="ssyncJobs" type="number" min="1" max="32" class="form-control"></div>
+                        <div><label class="form-label" for="ssyncBig">Отдельно от пачки, ГБ</label>
+                            <input id="ssyncBig" type="number" min="1" class="form-control"></div>
+                        <div><label class="form-label" for="ssyncBatchGb">Пачка до, ГБ</label>
+                            <input id="ssyncBatchGb" type="number" min="1" class="form-control"></div>
+                        <div><label class="form-label" for="ssyncBatchN">Пачка до, таблиц</label>
+                            <input id="ssyncBatchN" type="number" min="1" class="form-control"></div>
+                    </div>
+                    <div class="ssync-row mt-2">
+                        <div><label class="form-label" for="ssyncFullDay">Полная сверка раз в неделю</label>
+                            <select id="ssyncFullDay" class="form-select">
+                                <option value="">не делать</option>
+                                <option value="0">понедельник</option><option value="1">вторник</option>
+                                <option value="2">среда</option><option value="3">четверг</option>
+                                <option value="4">пятница</option><option value="5">суббота</option>
+                                <option value="6">воскресенье</option>
+                            </select></div>
+                        <div style="flex-basis: 220px;"><label class="form-label" for="ssyncPath">Путь к gpcopy</label>
+                            <input id="ssyncPath" class="form-control"></div>
+                    </div>
+                    <div class="ssync-hint mt-2">
+                        В день полной сверки волна копируется целиком, без проверки изменений, — страховка
+                        от изменений, которые каталог не показал. Сторож блокировок и приоритет ETL
+                        настраиваются на странице «Синхронизация».
+                    </div>
+                </details>
+
+                <div class="d-flex gap-2">
+                    <button class="btn btn-primary" id="ssyncSave" type="button">Сохранить план</button>
+                    <button class="btn btn-outline-danger ms-auto" id="ssyncDelete" type="button">Удалить</button>
+                </div>
+                <div class="ssync-msg" id="ssyncMsg" role="status"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- АНАЛИЗ, РАСПИСАНИЕ, ЗАПУСКИ -->
+    <div class="col-xl-7">
+        <div class="card shadow-sm mb-3">
+            <div class="card-header d-flex align-items-center gap-2">
+                <span class="me-auto">Что изменилось на проде</span>
+                <label class="ssync-hint m-0"><input type="checkbox" id="ssyncAnFull"> как при полной сверке</label>
+                <button class="btn btn-sm btn-primary" id="ssyncAnalyze" type="button">Проверить</button>
+            </div>
+            <div class="card-body">
+                <div id="ssyncAnalysis" class="ssync-hint">
+                    Сохраните план и нажмите «Проверить»: каталог прода и теста читается без нагрузки на
+                    данные, по каждой волне будет видно, сколько таблиц изменилось и какой объём уйдёт.
+                </div>
+            </div>
+        </div>
+
+        <div class="card shadow-sm mb-3">
+            <div class="card-header d-flex align-items-center gap-2">
+                <span class="me-auto">Расписание</span>
+                <select id="ssyncDays" class="form-select form-select-sm" style="max-width: 170px;"
+                        aria-label="Дни запуска">
+                    <option value="*">каждый день</option>
+                    <option value="1-5">по будням</option>
+                    <option value="1-6">кроме воскресенья</option>
+                </select>
+                <button class="btn btn-sm btn-primary" id="ssyncSchedule" type="button">Поставить</button>
+                <button class="btn btn-sm btn-outline-secondary" id="ssyncUnschedule" type="button">Снять</button>
+            </div>
+            <div class="card-body" id="ssyncSchedules">
+                <div class="ssync-hint">Плана ещё нет.</div>
+            </div>
+        </div>
+
+        <div class="card shadow-sm">
+            <div class="card-header d-flex align-items-center">
+                <span class="me-auto">Последние запуски</span>
+                <button class="btn btn-sm btn-outline-secondary" id="ssyncRefresh" type="button">Обновить</button>
+            </div>
+            <div class="card-body" id="ssyncRuns"><div class="ssync-hint">Запусков ещё не было.</div></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    "use strict";
+
+    var $ = function (id) { return document.getElementById(id); };
+    var state = { plans: [], plan: null, defaults: {} };
+
+    function esc(s) {
+        return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    function api(url, method, body) {
+        var opts = { method: method || "GET" };
+        if (body !== undefined) {
+            opts.headers = { "Content-Type": "application/json" };
+            opts.body = JSON.stringify(body);
+        }
+        return fetch(url, opts).then(function (r) {
+            return r.json().catch(function () { return { ok: false, message: "HTTP " + r.status }; });
+        });
+    }
+
+    function fmtN(n) { return Number(n || 0).toLocaleString("ru-RU"); }
+
+    function fmtBytes(b) {
+        b = Number(b || 0);
+        var u = ["Б", "КБ", "МБ", "ГБ", "ТБ"], i = 0;
+        while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+        return (i ? b.toFixed(1) : b) + " " + u[i];
+    }
+
+    function ssyncMsg(text, cls) {
+        var el = $("ssyncMsg");
+        el.className = "ssync-msg " + (cls || "");
+        el.textContent = text || "";
+    }
+
+    /* ---------------- волны ---------------- */
+
+    function ssyncWaveHtml(w, i) {
+        return '<div class="ssync-wave" data-wave="' + i + '">' +
+            '<div class="head"><input class="form-control form-control-sm" data-f="name" ' +
+            'aria-label="Название волны" value="' + esc(w.name || "") + '" placeholder="Волна ' + (i + 1) + '">' +
+            '<button class="btn btn-sm btn-outline-danger" type="button" data-del="' + i +
+            '" title="Убрать волну" aria-label="Убрать волну">✕</button></div>' +
+            '<div class="ssync-row">' +
+            '<div style="flex-basis: 100%;"><label class="form-label ssync-hint">Включить</label>' +
+            '<textarea class="form-control" data-f="include" rows="1" placeholder="dwh_stage.*">' +
+            esc((w.include || []).join(" ")) + "</textarea></div>" +
+            '<div style="flex-basis: 100%;"><label class="form-label ssync-hint">Кроме</label>' +
+            '<textarea class="form-control" data-f="exclude" rows="1">' +
+            esc((w.exclude || []).join(" ")) + "</textarea></div>" +
+            '<div><label class="form-label ssync-hint">Старт</label>' +
+            '<input type="time" class="form-control form-control-sm" data-f="start" value="' + esc(w.start || "") + '"></div>' +
+            '<div><label class="form-label ssync-hint">Не начинать новое после</label>' +
+            '<input type="time" class="form-control form-control-sm" data-f="deadline" value="' + esc(w.deadline || "") + '"></div>' +
+            "</div></div>";
+    }
+
+    function ssyncReadWaves() {
+        return Array.prototype.map.call(document.querySelectorAll("#ssyncWaves .ssync-wave"), function (box) {
+            var get = function (f) { return box.querySelector('[data-f="' + f + '"]').value.trim(); };
+            return { name: get("name"), include: get("include"), exclude: get("exclude"),
+                     start: get("start"), deadline: get("deadline") };
+        });
+    }
+
+    function ssyncSplit(v) {
+        return Array.isArray(v) ? v : String(v || "").split(/[\s,;]+/).filter(Boolean);
+    }
+
+    function ssyncRenderWaves(waves) {
+        $("ssyncWaves").innerHTML = waves.map(function (w, i) {
+            return ssyncWaveHtml({ name: w.name, include: ssyncSplit(w.include),
+                                   exclude: ssyncSplit(w.exclude), start: w.start,
+                                   deadline: w.deadline }, i);
+        }).join("");
+        $("ssyncWaves").querySelectorAll("[data-del]").forEach(function (btn) {
+            btn.onclick = function () {
+                var list = ssyncReadWaves();
+                list.splice(parseInt(btn.getAttribute("data-del"), 10), 1);
+                ssyncRenderWaves(list);
+            };
+        });
+    }
+
+    /* ---------------- план ---------------- */
+
+    function ssyncFill(plan) {
+        state.plan = plan;
+        var s = plan ? plan.settings : state.defaults;
+        $("ssyncName").value = plan ? plan.name : "";
+        if (plan) {
+            $("ssyncSrc").value = plan.source_connection_id;
+            $("ssyncDst").value = plan.dest_connection_id;
+        }
+        ssyncRenderWaves(plan ? s.waves : [
+            { name: "Основная", include: ["*.*"], exclude: [], start: "00:30", deadline: "05:30" }
+        ]);
+        $("ssyncExclude").value = (s.exclude || []).join(" ");
+        $("ssyncJobs").value = s.jobs;
+        $("ssyncBig").value = s.big_gb;
+        $("ssyncBatchGb").value = s.batch_gb;
+        $("ssyncBatchN").value = s.batch_tables;
+        $("ssyncFullDay").value = s.full_weekday == null ? "" : String(s.full_weekday);
+        $("ssyncPath").value = s.gpcopy_path;
+        $("ssyncDelete").style.display = plan ? "" : "none";
+        ssyncRenderSchedules();
+        $("ssyncAnalysis").innerHTML = '<div class="ssync-hint">' + (plan
+            ? "Нажмите «Проверить», чтобы увидеть, что изменилось с прошлой синхронизации."
+            : "Сохраните план и нажмите «Проверить».") + "</div>";
+    }
+
+    function ssyncRenderPick() {
+        var pick = $("ssyncPlanPick");
+        pick.innerHTML = state.plans.map(function (p) {
+            return '<option value="' + p.id + '">' + esc(p.name) + "</option>";
+        }).join("") + '<option value="">+ новый план</option>';
+        pick.value = state.plan ? String(state.plan.id) : "";
+    }
+
+    function ssyncLoad(selectId) {
+        return api("/api/smart-sync/plans").then(function (d) {
+            if (!d.ok) { ssyncMsg(d.message || "Не загрузилось", "bad"); return; }
+            state.plans = d.plans;
+            state.defaults = d.defaults;
+            var plan = state.plans.filter(function (p) { return p.id === selectId; })[0] ||
+                (selectId === null ? state.plans[0] : null) || null;
+            ssyncFill(plan);
+            ssyncRenderPick();
+            ssyncLoadRuns();
+        });
+    }
+
+    function ssyncBody() {
+        return {
+            name: $("ssyncName").value.trim(),
+            source_connection_id: parseInt($("ssyncSrc").value, 10),
+            dest_connection_id: parseInt($("ssyncDst").value, 10),
+            settings: {
+                waves: ssyncReadWaves(),
+                exclude: $("ssyncExclude").value,
+                jobs: $("ssyncJobs").value, big_gb: $("ssyncBig").value,
+                batch_gb: $("ssyncBatchGb").value, batch_tables: $("ssyncBatchN").value,
+                full_weekday: $("ssyncFullDay").value, gpcopy_path: $("ssyncPath").value,
+            },
+        };
+    }
+
+    function ssyncSave() {
+        var plan = state.plan;
+        var btn = $("ssyncSave");
+        btn.disabled = true;
+        api(plan ? "/api/smart-sync/plans/" + plan.id : "/api/smart-sync/plans",
+            plan ? "PUT" : "POST", ssyncBody()).then(function (d) {
+            btn.disabled = false;
+            if (!d.ok) { ssyncMsg(d.message || "Не сохранилось", "bad"); return; }
+            ssyncLoad(d.plan.id).then(function () {
+                ssyncMsg("Сохранено" + (Object.keys(d.plan.schedules || {}).length
+                    ? " — расписание обновлено по времени волн" : ""), "good");
+            });
+        }).catch(function (e) { btn.disabled = false; ssyncMsg(String(e), "bad"); });
+    }
+
+    function ssyncDelete() {
+        var plan = state.plan;
+        if (!plan) { return; }
+        var go = function () {
+            api("/api/smart-sync/plans/" + plan.id, "DELETE").then(function (d) {
+                if (!d.ok) { ssyncMsg(d.message, "bad"); return; }
+                ssyncLoad(null).then(function () { ssyncMsg("План удалён вместе с расписанием", "good"); });
+            });
+        };
+        var q = "Удалить план «" + plan.name + "» и его расписание? Данные в тесте не трогаются; " +
+            "история изменений забудется — следующая синхронизация скопирует всё заново.";
+        if (window.gpConfirm) { window.gpConfirm(q).then(function (y) { if (y) { go(); } }); }
+        else if (confirm(q)) { go(); }
+    }
+
+    /* ---------------- анализ ---------------- */
+
+    var ACTIONS = { "new": ["new", "нет в тесте — целиком"], changed: ["", "изменилось"] };
+
+    function ssyncWaveResult(w) {
+        var kpi = function (v, label) {
+            return '<div class="ssync-kpi"><b>' + v + "</b><span>" + label + "</span></div>";
+        };
+        var html = '<div class="ssync-wres"><div class="d-flex align-items-center gap-2">' +
+            '<b class="me-auto">' + esc(w.name) +
+            (w.full ? ' <span class="ssync-tag warn">полная сверка</span>' : "") + "</b>" +
+            '<button class="btn btn-sm btn-outline-primary" type="button" data-run="' + w.index + '">' +
+            "▶ Запустить волну</button></div>" +
+            '<div class="ssync-kpis">' +
+            kpi(fmtN(w.roots), "таблиц в волне") +
+            kpi(fmtN(w.unchanged), "партиций без изменений") +
+            kpi(fmtN(w.changed_tables), "таблиц к копированию") +
+            kpi(fmtN(w.changed_units), "партиций к копированию") +
+            kpi(fmtBytes(w.bytes), "объём") +
+            "</div>";
+
+        var notes = [];
+        if (w.new_tables) { notes.push(fmtN(w.new_tables) + " табл. нет в тесте — скопируются целиком"); }
+        if (w.missing_parts) { notes.push(fmtN(w.missing_parts) + " новых партиций создадутся в тесте по DDL прода"); }
+        if (w.extra_parts) { notes.push(fmtN(w.extra_parts) + " партиций есть в тесте, но не на проде — только в отчёте"); }
+        if (notes.length) { html += '<div class="ssync-hint mb-2">' + esc(notes.join(" · ")) + "</div>"; }
+
+        if (w.items.length) {
+            html += '<div class="ssync-list"><table><thead><tr><th>Таблица</th><th>Что</th>' +
+                "<th>Партиций</th><th>Объём</th><th>Синхр.</th></tr></thead><tbody>" +
+                w.items.map(function (it) {
+                    var a = ACTIONS[it.action] || ["", it.action];
+                    return "<tr><td>" + esc(it.table) + '</td><td><span class="ssync-tag ' + a[0] + '">' +
+                        esc(a[1]) + "</span>" +
+                        (it.extra ? ' <span class="ssync-tag warn">лишних ' + fmtN(it.extra) + "</span>" : "") +
+                        "</td><td>" + fmtN(it.parts) + (it.missing ? " (+" + fmtN(it.missing) + " новых)" : "") +
+                        "</td><td>" + fmtBytes(it.bytes) + "</td><td>" + esc(it.synced_at || "ещё не было") +
+                        "</td></tr>";
+                }).join("") + "</tbody></table></div>" +
+                (w.changed_tables > w.items.length
+                    ? '<div class="ssync-hint">Показаны первые ' + w.items.length + " из " + fmtN(w.changed_tables) + "</div>"
+                    : "");
+        }
+        return html + "</div>";
+    }
+
+    function ssyncAnalyze() {
+        var plan = state.plan;
+        if (!plan) { ssyncMsg("Сначала сохраните план", "bad"); return; }
+        var btn = $("ssyncAnalyze");
+        var box = $("ssyncAnalysis");
+        btn.disabled = true;
+        box.innerHTML = '<div class="ssync-hint">Читаю каталог прода и теста…</div>';
+        api("/api/smart-sync/plans/" + plan.id + "/analyze", "POST",
+            { full: $("ssyncAnFull").checked }).then(function (d) {
+            btn.disabled = false;
+            if (!d.ok) { box.innerHTML = '<div class="ssync-msg bad">' + esc(d.message) + "</div>"; return; }
+            box.innerHTML = '<div class="ssync-hint mb-2">Таблиц на проде: ' + fmtN(d.tables_total) +
+                (d.outside ? " · вне волн: " + fmtN(d.outside) : "") +
+                " · признак изменений: " + esc(d.mode) +
+                (d.last_op ? " + TRUNCATE/DDL" : "") + "</div>" +
+                d.waves.map(ssyncWaveResult).join("");
+            box.querySelectorAll("[data-run]").forEach(function (b) {
+                b.onclick = function () { ssyncRun(parseInt(b.getAttribute("data-run"), 10), b); };
+            });
+        }).catch(function (e) {
+            btn.disabled = false;
+            box.innerHTML = '<div class="ssync-msg bad">' + esc(String(e)) + "</div>";
+        });
+    }
+
+    function ssyncRun(wave, btn) {
+        var plan = state.plan;
+        var full = $("ssyncAnFull").checked;
+        var go = function () {
+            btn.disabled = true;
+            api("/api/smart-sync/plans/" + plan.id + "/run", "POST", { wave: wave, full: full })
+                .then(function (d) {
+                    btn.disabled = false;
+                    if (!d.ok) { ssyncMsg(d.message, "bad"); return; }
+                    ssyncMsg("Запущено: задача #" + d.job_id, "good");
+                    ssyncLoadRuns();
+                });
+        };
+        var q = "Запустить волну «" + plan.settings.waves[wave].name + "» сейчас? Изменившиеся " +
+            "таблицы в тесте будут перезалиты с прода (--truncate)" +
+            (full ? ", в режиме полной сверки — все таблицы волны" : "") + ".";
+        if (window.gpConfirm) { window.gpConfirm(q).then(function (y) { if (y) { go(); } }); }
+        else if (confirm(q)) { go(); }
+    }
+
+    /* ---------------- расписание ---------------- */
+
+    function ssyncRenderSchedules() {
+        var box = $("ssyncSchedules");
+        var plan = state.plan;
+        if (!plan) { box.innerHTML = '<div class="ssync-hint">Плана ещё нет.</div>'; return; }
+        var sch = plan.schedules || {};
+        box.innerHTML = plan.settings.waves.map(function (w, i) {
+            var s = sch[String(i)];
+            return '<div class="ssync-sched"><b style="min-width: 140px;">' + esc(w.name) + "</b>" +
+                "<span>" + (w.start ? "старт " + esc(w.start) : "без времени старта — только вручную") +
+                (w.deadline ? " · новое не начинать после " + esc(w.deadline) : "") + "</span>" +
+                '<span class="ms-auto ssync-hint">' + (s
+                    ? (s.enabled ? "по расписанию · след. " + esc(s.next_run_at || "—") : "выключено") +
+                      (s.last_status ? " · последний: " + esc(s.last_status) : "")
+                    : "не поставлено") + "</span></div>";
+        }).join("");
+    }
+
+    function ssyncSchedule(on) {
+        var plan = state.plan;
+        if (!plan) { ssyncMsg("Сначала сохраните план", "bad"); return; }
+        api("/api/smart-sync/plans/" + plan.id + "/schedule", on ? "POST" : "DELETE",
+            on ? { days: $("ssyncDays").value } : undefined).then(function (d) {
+            if (!d.ok) { ssyncMsg(d.message || "Не вышло", "bad"); return; }
+            state.plan = d.plan;
+            state.plans = state.plans.map(function (p) { return p.id === d.plan.id ? d.plan : p; });
+            ssyncRenderSchedules();
+            ssyncMsg(on ? "Расписание поставлено: волн " + (d.schedules || []).length : "Расписание снято", "good");
+        });
+    }
+
+    /* ---------------- запуски ---------------- */
+
+    function ssyncLoadRuns() {
+        var box = $("ssyncRuns");
+        api("/api/jobs/recent?types=smart_sync&limit=30").then(function (d) {
+            var plan = state.plan;
+            var jobs = (d.jobs || []).filter(function (j) {
+                return plan && String(j.plan_id) === String(plan.id);
+            });
+            if (!jobs.length) { box.innerHTML = '<div class="ssync-hint">Запусков ещё не было.</div>'; return; }
+            box.innerHTML = jobs.map(function (j) {
+                var s = j.smart || {};
+                var parts = [];
+                if (s.changed_tables != null) {
+                    parts.push("изменилось " + fmtN(s.changed_tables) + " из " + fmtN(s.roots) + " табл.");
+                }
+                if (s.bytes) { parts.push(fmtBytes(s.bytes)); }
+                if (s.left) { parts.push("не успели " + fmtN(s.left)); }
+                if (s.failed) { parts.push("ошибок " + fmtN(s.failed)); }
+                return '<div class="ssync-run"><span class="st ' + esc(j.status) + '">' + esc(j.status) +
+                    "</span><span>#" + j.id + (s.name ? " · " + esc(s.name) : "") + "</span>" +
+                    '<span class="ssync-hint">' + esc(j.started_at || "") +
+                    (j.finished_at ? " → " + esc(String(j.finished_at).slice(11)) : "") + "</span>" +
+                    "<span>" + esc(parts.join(" · ")) + "</span>" +
+                    (j.error_message && j.status !== "done"
+                        ? '<span class="ssync-hint" style="flex-basis: 100%;">' +
+                          esc(String(j.error_message).slice(0, 300)) + "</span>"
+                        : "") +
+                    "</div>";
+            }).join("");
+        });
+    }
+
+    /* ---------------- старт ---------------- */
+
+    function ssyncInit() {
+        $("ssyncPlanPick").onchange = function () {
+            var id = parseInt(this.value, 10);
+            ssyncFill(state.plans.filter(function (p) { return p.id === id; })[0] || null);
+            ssyncMsg("");
+            ssyncLoadRuns();
+        };
+        $("ssyncAddWave").onclick = function () {
+            var waves = ssyncReadWaves();
+            waves.push({ name: "", include: "", exclude: "", start: "", deadline: "" });
+            ssyncRenderWaves(waves);
+        };
+        $("ssyncSave").onclick = ssyncSave;
+        $("ssyncDelete").onclick = ssyncDelete;
+        $("ssyncAnalyze").onclick = ssyncAnalyze;
+        $("ssyncSchedule").onclick = function () { ssyncSchedule(true); };
+        $("ssyncUnschedule").onclick = function () { ssyncSchedule(false); };
+        $("ssyncRefresh").onclick = ssyncLoadRuns;
+        ssyncLoad(null);
+        setInterval(ssyncLoadRuns, 15000);
+    }
+
+    if (document.readyState === "loading") { document.addEventListener("DOMContentLoaded", ssyncInit); }
+    else { ssyncInit(); }
+})();
+</script>
+{% endblock %}
