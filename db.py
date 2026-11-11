@@ -363,6 +363,22 @@ def init_db():
             """
         )
 
+        # последняя проверка «что изменилось» по плану — переживает
+        # перезагрузку страницы и рестарт
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS smart_sync_analysis (
+                plan_id INTEGER PRIMARY KEY,
+                status TEXT,
+                full INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT,
+                finished_at TEXT,
+                result_json TEXT,
+                error TEXT
+            )
+            """
+        )
+
         # где запускать gpbackup/gprestore кластера: на этом хосте или по
         # SSH на его координаторе (gpbackup работает только оттуда)
         cur.execute(

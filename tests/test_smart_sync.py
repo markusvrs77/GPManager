@@ -293,3 +293,40 @@ def test_read_sizes_never_waits_for_etl():
     assert sizes[8] == 80 and len(sizes) == 249
     assert any("lock_timeout = %s" in q for q in conn.sql)
     assert conn.sql[-2] == "SET lock_timeout = 0"         # сессия возвращена как была
+
+
+# ------------------------------------------------------------ проверка переживает перезагрузку
+
+def test_analysis_is_stored_and_survives_reload(client, monkeypatch):
+    plan_id = client.post("/api/smart-sync/plans", json={
+        "name": "П", "source_connection_id": 1, "dest_connection_id": 2,
+        "settings": {"waves": [{"name": "W", "include": "*.*"}]}}).get_json()["plan"]["id"]
+
+    started = {}
+    monkeypatch.setattr(ss, "_spawn", lambda fn, *a: started.setdefault("call", (fn, a)))
+    monkeypatch.setattr(ss, "analyze", lambda plan, wave=None, full=None: fake_analysis())
+
+    r = client.post("/api/smart-sync/plans/{}/analyze".format(plan_id), json={}).get_json()
+    assert r["analysis"]["status"] == "running"
+
+    # второй клик, пока идёт, — та же проверка, новая не запускается
+    calls = len(started)
+    client.post("/api/smart-sync/plans/{}/analyze".format(plan_id), json={})
+    assert len(started) == calls
+
+    fn, args = started["call"]
+    fn(*args)                                             # фоновая проверка закончилась
+
+    # «перезагрузка страницы» — результат на месте
+    a = client.get("/api/smart-sync/plans/{}/analysis".format(plan_id)).get_json()["analysis"]
+    assert a["status"] == "done" and a["finished_at"]
+    assert a["result"]["waves"][0]["changed_tables"] == 3
+
+
+def test_analysis_interrupted_by_restart_is_not_running_forever():
+    plan_id = _plan()
+    ss._save_analysis(plan_id, status="running", started_at="2026-11-11 01:00:00")
+
+    a = ss.get_analysis(plan_id)
+
+    assert a["status"] == "failed" and "рестартом" in a["error"]

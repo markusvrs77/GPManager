@@ -293,8 +293,9 @@
         $("ssyncDelete").style.display = plan ? "" : "none";
         ssyncRenderSchedules();
         $("ssyncAnalysis").innerHTML = '<div class="ssync-hint">' + (plan
-            ? "Нажмите «Проверить», чтобы увидеть, что изменилось с прошлой синхронизации."
+            ? "Загружаю последнюю проверку…"
             : "Сохраните план и нажмите «Проверить».") + "</div>";
+        if (plan) { ssyncLoadAnalysis(); }
     }
 
     function ssyncRenderPick() {
@@ -409,30 +410,74 @@
         return html + "</div>";
     }
 
-    function ssyncAnalyze() {
+    function ssyncResultHtml(d) {
+        return '<div class="ssync-hint mb-2">Таблиц на проде: ' + fmtN(d.tables_total) +
+            (d.outside ? " · вне волн: " + fmtN(d.outside) : "") +
+            " · признак изменений: " + esc(d.mode) +
+            (d.last_op ? " + TRUNCATE/DDL" : "") +
+            (d.sizes_locked ? " · размер не прочитан у " + fmtN(d.sizes_locked) +
+                " (их сейчас держит ETL — объём занижен)" : "") + "</div>" +
+            d.waves.map(ssyncWaveResult).join("");
+    }
+
+    // последняя проверка плана: сохраняется на сервере, пока идёт — опрос
+    function ssyncLoadAnalysis() {
         var plan = state.plan;
-        if (!plan) { ssyncMsg("Сначала сохраните план", "bad"); return; }
-        var btn = $("ssyncAnalyze");
-        var box = $("ssyncAnalysis");
-        btn.disabled = true;
-        box.innerHTML = '<div class="ssync-hint">Читаю каталог прода и теста…</div>';
-        api("/api/smart-sync/plans/" + plan.id + "/analyze", "POST",
-            { full: $("ssyncAnFull").checked }).then(function (d) {
-            btn.disabled = false;
-            if (!d.ok) { box.innerHTML = '<div class="ssync-msg bad">' + esc(d.message) + "</div>"; return; }
-            box.innerHTML = '<div class="ssync-hint mb-2">Таблиц на проде: ' + fmtN(d.tables_total) +
-                (d.outside ? " · вне волн: " + fmtN(d.outside) : "") +
-                " · признак изменений: " + esc(d.mode) +
-                (d.last_op ? " + TRUNCATE/DDL" : "") +
-                (d.sizes_locked ? " · размер не прочитан у " + fmtN(d.sizes_locked) +
-                    " (их сейчас держит ETL — объём занижен)" : "") + "</div>" +
-                d.waves.map(ssyncWaveResult).join("");
+        clearTimeout(state.anTimer);
+        if (!plan) { return; }
+
+        api("/api/smart-sync/plans/" + plan.id + "/analysis").then(function (d) {
+            if (!state.plan || state.plan.id !== plan.id) { return; }   // план сменили
+            var box = $("ssyncAnalysis");
+            var a = d.analysis;
+            var running = a && a.status === "running";
+            $("ssyncAnalyze").disabled = !!running;
+
+            if (!d.ok || !a) {
+                box.innerHTML = '<div class="ssync-hint">' + esc(d.message ||
+                    "Проверки ещё не было. Нажмите «Проверить», чтобы увидеть, что изменилось " +
+                    "с прошлой синхронизации.") + "</div>";
+                return;
+            }
+
+            var head = running
+                ? "Проверяю каталог прода и теста… начато " + esc(a.started_at) +
+                  (a.result ? " · ниже — предыдущая проверка" : "")
+                : a.status === "failed"
+                    ? '<span class="ssync-msg bad">Проверка не удалась: ' + esc(a.error) + "</span>"
+                    : "Проверено " + esc(a.finished_at) + (a.full ? " · как при полной сверке" : "");
+
+            if (!running && a.status === "done" && d.plan_updated_at && a.finished_at &&
+                    d.plan_updated_at > a.finished_at) {
+                head += ' · <span class="ssync-tag warn">план менялся после проверки — проверьте заново</span>';
+            }
+
+            box.innerHTML = '<div class="ssync-hint mb-2"><b>' + head + "</b></div>" +
+                (a.result ? '<div style="' + (running ? "opacity: .55;" : "") + '">' +
+                    ssyncResultHtml(a.result) + "</div>" : "");
             box.querySelectorAll("[data-run]").forEach(function (b) {
                 b.onclick = function () { ssyncRun(parseInt(b.getAttribute("data-run"), 10), b); };
             });
+
+            if (running) { state.anTimer = setTimeout(ssyncLoadAnalysis, 3000); }
+        });
+    }
+
+    function ssyncAnalyze() {
+        var plan = state.plan;
+        if (!plan) { ssyncMsg("Сначала сохраните план", "bad"); return; }
+        $("ssyncAnalyze").disabled = true;
+        api("/api/smart-sync/plans/" + plan.id + "/analyze", "POST",
+            { full: $("ssyncAnFull").checked }).then(function (d) {
+            if (!d.ok) {
+                $("ssyncAnalyze").disabled = false;
+                ssyncMsg(d.message || "Не запустилась", "bad");
+                return;
+            }
+            ssyncLoadAnalysis();
         }).catch(function (e) {
-            btn.disabled = false;
-            box.innerHTML = '<div class="ssync-msg bad">' + esc(String(e)) + "</div>";
+            $("ssyncAnalyze").disabled = false;
+            ssyncMsg(String(e), "bad");
         });
     }
 

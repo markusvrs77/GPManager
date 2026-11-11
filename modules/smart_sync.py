@@ -29,6 +29,7 @@
 import fnmatch
 import json
 import re
+import threading
 from datetime import datetime
 
 from db import sqlite_cursor
@@ -212,6 +213,7 @@ def save_plan(data, plan_id=None, user=None):
 def delete_plan(plan_id):
     with sqlite_cursor(commit=True) as cur:
         cur.execute("DELETE FROM smart_sync_state WHERE plan_id = ?", (int(plan_id),))
+        cur.execute("DELETE FROM smart_sync_analysis WHERE plan_id = ?", (int(plan_id),))
         cur.execute("DELETE FROM smart_sync_plans WHERE id = ?", (int(plan_id),))
         return cur.rowcount
 
@@ -1012,3 +1014,86 @@ def drop_schedules(plan_id):
 
     for s in plan_schedules(plan_id).values():
         store.delete_schedule(s["id"])
+
+
+# ------------------------------------------------------------- последняя проверка
+
+_analysis_lock = threading.Lock()
+_analysis_running = set()
+
+
+def _spawn(target, *args):
+    threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def _save_analysis(plan_id, **fields):
+    cols = ", ".join("{} = ?".format(k) for k in fields)
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute("INSERT OR IGNORE INTO smart_sync_analysis (plan_id) VALUES (?)",
+                    (int(plan_id),))
+        cur.execute("UPDATE smart_sync_analysis SET {} WHERE plan_id = ?".format(cols),
+                    list(fields.values()) + [int(plan_id)])
+
+
+def get_analysis(plan_id):
+    """
+    Последняя проверка плана: {status: running|done|failed, full, started_at,
+    finished_at, result, error} или None. «Идёт», а потока нет — Opsentri
+    перезапускали посреди проверки.
+    """
+    with sqlite_cursor() as cur:
+        cur.execute("SELECT * FROM smart_sync_analysis WHERE plan_id = ?", (int(plan_id),))
+        row = cur.fetchone()
+
+    if not row:
+        return None
+
+    out = dict(row)
+
+    if out["status"] == "running" and int(plan_id) not in _analysis_running:
+        out["status"] = "failed"
+        out["error"] = "Проверка прервана рестартом Opsentri — запустите её заново"
+        _save_analysis(plan_id, status="failed", error=out["error"])
+
+    try:
+        out["result"] = json.loads(out.pop("result_json") or "null")
+    except ValueError:
+        out["result"] = None
+
+    out["full"] = bool(out.get("full"))
+    return out
+
+
+def start_analysis(plan, full=False):
+    """
+    Проверка «что изменилось» в фоне; результат сохраняется и переживает
+    перезагрузку страницы. Уже идёт — вторую не запускаем.
+    """
+    plan_id = int(plan["id"])
+
+    with _analysis_lock:
+        if plan_id in _analysis_running:
+            return get_analysis(plan_id)
+        _analysis_running.add(plan_id)
+
+    # прошлый результат остаётся, пока новый не готов
+    _save_analysis(plan_id, status="running", full=1 if full else 0,
+                   started_at=_now(), error=None)
+    _spawn(_analysis_worker, plan, bool(full))
+    return get_analysis(plan_id)
+
+
+def _analysis_worker(plan, full):
+    plan_id = int(plan["id"])
+
+    try:
+        result = public_analysis(analyze(plan, None, full=full or None))
+        _save_analysis(plan_id, status="done", finished_at=_now(), error=None,
+                       result_json=json.dumps(result, ensure_ascii=False))
+    except Exception as e:
+        _save_analysis(plan_id, status="failed", finished_at=_now(),
+                       error=str(e)[:1000])
+    finally:
+        with _analysis_lock:
+            _analysis_running.discard(plan_id)

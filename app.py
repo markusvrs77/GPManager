@@ -921,15 +921,24 @@ def api_smart_sync_analyze(plan_id):
         return err
 
     data = request.get_json(silent=True) or {}
-    wave = data.get("wave")
 
-    try:
-        result = smart_sync.analyze(plan, None if wave in (None, "") else int(wave),
-                                    full=bool(data.get("full")) or None)
-    except Exception as e:
-        return jsonify({"ok": False, "message": str(e)[:1000]}), 500
+    # идёт в фоне: результат сохраняется и переживает перезагрузку страницы
+    analysis = smart_sync.start_analysis(plan, full=bool(data.get("full")))
+    return jsonify({"ok": True, "analysis": analysis})
 
-    return jsonify(dict(smart_sync.public_analysis(result), ok=True))
+
+@app.route("/api/smart-sync/plans/<int:plan_id>/analysis")
+def api_smart_sync_analysis(plan_id):
+    """Последняя проверка плана (идёт / готова / ошибка)."""
+    from modules import smart_sync
+
+    plan, err = _smart_plan_or_404(plan_id)
+
+    if err:
+        return err
+
+    return jsonify({"ok": True, "analysis": smart_sync.get_analysis(plan_id),
+                    "plan_updated_at": plan.get("updated_at")})
 
 
 @app.route("/api/smart-sync/plans/<int:plan_id>/run", methods=["POST"])

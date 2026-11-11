@@ -124,6 +124,7 @@ POLICY = {
     "api_smart_sync_plans": {"GET": "sync.view", "POST": "sync.run"},
     "api_smart_sync_plan": "sync.run",
     "api_smart_sync_analyze": "sync.view",
+    "api_smart_sync_analysis": "sync.view",
     "api_smart_sync_run": "sync.run",
     "api_smart_sync_schedule": "schedules.edit",
     "api_gpcopy_increment_start": "sync.run",
