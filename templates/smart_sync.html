@@ -31,6 +31,21 @@
 .ssync-tag { font-size: 11px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--hairline); }
 .ssync-tag.new { color: var(--a1); border-color: var(--a1); }
 .ssync-tag.warn { color: var(--warn); border-color: var(--warn); }
+.ssync-tag.ok { color: var(--ok); border-color: var(--ok); }
+.ssync-tag.bad { color: var(--crit); border-color: var(--crit); }
+.ssync-tag.run { color: var(--a1); border-color: var(--a1); }
+.ssync-tag.wait { color: var(--text-muted); }
+.ssync-live { border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  padding: 8px 10px; margin: 8px 0; font-size: 13px; }
+.ssync-live:empty { display: none; }
+.ssync-live .bar { height: 6px; border-radius: 3px; background: var(--surface-2);
+  overflow: hidden; margin: 6px 0 2px; }
+.ssync-live .bar i { display: block; height: 100%; background: var(--a1); transition: width .4s; }
+.ssync-live.done .bar i { background: var(--ok); }
+.ssync-live.failed .bar i, .ssync-live.cancelled .bar i { background: var(--warn); }
+.ssync-live details { margin-top: 4px; }
+.ssync-live details li { font-size: 12px; word-break: break-word; }
+.ssync-live details li b { font-family: var(--font-mono); font-weight: 500; }
 .ssync-msg { font-size: 13px; margin-top: 8px; }
 .ssync-msg.bad { color: var(--crit); }
 .ssync-msg.good { color: var(--ok); }
@@ -295,7 +310,10 @@
         $("ssyncAnalysis").innerHTML = '<div class="ssync-hint">' + (plan
             ? "Загружаю последнюю проверку…"
             : "Сохраните план и нажмите «Проверить».") + "</div>";
+        state.progress = {};
+        state.analysis = null;
         if (plan) { ssyncLoadAnalysis(); }
+        ssyncLoadProgress();
     }
 
     function ssyncRenderPick() {
@@ -372,7 +390,8 @@
         var kpi = function (v, label) {
             return '<div class="ssync-kpi"><b>' + v + "</b><span>" + label + "</span></div>";
         };
-        var html = '<div class="ssync-wres"><div class="d-flex align-items-center gap-2">' +
+        var html = '<div class="ssync-wres" data-wave="' + w.index + '">' +
+            '<div class="d-flex align-items-center gap-2">' +
             '<b class="me-auto">' + esc(w.name) +
             (w.full ? ' <span class="ssync-tag warn">полная сверка</span>' : "") + "</b>" +
             '<button class="btn btn-sm btn-outline-primary" type="button" data-run="' + w.index + '">' +
@@ -383,7 +402,8 @@
             kpi(fmtN(w.changed_tables), "таблиц к копированию") +
             kpi(fmtN(w.changed_units), "партиций к копированию") +
             kpi(fmtBytes(w.bytes), "объём") +
-            "</div>";
+            "</div>" +
+            '<div class="ssync-live" data-live="' + w.index + '"></div>';
 
         var notes = [];
         if (w.new_tables) { notes.push(fmtN(w.new_tables) + " табл. нет в тесте — скопируются целиком"); }
@@ -400,8 +420,9 @@
                         esc(a[1]) + "</span>" +
                         (it.extra ? ' <span class="ssync-tag warn">лишних ' + fmtN(it.extra) + "</span>" : "") +
                         "</td><td>" + fmtN(it.parts) + (it.missing ? " (+" + fmtN(it.missing) + " новых)" : "") +
-                        "</td><td>" + fmtBytes(it.bytes) + "</td><td>" + esc(it.synced_at || "ещё не было") +
-                        "</td></tr>";
+                        "</td><td>" + fmtBytes(it.bytes) + '</td><td data-st="' + esc(it.table) +
+                        '" data-was="' + esc(it.synced_at || "ещё не было") + '">' +
+                        esc(it.synced_at || "ещё не было") + "</td></tr>";
                 }).join("") + "</tbody></table></div>" +
                 (w.changed_tables > w.items.length
                     ? '<div class="ssync-hint">Показаны первые ' + w.items.length + " из " + fmtN(w.changed_tables) + "</div>"
@@ -418,6 +439,118 @@
             (d.sizes_locked ? " · размер не прочитан у " + fmtN(d.sizes_locked) +
                 " (их сейчас держит ETL — объём занижен)" : "") + "</div>" +
             d.waves.map(ssyncWaveResult).join("");
+    }
+
+    /* ---------------- ход запуска (на лету) ---------------- */
+
+    var RUN_ST = { pending: "в очереди", queued: "в очереди", running: "идёт", stopping: "останавливается",
+        done: "готово", failed: "с ошибками", cancelled: "остановлен", interrupted: "прерван" };
+
+    function ssyncIsLive(r) {
+        return !!r && ["running", "stopping", "pending", "queued"].indexOf(r.status) >= 0;
+    }
+
+    function ssyncSkipLabel(e) {
+        e = String(e || "");
+        if (/^Не успели/.test(e)) { return "не успели"; }
+        if (/^Остановлено/.test(e)) { return "остановлено"; }
+        if (/лишние партиции/.test(e)) { return "лишние в тесте"; }
+        return "пропущено";
+    }
+
+    // статус таблицы из строки запуска; null — запуск её не касался
+    function ssyncCell(t, live) {
+        var parts = t.n > 1 ? " " + fmtN(t.p) + "/" + fmtN(t.n) : "";
+        var tip = t.e ? ' title="' + esc(t.e) + '"' : "";
+        if (t.s === "done") { return '<span class="ssync-tag ok">✓ скопировано' + (t.t ? " " + esc(t.t) : "") + "</span>"; }
+        if (t.s === "running") { return '<span class="ssync-tag run">копируется' + parts + "</span>"; }
+        if (t.s === "failed") { return '<span class="ssync-tag bad"' + tip + ">ошибка</span>"; }
+        if (t.s === "interrupted") { return '<span class="ssync-tag warn"' + tip + ">прервано</span>"; }
+        if (t.s === "skipped") { return '<span class="ssync-tag warn"' + tip + ">" + ssyncSkipLabel(t.e) + "</span>"; }
+        if ((t.s === "queued" || t.s === "pending") && live) { return '<span class="ssync-tag wait">в очереди</span>'; }
+        return null;
+    }
+
+    function ssyncLiveHtml(r, current) {
+        var c = r.counts || {};
+        var live = ssyncIsLive(r);
+        var pct = Math.max(0, Math.min(100, Number(r.progress) || 0));
+        var head = (live ? "Идёт запуск #" : "Последний запуск #") + r.job_id + " · " +
+            esc(RUN_ST[r.status] || r.status) + " · " + esc(r.started_at || "") +
+            (r.finished_at ? " → " + esc(String(r.finished_at).slice(11)) : "") +
+            (!live && !current ? " · был до этой проверки" : "");
+
+        if (!r.total) {
+            return "<b>" + head + "</b>" + '<div class="ssync-hint">' + (live
+                ? "Ищу изменившиеся таблицы на проде…"
+                : esc(r.error || "Копировать было нечего")) + "</div>";
+        }
+
+        var bits = ["скопировано " + fmtN(c.done) + " из " + fmtN(r.total) + " табл."];
+        if (r.bytes_total) { bits.push(fmtBytes(r.bytes_done) + " из " + fmtBytes(r.bytes_total)); }
+        if (c.running) { bits.push("копируется сейчас: " + fmtN(c.running)); }
+        if (live && r.batch && r.batch.n) { bits.push("пачка " + fmtN(r.batch.n) + " из " + fmtN(r.batch.of)); }
+        if (c.failed) { bits.push("ошибок " + fmtN(c.failed)); }
+        if (c.skipped) { bits.push("пропущено " + fmtN(c.skipped)); }
+        if (live && r.deadline) { bits.push("новое не начинать после " + esc(String(r.deadline).slice(11))); }
+
+        var html = "<b>" + head + "</b>" +
+            '<div class="bar"><i style="width: ' + pct.toFixed(1) + '%;"></i></div>' +
+            '<div class="ssync-hint">' + esc(Math.round(pct) + "% · " + bits.join(" · ")) + "</div>";
+
+        if (r.failed && r.failed.length) {
+            html += "<details><summary>Ошибки (" + fmtN(c.failed) + ")</summary><ul class=\"mb-0 ps-3\">" +
+                r.failed.map(function (f) {
+                    return "<li><b>" + esc(f.table) + "</b> — " + esc(f.error) + "</li>";
+                }).join("") +
+                (c.failed > r.failed.length ? "<li>…и ещё " + fmtN(c.failed - r.failed.length) + "</li>" : "") +
+                "</ul></details>";
+        }
+        if (!live && r.error && r.status !== "done") {
+            html += '<div class="ssync-hint">' + esc(r.error) + "</div>";
+        }
+        return html;
+    }
+
+    // ход последнего запуска каждой волны — поверх результата проверки
+    function ssyncApplyProgress() {
+        var waves = state.progress || {};
+        var a = state.analysis;
+
+        document.querySelectorAll("#ssyncAnalysis [data-live]").forEach(function (box) {
+            var r = waves[box.getAttribute("data-live")];
+            var live = ssyncIsLive(r);
+            // статусы строк — только если запуск идёт или был после проверки
+            var current = !!r && (live || !!(a && a.started_at && r.started_at && r.started_at >= a.started_at));
+            var opened = !!box.querySelector("details[open]");
+
+            box.className = "ssync-live" + (r ? " " + r.status : "");
+            box.innerHTML = r ? ssyncLiveHtml(r, current) : "";
+            if (opened && box.querySelector("details")) { box.querySelector("details").open = true; }
+
+            box.closest("[data-wave]").querySelectorAll("[data-st]").forEach(function (td) {
+                var t = current && r.tables ? r.tables[td.getAttribute("data-st")] : null;
+                td.innerHTML = (t && ssyncCell(t, live)) || esc(td.getAttribute("data-was"));
+            });
+        });
+    }
+
+    function ssyncLoadProgress() {
+        var plan = state.plan;
+        clearTimeout(state.prTimer);
+        state.prTimer = null;
+        if (!plan) { return; }
+
+        api("/api/smart-sync/plans/" + plan.id + "/progress").then(function (d) {
+            if (!state.plan || state.plan.id !== plan.id || !d.ok) { return; }
+            state.progress = d.waves || {};
+            ssyncApplyProgress();
+
+            var live = Object.keys(state.progress).some(function (k) { return ssyncIsLive(state.progress[k]); });
+            if (live) { state.prTimer = setTimeout(ssyncLoadProgress, 4000); }
+            if (live || state.wasLive) { ssyncLoadRuns(); }
+            state.wasLive = live;
+        });
     }
 
     // последняя проверка плана: сохраняется на сервере, пока идёт — опрос
@@ -458,6 +591,8 @@
             box.querySelectorAll("[data-run]").forEach(function (b) {
                 b.onclick = function () { ssyncRun(parseInt(b.getAttribute("data-run"), 10), b); };
             });
+            state.analysis = a;
+            ssyncApplyProgress();
 
             if (running) { state.anTimer = setTimeout(ssyncLoadAnalysis, 3000); }
         });
@@ -492,6 +627,7 @@
                     if (!d.ok) { ssyncMsg(d.message, "bad"); return; }
                     ssyncMsg("Запущено: задача #" + d.job_id, "good");
                     ssyncLoadRuns();
+                    ssyncLoadProgress();
                 });
         };
         var q = "Запустить волну «" + plan.settings.waves[wave].name + "» сейчас? Изменившиеся " +
@@ -543,6 +679,8 @@
                 return plan && String(j.plan_id) === String(plan.id);
             });
             if (!jobs.length) { box.innerHTML = '<div class="ssync-hint">Запусков ещё не было.</div>'; return; }
+            // запуск по расписанию начался, пока страница открыта — включаем ход на лету
+            if (!state.prTimer && jobs.some(ssyncIsLive)) { ssyncLoadProgress(); }
             box.innerHTML = jobs.map(function (j) {
                 var s = j.smart || {};
                 var parts = [];
@@ -550,8 +688,15 @@
                     parts.push("изменилось " + fmtN(s.changed_tables) + " из " + fmtN(s.roots) + " табл.");
                 }
                 if (s.bytes) { parts.push(fmtBytes(s.bytes)); }
+                if (j.total_items) {
+                    parts.push("скопировано " + fmtN(j.done_items) + " из " + fmtN(j.total_items) +
+                        (j.status === "running" ? " (" + Math.round(Number(j.progress_percent) || 0) + "%)" : ""));
+                }
+                if (j.status === "running" && s.batch && s.batch.n) {
+                    parts.push("пачка " + fmtN(s.batch.n) + " из " + fmtN(s.batch.of));
+                }
                 if (s.left) { parts.push("не успели " + fmtN(s.left)); }
-                if (s.failed) { parts.push("ошибок " + fmtN(s.failed)); }
+                if (j.failed_items || s.failed) { parts.push("ошибок " + fmtN(j.failed_items || s.failed)); }
                 return '<div class="ssync-run"><span class="st ' + esc(j.status) + '">' + esc(j.status) +
                     "</span><span>#" + j.id + (s.name ? " · " + esc(s.name) : "") + "</span>" +
                     '<span class="ssync-hint">' + esc(j.started_at || "") +

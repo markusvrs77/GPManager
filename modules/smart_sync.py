@@ -739,6 +739,153 @@ def _run_child(parent_id, child_id, runner):
         done.set()
 
 
+def _set_item_volumes(item_ids, items):
+    """Объём и число партиций у строк таблиц — прогресс волны по объёму."""
+    rows = [(int(it["bytes"] or 0), len(it["leaves"]) or 1, item_ids[root])
+            for root, it in items.items() if item_ids.get(root)]
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.executemany("UPDATE job_items SET size_bytes = ?, parts_total = ?, parts_done = 0, "
+                        "bytes_done = 0 WHERE id = ?", rows)
+
+
+def _set_item_part_progress(item_id, it, res):
+    """Сколько партиций таблицы уже доехало (и доля объёма) — после каждой пачки."""
+    if not item_id:
+        return
+
+    total = len(it["leaves"]) or 1
+    done = min(len(res["done"]), total)
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute("UPDATE job_items SET parts_done = ?, bytes_done = ? WHERE id = ?",
+                    (done, int((it["bytes"] or 0) * done / total), item_id))
+
+
+def _close_item(item_id, it, res, stopped, deadline):
+    """Итог по таблице: failed / done / extra / left — и статус её строки."""
+    from job_manager import mark_item_done, mark_item_failed, mark_item_skipped
+
+    want = set(it["leaves"])
+
+    if res["failed"]:
+        leaf, why = next(iter(res["failed"].items()))
+        mark_item_failed(item_id, "Не скопировано {} из {}: {} — {}".format(
+            len(res["failed"]), len(want) or 1, _name(leaf), why)[:2000])
+        return "failed"
+
+    if want and want <= res["done"]:
+        mark_item_done(item_id)
+        return "done"
+
+    if not want and it["extra"]:
+        # копировать нечего, только лишние партиции в тесте
+        mark_item_skipped(item_id, "В тесте лишние партиции ({}), на проде их нет: "
+                                   "{}".format(len(it["extra"]),
+                                               ", ".join(_name(x) for x in it["extra"][:5])))
+        return "extra"
+
+    mark_item_skipped(item_id, (
+        "Остановлено — продолжится в следующий запуск" if stopped else
+        "Не успели до {} — в следующее окно первыми".format(
+            deadline.strftime("%H:%M") if deadline else "срока")))
+    return "left"
+
+
+# ------------------------------------------------------------- ход запуска
+
+def _job_progress(job, cfg):
+    """Ход одного запуска волны: итоги и статус каждой таблицы (по строкам задачи)."""
+    from job_manager import get_job_items
+
+    smart = cfg.get("smart") or {}
+    rows = get_job_items(job["id"])
+    batch = smart.get("batch") or {}
+    live = {}
+
+    # внутри идущей пачки — какие её партиции уже доехали (строки дочерней gpcopy)
+    if job.get("status") == "running" and batch.get("job"):
+        units = batch.get("units") or {}
+
+        for row in get_job_items(batch["job"]):
+            unit = "{}.{}".format(row["schema_name"], row["table_name"])
+            root = units.get(unit)
+
+            if not root:
+                continue
+
+            if unit == root:            # новая таблица целиком: её собственный счётчик
+                live[root] = live.get(root, 0) + (row["parts_done"] or 0 if row["status"] != "done"
+                                                  else row["parts_total"] or 1)
+            elif row["status"] == "done":
+                live[root] = live.get(root, 0) + 1
+
+    tables, counts, failed = {}, {}, []
+    bytes_total = bytes_done = 0
+
+    for row in rows:
+        name = "{}.{}".format(row["schema_name"], row["table_name"])
+        st = row["status"]
+        total = row["parts_total"] or 0
+        done = row["parts_done"] or 0
+
+        if st == "running":
+            done = min(done + live.get(name, 0), total or done + live.get(name, 0))
+
+        counts[st] = counts.get(st, 0) + 1
+        size = row["size_bytes"] or 0
+        bytes_total += size
+        bytes_done += size if st == "done" else (int(size * done / total) if total else 0)
+
+        t = {"s": st, "p": done, "n": total,
+             "t": (row["finished_at"] or "")[11:16] if st != "running" else
+                  (row["started_at"] or "")[11:16]}
+
+        if st in ("failed", "skipped") and row["error_message"]:
+            t["e"] = row["error_message"][:400]
+
+        if st == "failed" and len(failed) < 30:
+            failed.append({"table": name, "error": (row["error_message"] or "")[:400]})
+
+        tables[name] = t
+
+    return {
+        "job_id": job["id"], "status": job.get("status"),
+        "started_at": job.get("started_at"), "finished_at": job.get("finished_at"),
+        "progress": job.get("progress_percent") or 0,
+        "error": (job.get("error_message") or "")[:300] if job.get("status") != "done" else "",
+        "deadline": smart.get("deadline"), "full": bool(cfg.get("full")),
+        "batch": {"n": batch.get("n"), "of": batch.get("of")} if batch else None,
+        "batches": smart.get("batches"),
+        "total": len(rows), "counts": counts,
+        "bytes_total": bytes_total, "bytes_done": bytes_done,
+        "failed": failed, "tables": tables,
+    }
+
+
+def run_progress(plan_id):
+    """{"<волна>": ход последнего запуска этой волны} — для страницы, на лету."""
+    from job_manager import list_recent_jobs
+
+    out = {}
+
+    for job in list_recent_jobs(["smart_sync"], limit=100):
+        try:
+            cfg = json.loads(job.get("config_json") or "{}")
+        except ValueError:
+            continue
+
+        if str(cfg.get("plan_id")) != str(plan_id):
+            continue
+
+        wave = str(int(cfg.get("wave") or 0))
+
+        if wave not in out:
+            out[wave] = _job_progress(job, cfg)
+
+    return out
+
+
 def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
     """
     Одна волна плана: что изменилось -> недостающие партиции в приёмнике ->
@@ -793,6 +940,7 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
                     for i in get_job_items(job_id)}
         items = {it["root"]: it for it in w["items"]}
         outcome = {root: {"done": set(), "failed": {}} for root in items}
+        _set_item_volumes(item_ids, items)
 
         # партиции, которых нет в тесте (новые дни на проде), — по DDL прода
         missing_owner = {leaf: it["root"] for it in w["items"] for leaf in it["missing"]}
@@ -833,6 +981,13 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
 
         batches = make_batches(todo, sizes, settings)
         children, late = [], False
+        config["smart"]["batches"] = len(batches)
+
+        # что ещё не скопировано по таблице: закончились единицы — статус таблицы
+        # ставим сразу, а не в конце волны (страница показывает это на лету)
+        pending = {it["root"]: set([it["root"]] if it["action"] == "new" else it["leaves"])
+                   for it in todo}
+        closed = {}
 
         for n, batch in enumerate(batches, 1):
             if is_stop_requested(job_id):
@@ -854,6 +1009,9 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
             })
             children.append(child)
             config["smart"]["children"] = children
+            config["smart"]["batch"] = {
+                "n": n, "of": len(batches), "job": child,
+                "units": {_name(u): _name(owner[u]["root"]) for u in batch["leaves"]}}
             update_job_config(job_id, config)
 
             for root in batch["roots"]:
@@ -882,34 +1040,28 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
             if saved:
                 save_state(plan["id"], saved, job_id=job_id)
 
+            for root in {owner[u]["root"] for u in batch["leaves"]}:
+                pending[root].difference_update(batch["leaves"])
+                it, res, iid = items[root], outcome[root], item_ids.get(root)
+                _set_item_part_progress(iid, it, res)
+
+                if not pending[root] and (res["failed"] or set(it["leaves"]) <= res["done"]):
+                    closed[root] = _close_item(iid, it, res, False, deadline)
+
+            refresh_job_progress(job_id)
+
         stopped = is_stop_requested(job_id)
-        left = failed = 0
 
         for root, it in items.items():
-            iid = item_ids.get(root)
-            res = outcome[root]
-            want = set(it["leaves"])
+            if root not in closed:
+                closed[root] = _close_item(item_ids.get(root), it, outcome[root],
+                                           stopped, deadline)
 
-            if res["failed"]:
-                failed += 1
-                leaf, why = next(iter(res["failed"].items()))
-                mark_item_failed(iid, "Не скопировано {} из {}: {} — {}".format(
-                    len(res["failed"]), len(want) or 1, _name(leaf), why)[:2000])
-            elif want and want <= res["done"]:
-                mark_item_done(iid)
-            elif not want and it["extra"]:
-                # копировать нечего, только лишние партиции в тесте
-                mark_item_skipped(iid, "В тесте лишние партиции ({}), на проде их нет: "
-                                       "{}".format(len(it["extra"]),
-                                                   ", ".join(_name(x) for x in it["extra"][:5])))
-            else:
-                left += 1
-                mark_item_skipped(iid, (
-                    "Остановлено — продолжится в следующий запуск" if stopped else
-                    "Не успели до {} — в следующее окно первыми".format(
-                        deadline.strftime("%H:%M") if deadline else "срока")))
+        left = sum(1 for kind in closed.values() if kind == "left")
+        failed = sum(1 for kind in closed.values() if kind == "failed")
 
         refresh_job_progress(job_id)
+        config["smart"].pop("batch", None)
         config["smart"].update({"left": left, "failed": failed, "late": late})
         update_job_config(job_id, config)
 

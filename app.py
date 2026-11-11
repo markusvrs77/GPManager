@@ -941,6 +941,19 @@ def api_smart_sync_analysis(plan_id):
                     "plan_updated_at": plan.get("updated_at")})
 
 
+@app.route("/api/smart-sync/plans/<int:plan_id>/progress")
+def api_smart_sync_progress(plan_id):
+    """Ход последних запусков волн плана: что уже засинхронизировано, на лету."""
+    from modules import smart_sync
+
+    plan, err = _smart_plan_or_404(plan_id)
+
+    if err:
+        return err
+
+    return jsonify({"ok": True, "waves": smart_sync.run_progress(plan_id)})
+
+
 @app.route("/api/smart-sync/plans/<int:plan_id>/run", methods=["POST"])
 def api_smart_sync_run(plan_id):
     from modules import smart_sync
@@ -1329,7 +1342,14 @@ def api_jobs_recent():
 
         # ежедневная синхронизация: сводка волны и её план
         if cfg.get("smart") is not None or j.get("job_type") == "smart_sync":
-            j["smart"] = cfg.get("smart")
+            smart = dict(cfg.get("smart") or {})
+            batch = smart.pop("batch", None) or {}
+
+            # карта «лист → таблица» текущей пачки ленте не нужна
+            if batch:
+                smart["batch"] = {"n": batch.get("n"), "of": batch.get("of")}
+
+            j["smart"] = smart if cfg.get("smart") is not None else None
             j["plan_id"] = cfg.get("plan_id")
 
         # сторож блокировок: отложенное, пауза ради ETL, догрузка

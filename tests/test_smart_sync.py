@@ -201,6 +201,42 @@ def test_runner_copies_batches_saves_state_and_stops_at_deadline(monkeypatch):
     assert child["truncate"] is True and child["smart_parent"] == job_id
 
 
+def test_runner_marks_tables_as_each_batch_finishes_and_progress_shows_it(monkeypatch, client):
+    plan_id = _plan()
+    monkeypatch.setattr(ss, "analyze", lambda plan, wave, full=None: fake_analysis())
+    seen = []
+    job_id = create_job("smart_sync", 1, {"plan_id": plan_id, "wave": 0})
+
+    def runner(child_id):
+        from job_manager import mark_item_done, mark_item_running
+        for item in get_job_items(child_id):
+            mark_item_running(item["id"])
+        seen.append(ss.run_progress(plan_id)["0"])          # что видно странице во время пачки
+        for item in get_job_items(child_id):
+            mark_item_done(item["id"])
+
+    ss.run_smart_sync_job(job_id, runner=runner, clock=lambda: datetime(2026, 11, 11, 1, 0))
+
+    # идёт пачка 2 — таблица a из пачки 1 уже скопирована, а не «в работе» до конца волны
+    during_second = seen[1]
+    assert during_second["status"] == "running"
+    assert during_second["tables"]["s.a"]["s"] == "done"
+    assert during_second["tables"]["s.b"]["s"] == "running"
+    assert during_second["tables"]["s.c"]["s"] == "queued"
+    assert during_second["batch"] == {"n": 2, "of": 3}
+    assert during_second["counts"]["done"] == 1 and during_second["total"] == 3
+    assert during_second["bytes_total"] == 3 and during_second["bytes_done"] == 1
+
+    r = client.get("/api/smart-sync/plans/{}/progress".format(plan_id)).get_json()
+    final = r["waves"]["0"]
+    assert r["ok"] and final["status"] == "done" and final["counts"] == {"done": 3}
+    assert final["batch"] is None and final["tables"]["s.c"]["t"]
+
+    recent = client.get("/api/jobs/recent?types=smart_sync").get_json()["jobs"]
+    mine = [j for j in recent if j["id"] == job_id][0]
+    assert "batch" not in (mine["smart"] or {})
+
+
 def test_runner_nothing_changed_is_done(monkeypatch):
     plan_id = _plan()
     empty = fake_analysis()
