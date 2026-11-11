@@ -792,6 +792,106 @@ def _close_item(item_id, it, res, stopped, deadline):
     return "left"
 
 
+def _covered(it, unit):
+    """Какие листья закрывает единица копирования: новая таблица — все свои."""
+    return it["leaves"] if it["action"] == "new" else [unit]
+
+
+def _cfg(job):
+    try:
+        return json.loads(job.get("config_json") or "{}")
+    except ValueError:
+        return {}
+
+
+def _sleep(seconds):
+    import time
+
+    time.sleep(seconds)
+
+
+def _live_twin(plan_id, wave_index, job_id=None):
+    """Id другой идущей задачи той же волны плана или None."""
+    from job_manager import list_unfinished_jobs
+
+    for j in list_unfinished_jobs():
+        if (j.get("job_type") != "smart_sync" or j.get("status") not in ("running", "stopping")
+                or (job_id is not None and int(j["id"]) == int(job_id))):
+            continue
+
+        cfg = _cfg(j)
+
+        if str(cfg.get("plan_id")) == str(plan_id) and int(cfg.get("wave") or 0) == int(wave_index):
+            return int(j["id"])
+
+    return None
+
+
+def _wait_leftover_children(plan, job_id):
+    """
+    gpcopy этого плана, которые ещё идут (gpcopy — внешний процесс и рестарт
+    Opsentri его не обрывает): ждём конца, затем зачитываем доехавшее —
+    по отпечаткам, которые пачка сохранила в задаче-родителе.
+    """
+    from job_manager import (get_job, get_job_items, is_stop_requested, list_recent_jobs,
+                             list_unfinished_jobs, request_stop_job)
+
+    # свои пачки и пачки оборванных запусков; живая соседняя волна ждёт свои сама
+    parents = {int(j["id"]): _cfg(j) for j in list_recent_jobs(["smart_sync"], limit=100)
+               if int(j["id"]) == int(job_id)
+               or j.get("status") not in ("queued", "running", "stopping")}
+    parents = {k: v for k, v in parents.items() if str(v.get("plan_id")) == str(plan["id"])}
+    waiting = []
+
+    for j in list_unfinished_jobs():
+        if j.get("job_type") != "gpcopy" or j.get("status") not in ("running", "stopping"):
+            continue
+
+        parent = _cfg(j).get("smart_parent")
+
+        if parent is not None and int(parent) in parents:
+            waiting.append((int(j["id"]), int(parent)))
+
+    for child, parent in waiting:
+        while (get_job(child) or {}).get("status") in ("queued", "running", "stopping"):
+            if is_stop_requested(job_id):
+                request_stop_job(child)
+            _sleep(10)
+
+        batch = (parents[parent].get("smart") or {}).get("batch") or {}
+
+        if int(batch.get("job") or 0) != child:
+            continue
+
+        save = batch.get("save") or {}
+        saved = [((s, t), fp)
+                 for row in get_job_items(child) if row["status"] == "done"
+                 for s, t, fp in save.get("{}.{}".format(row["schema_name"], row["table_name"]), [])]
+
+        if saved:
+            save_state(plan["id"], saved, job_id=parent)
+
+
+def _close_already_synced(plan_id, job, existing, items):
+    """
+    Продолжение после рестарта: строки задачи, которых нет в свежем анализе,
+    уже совпадают с продом (их отпечаток сохранён после копирования).
+    """
+    from job_manager import mark_item_done, mark_item_skipped
+
+    state = load_state(plan_id)
+    since = job.get("started_at") or ""
+
+    for key, row in existing.items():
+        if key in items or row["status"] in ("done", "failed", "skipped"):
+            continue
+
+        if since and ((state.get(key) or {}).get("synced_at") or "") >= since:
+            mark_item_done(row["id"])
+        else:
+            mark_item_skipped(row["id"], "Изменений больше нет — таблица уже совпадает с продом")
+
+
 # ------------------------------------------------------------- ход запуска
 
 def _job_progress(job, cfg):
@@ -820,6 +920,17 @@ def _job_progress(job, cfg):
             elif row["status"] == "done":
                 live[root] = live.get(root, 0) + 1
 
+    # запуск оборвался (рестарт Opsentri до продолжения после рестарта): строки
+    # таблиц не закрыты — берём, что реально доехало, из строк его пачек gpcopy
+    copied = {}
+
+    if job.get("status") in ("interrupted", "cancelled", "failed"):
+        for child in smart.get("children") or []:
+            for row in get_job_items(child):
+                if row["status"] == "done":
+                    copied["{}.{}".format(row["schema_name"], row["table_name"])] = (
+                        row["finished_at"] or "")
+
     tables, counts, failed = {}, {}, []
     bytes_total = bytes_done = 0
 
@@ -828,6 +939,10 @@ def _job_progress(job, cfg):
         st = row["status"]
         total = row["parts_total"] or 0
         done = row["parts_done"] or 0
+
+        if st not in ("done", "failed", "skipped") and name in copied:
+            row = dict(row, finished_at=copied[name])
+            st, done = "done", total
 
         if st == "running":
             done = min(done + live.get(name, 0), total or done + live.get(name, 0))
@@ -859,6 +974,10 @@ def _job_progress(job, cfg):
         "batches": smart.get("batches"),
         "total": len(rows), "counts": counts,
         "bytes_total": bytes_total, "bytes_done": bytes_done,
+        # доля доехавшего: по объёму, без объёма — по таблицам
+        "pct": round(100.0 * bytes_done / bytes_total, 1) if bytes_total else
+               (round(100.0 * counts.get("done", 0) / len(rows), 1) if rows else 0),
+        "resumed": int(smart.get("resumed") or 0),
         "failed": failed, "tables": tables,
     }
 
@@ -917,9 +1036,27 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
         if wave_index >= len(settings["waves"]):
             raise ValueError("В плане нет волны №{}".format(wave_index + 1))
 
+        twin = _live_twin(plan["id"], wave_index, job_id)
+
+        if twin:
+            mark_job_failed(job_id, "Эта волна уже идёт: задача #{} — второй запуск "
+                                    "не начат".format(twin))
+            return
+
+        # продолжение после рестарта Opsentri: срок — прежний, а не от «сейчас»
+        prev = config.get("smart") or {}
         started = clock()
-        deadline = deadline_of(settings["waves"][wave_index], started)
+
+        if prev.get("deadline"):
+            deadline = datetime.strptime(prev["deadline"], "%Y-%m-%d %H:%M")
+        else:
+            deadline = deadline_of(settings["waves"][wave_index], started)
+
         mark_job_running(job_id)
+
+        # gpcopy этого плана, ещё идущие (наша пачка до рестарта или прерванный
+        # запуск): ждём их — две копии одной таблицы с --truncate недопустимы
+        _wait_leftover_children(plan, job_id)
 
         result = analyze(plan, wave_index, full=config.get("full"))
         w = result["waves"][0]
@@ -928,17 +1065,27 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
         config["smart"] = dict(summary, mode=result["mode"], plan_name=plan["name"],
                                deadline=deadline.strftime("%Y-%m-%d %H:%M")
                                if deadline else None)
+
+        if prev:
+            config["smart"]["children"] = prev.get("children") or []
+            config["smart"]["resumed"] = int(prev.get("resumed") or 0) + 1
+
         update_job_config(job_id, config)
 
+        items = {it["root"]: it for it in w["items"]}
+        existing = {(i["schema_name"], i["table_name"]): i for i in get_job_items(job_id)}
+        _close_already_synced(plan["id"], job, existing, items)
+
         if not w["items"]:
+            refresh_job_progress(job_id)
             mark_job_done(job_id)
             return
 
         create_job_items(job_id, [{"schema_name": it["root"][0], "table_name": it["root"][1],
-                                   "action": "SMART SYNC"} for it in w["items"]])
+                                   "action": "SMART SYNC"} for it in w["items"]
+                                  if it["root"] not in existing])
         item_ids = {(i["schema_name"], i["table_name"]): i["id"]
                     for i in get_job_items(job_id)}
-        items = {it["root"]: it for it in w["items"]}
         outcome = {root: {"done": set(), "failed": {}} for root in items}
         _set_item_volumes(item_ids, items)
 
@@ -980,7 +1127,7 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
                 todo.append(dict(it, leaves=leaves))
 
         batches = make_batches(todo, sizes, settings)
-        children, late = [], False
+        children, late = list(config["smart"].get("children") or []), False
         config["smart"]["batches"] = len(batches)
 
         # что ещё не скопировано по таблице: закончились единицы — статус таблицы
@@ -1009,9 +1156,15 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
             })
             children.append(child)
             config["smart"]["children"] = children
+            # отпечатки пачки — чтобы после рестарта Opsentri зачесть то, что
+            # gpcopy докопировала без нас (см. _wait_leftover_children)
             config["smart"]["batch"] = {
                 "n": n, "of": len(batches), "job": child,
-                "units": {_name(u): _name(owner[u]["root"]) for u in batch["leaves"]}}
+                "units": {_name(u): _name(owner[u]["root"]) for u in batch["leaves"]},
+                "save": {_name(u): [[l[0], l[1], owner[u]["fingerprints"][l]]
+                                    for l in _covered(owner[u], u)
+                                    if l in owner[u]["fingerprints"]]
+                         for u in batch["leaves"]}}
             update_job_config(job_id, config)
 
             for root in batch["roots"]:
@@ -1028,7 +1181,7 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
                 row = rows.get(unit) or {}
 
                 if row.get("status") == "done":
-                    covered = it["leaves"] if it["action"] == "new" else [unit]
+                    covered = _covered(it, unit)
                     outcome[it["root"]]["done"].update(covered)
                     saved += [(l, it["fingerprints"][l]) for l in covered
                               if l in it["fingerprints"]]

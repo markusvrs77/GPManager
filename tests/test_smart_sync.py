@@ -237,6 +237,97 @@ def test_runner_marks_tables_as_each_batch_finishes_and_progress_shows_it(monkey
     assert "batch" not in (mine["smart"] or {})
 
 
+def test_resume_after_restart_waits_for_child_and_continues(monkeypatch):
+    from job_manager import (mark_item_done, mark_job_running, update_job_config)
+
+    plan_id = _plan()
+    job_id = create_job("smart_sync", 1, {"plan_id": plan_id, "wave": 0})
+    # до рестарта: волна шла, пачка с таблицей a — в живой gpcopy
+    child = create_job("gpcopy", 1, {"tables": [{"schema": "s", "table": "a"}],
+                                     "smart_parent": job_id})
+    mark_job_running(child)
+    cfg = json.loads(get_job(job_id)["config_json"])
+    cfg["smart"] = {"deadline": "2099-01-01 05:30", "children": [child],
+                    "batch": {"n": 1, "of": 3, "job": child, "units": {"s.a": "s.a"},
+                              "save": {"s.a": [["s", "a", "fa"]]}}}
+    update_job_config(job_id, cfg)
+    from job_manager import create_job_items
+    create_job_items(job_id, [{"schema_name": "s", "table_name": t, "action": "SMART SYNC"}
+                              for t in ("a", "b", "c")])
+    mark_job_running(job_id)
+
+    def gpcopy_finishes(_):
+        for item in get_job_items(child):
+            mark_item_done(item["id"])
+        from job_manager import mark_job_done
+        mark_job_done(child)
+
+    monkeypatch.setattr(ss, "_sleep", gpcopy_finishes)
+
+    def fresh(plan, wave, full=None):
+        assert ("s", "a") in ss.load_state(plan_id)       # доехавшее зачтено ДО анализа
+        r = fake_analysis()                                # a уже совпадает — в анализе её нет
+        r["waves"][0]["items"] = [it for it in r["waves"][0]["items"] if it["root"] != ("s", "a")]
+        return r
+
+    monkeypatch.setattr(ss, "analyze", fresh)
+    ran = []
+
+    def runner(child_id):
+        ran.append(child_id)
+        for item in get_job_items(child_id):
+            mark_item_done(item["id"])
+
+    ss.run_smart_sync_job(job_id, runner=runner, clock=lambda: datetime(2026, 11, 11, 18, 0))
+
+    items = {i["table_name"]: i for i in get_job_items(job_id)}
+    assert len(items) == 3                                 # строки не задвоились
+    assert {i["status"] for i in items.values()} == {"done"}
+    assert len(ran) == 2                                   # копировали только b и c
+    smart = json.loads(get_job(job_id)["config_json"])["smart"]
+    assert smart["resumed"] == 1 and smart["children"][0] == child
+    assert smart["deadline"] == "2099-01-01 05:30"          # срок прежний
+    assert get_job(job_id)["status"] == "done"
+
+
+def test_same_wave_is_not_started_twice(client):
+    from job_manager import mark_job_running
+
+    plan_id = _plan()
+    first = create_job("smart_sync", 1, {"plan_id": plan_id, "wave": 0})
+    mark_job_running(first)
+
+    r = client.post("/api/smart-sync/plans/{}/run".format(plan_id), json={"wave": 0})
+    assert r.status_code == 409 and "#{}".format(first) in r.get_json()["message"]
+
+    second = create_job("smart_sync", 1, {"plan_id": plan_id, "wave": 0})
+    ss.run_smart_sync_job(second, runner=lambda j: None)
+    assert get_job(second)["status"] == "failed"
+
+
+def test_interrupted_run_shows_what_children_copied():
+    from job_manager import (create_job_items, mark_item_done, mark_job_running,
+                             mark_interrupted_jobs_on_startup, update_job_config)
+
+    plan_id = _plan()
+    job_id = create_job("smart_sync", 1, {"plan_id": plan_id, "wave": 0})
+    child = create_job("gpcopy", 1, {"tables": [{"schema": "s", "table": "a"}]})
+    for item in get_job_items(child):
+        mark_item_done(item["id"])
+    cfg = json.loads(get_job(job_id)["config_json"])
+    cfg["smart"] = {"children": [child]}
+    update_job_config(job_id, cfg)
+    create_job_items(job_id, [{"schema_name": "s", "table_name": t, "action": "SMART SYNC"}
+                              for t in ("a", "b")])
+    mark_job_running(job_id)
+    mark_interrupted_jobs_on_startup()
+
+    p = ss.run_progress(plan_id)["0"]
+    assert p["status"] == "interrupted"
+    assert p["tables"]["s.a"]["s"] == "done" and p["tables"]["s.b"]["s"] == "interrupted"
+    assert p["counts"]["done"] == 1 and p["pct"] == 50.0
+
+
 def test_runner_nothing_changed_is_done(monkeypatch):
     plan_id = _plan()
     empty = fake_analysis()

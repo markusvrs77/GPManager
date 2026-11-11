@@ -973,6 +973,11 @@ def api_smart_sync_run(plan_id):
     if not 0 <= wave < len(plan["settings"]["waves"]):
         return jsonify({"ok": False, "message": "Нет такой волны"}), 400
 
+    twin = smart_sync._live_twin(plan_id, wave)
+
+    if twin:
+        return jsonify({"ok": False, "message": "Эта волна уже идёт: задача #{}".format(twin)}), 409
+
     config = {"plan_id": plan_id, "wave": wave,
               "source_connection_id": plan["source_connection_id"],
               "dest_connection_id": plan["dest_connection_id"]}

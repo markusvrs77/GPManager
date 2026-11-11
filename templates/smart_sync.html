@@ -474,7 +474,7 @@
     function ssyncLiveHtml(r, current) {
         var c = r.counts || {};
         var live = ssyncIsLive(r);
-        var pct = Math.max(0, Math.min(100, Number(r.progress) || 0));
+        var pct = Math.max(0, Math.min(100, Number(r.pct) || 0));
         var head = (live ? "Идёт запуск #" : "Последний запуск #") + r.job_id + " · " +
             esc(RUN_ST[r.status] || r.status) + " · " + esc(r.started_at || "") +
             (r.finished_at ? " → " + esc(String(r.finished_at).slice(11)) : "") +
@@ -482,7 +482,7 @@
 
         if (!r.total) {
             return "<b>" + head + "</b>" + '<div class="ssync-hint">' + (live
-                ? "Ищу изменившиеся таблицы на проде…"
+                ? "Ищу изменившиеся таблицы на проде (сначала дожидаюсь gpcopy, оставшейся от прошлого запуска, если она ещё идёт)…"
                 : esc(r.error || "Копировать было нечего")) + "</div>";
         }
 
@@ -492,6 +492,8 @@
         if (live && r.batch && r.batch.n) { bits.push("пачка " + fmtN(r.batch.n) + " из " + fmtN(r.batch.of)); }
         if (c.failed) { bits.push("ошибок " + fmtN(c.failed)); }
         if (c.skipped) { bits.push("пропущено " + fmtN(c.skipped)); }
+        if (c.interrupted) { bits.push("не дошли " + fmtN(c.interrupted)); }
+        if (r.resumed) { bits.push("продолжена после рестарта Opsentri"); }
         if (live && r.deadline) { bits.push("новое не начинать после " + esc(String(r.deadline).slice(11))); }
 
         var html = "<b>" + head + "</b>" +
@@ -506,7 +508,11 @@
                 (c.failed > r.failed.length ? "<li>…и ещё " + fmtN(c.failed - r.failed.length) + "</li>" : "") +
                 "</ul></details>";
         }
-        if (!live && r.error && r.status !== "done") {
+        if (r.status === "interrupted") {
+            html += '<div class="ssync-hint">Opsentri перезапускали во время волны. Скопированное ' +
+                "отмечено по пачкам gpcopy и повторно не копируется — запустите волну ещё раз, " +
+                "она продолжит с оставшихся таблиц.</div>";
+        } else if (!live && r.error && r.status !== "done") {
             html += '<div class="ssync-hint">' + esc(r.error) + "</div>";
         }
         return html;
@@ -696,13 +702,14 @@
                     parts.push("пачка " + fmtN(s.batch.n) + " из " + fmtN(s.batch.of));
                 }
                 if (s.left) { parts.push("не успели " + fmtN(s.left)); }
-                if (j.failed_items || s.failed) { parts.push("ошибок " + fmtN(j.failed_items || s.failed)); }
+                if (j.status === "interrupted") { parts.push("прервана рестартом Opsentri"); }
+                else if (j.failed_items || s.failed) { parts.push("ошибок " + fmtN(j.failed_items || s.failed)); }
                 return '<div class="ssync-run"><span class="st ' + esc(j.status) + '">' + esc(j.status) +
                     "</span><span>#" + j.id + (s.name ? " · " + esc(s.name) : "") + "</span>" +
                     '<span class="ssync-hint">' + esc(j.started_at || "") +
                     (j.finished_at ? " → " + esc(String(j.finished_at).slice(11)) : "") + "</span>" +
                     "<span>" + esc(parts.join(" · ")) + "</span>" +
-                    (j.error_message && j.status !== "done"
+                    (j.error_message && j.status !== "done" && j.status !== "interrupted"
                         ? '<span class="ssync-hint" style="flex-basis: 100%;">' +
                           esc(String(j.error_message).slice(0, 300)) + "</span>"
                         : "") +

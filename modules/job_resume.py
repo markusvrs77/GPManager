@@ -14,7 +14,9 @@ gpcopy/gpbackup/gprestore — внешние бинари, они пережив
 - gpcopy_sync — upsert через staging, повтор безопасен;
 - gpcopy_increment — watermark пересчитывается от приёмника, дублей нет;
 - gpcopy_partition_diff — diff пересчитывается, совпавшие партиции отпадут;
-- copy_pipe — только truncate-режим (append задвоил бы строки).
+- copy_pipe — только truncate-режим (append задвоил бы строки);
+- smart_sync — волна дожидается своей идущей gpcopy, зачитывает доехавшее
+  и пересчитывает изменения: скопированное не повторяется, срок прежний.
 """
 
 import json
@@ -31,6 +33,7 @@ RESUMABLE_JOB_TYPES = (
     "gpcopy_increment",
     "gpcopy_partition_diff",
     "copy_pipe",
+    "smart_sync",
 )
 
 
@@ -40,6 +43,7 @@ def _load_runners():
     from modules.gpcopy_sync import run_gpcopy_sync_job
     from modules.reorganize import run_reorganize_job
     from modules.skew_analyzer import run_skew_job
+    from modules.smart_sync import run_smart_sync_job
     from modules.sync_transport import run_copy_pipe_job
     from modules.vacuum_analyze import run_vacuum_analyze_job
 
@@ -51,6 +55,7 @@ def _load_runners():
         "gpcopy_increment": run_gpcopy_increment_job,
         "gpcopy_partition_diff": run_gpcopy_partition_diff_job,
         "copy_pipe": run_copy_pipe_job,
+        "smart_sync": run_smart_sync_job,
     }
 
 
