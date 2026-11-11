@@ -992,6 +992,38 @@ def api_smart_sync_run(plan_id):
     return jsonify({"ok": True, "job_id": job_id})
 
 
+@app.route("/api/smart-sync/jobs/<int:job_id>/continue", methods=["POST"])
+def api_smart_sync_continue(job_id):
+    """Продолжить прерванный/остановленный запуск волны с оставшихся таблиц."""
+    from job_manager import get_job
+    from modules import smart_sync
+
+    job = get_job(job_id)
+
+    if not job or job.get("job_type") != "smart_sync":
+        return jsonify({"ok": False, "message": "Запуск не найден"}), 404
+
+    try:
+        cfg = _json.loads(job.get("config_json") or "{}")
+    except ValueError:
+        cfg = {}
+
+    plan, err = _smart_plan_or_404(int(cfg.get("plan_id") or 0))
+
+    if err:
+        return err
+
+    try:
+        smart_sync.continue_job(job_id)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 409
+
+    threading.Thread(target=smart_sync.run_smart_sync_job, args=(job_id,),
+                     daemon=True).start()
+
+    return jsonify({"ok": True, "job_id": job_id})
+
+
 @app.route("/api/smart-sync/plans/<int:plan_id>/schedule", methods=["POST", "DELETE"])
 def api_smart_sync_schedule(plan_id):
     from modules import smart_sync
@@ -1347,12 +1379,17 @@ def api_jobs_recent():
 
         # ежедневная синхронизация: сводка волны и её план
         if cfg.get("smart") is not None or j.get("job_type") == "smart_sync":
-            smart = dict(cfg.get("smart") or {})
-            batch = smart.pop("batch", None) or {}
+            from modules.smart_sync import batch_summary
 
-            # карта «лист → таблица» текущей пачки ленте не нужна
+            smart = dict(cfg.get("smart") or {})
+            batch = batch_summary(smart)
+
+            # карты «лист → таблица» идущих пачек ленте не нужны
+            smart.pop("batch", None)
+            smart.pop("active", None)
+
             if batch:
-                smart["batch"] = {"n": batch.get("n"), "of": batch.get("of")}
+                smart["batch"] = batch
 
             j["smart"] = smart if cfg.get("smart") is not None else None
             j["plan_id"] = cfg.get("plan_id")

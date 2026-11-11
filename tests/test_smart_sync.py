@@ -223,7 +223,7 @@ def test_runner_marks_tables_as_each_batch_finishes_and_progress_shows_it(monkey
     assert during_second["tables"]["s.a"]["s"] == "done"
     assert during_second["tables"]["s.b"]["s"] == "running"
     assert during_second["tables"]["s.c"]["s"] == "queued"
-    assert during_second["batch"] == {"n": 2, "of": 3}
+    assert during_second["batch"] == {"n": 2, "of": 3, "running": 1}
     assert during_second["counts"]["done"] == 1 and during_second["total"] == 3
     assert during_second["bytes_total"] == 3 and during_second["bytes_done"] == 1
 
@@ -288,6 +288,80 @@ def test_resume_after_restart_waits_for_child_and_continues(monkeypatch):
     assert smart["resumed"] == 1 and smart["children"][0] == child
     assert smart["deadline"] == "2099-01-01 05:30"          # срок прежний
     assert get_job(job_id)["status"] == "done"
+
+
+def test_parallel_batches_run_at_the_same_time(monkeypatch):
+    import threading
+
+    plan_id = ss.save_plan({"name": "П", "source_connection_id": 1, "dest_connection_id": 2,
+                            "settings": {"waves": [{"name": "W", "include": "*.*"}],
+                                         "batch_tables": 1, "parallel": 2}})
+    assert ss.get_plan(plan_id)["settings"]["parallel"] == 2
+    monkeypatch.setattr(ss, "analyze", lambda plan, wave, full=None: fake_analysis())
+    both = threading.Barrier(2, timeout=5)        # двое должны встретиться одновременно
+    met = []
+
+    def runner(child_id):
+        from job_manager import mark_item_done
+        if len(met) < 2:
+            met.append(child_id)
+            both.wait()
+        for item in get_job_items(child_id):
+            mark_item_done(item["id"])
+
+    job_id = create_job("smart_sync", 1, {"plan_id": plan_id, "wave": 0})
+    ss.run_smart_sync_job(job_id, runner=runner)
+
+    assert len(met) == 2
+    assert get_job(job_id)["status"] == "done"
+    assert {i["status"] for i in get_job_items(job_id)} == {"done"}
+    assert set(ss.load_state(plan_id)) == {("s", "a"), ("s", "b"), ("s", "c")}
+    assert "active" not in json.loads(get_job(job_id)["config_json"])["smart"]
+
+
+def test_continue_interrupted_run_from_where_it_stopped(monkeypatch, client):
+    from job_manager import mark_interrupted_jobs_on_startup, mark_item_done
+
+    plan_id = _plan()
+    copied = []
+
+    def runner(child_id):
+        for item in get_job_items(child_id):
+            copied.append(item["table_name"])
+            mark_item_done(item["id"])
+
+    # первый запуск: успел только a, потом рестарт Opsentri
+    monkeypatch.setattr(ss, "analyze", lambda plan, wave, full=None: fake_analysis())
+    times = iter([datetime(2026, 11, 11, 0, 30), datetime(2026, 11, 11, 1, 0),
+                  datetime(2026, 11, 11, 6, 0)])
+    job_id = create_job("smart_sync", 1, {"plan_id": plan_id, "wave": 0})
+    ss.run_smart_sync_job(job_id, runner=runner, clock=lambda: next(times))
+    from job_manager import update_job_status
+    update_job_status(job_id, "interrupted")
+    assert copied == ["a"]
+
+    r = client.post("/api/smart-sync/jobs/{}/continue".format(job_id + 999))
+    assert r.status_code == 404
+
+    def fresh(plan, wave, full=None):        # a уже совпадает с продом
+        res = fake_analysis()
+        res["waves"][0]["items"] = [it for it in res["waves"][0]["items"]
+                                    if it["root"] != ("s", "a")]
+        return res
+
+    monkeypatch.setattr(ss, "analyze", fresh)
+    ss.continue_job(job_id)
+    assert get_job(job_id)["status"] == "queued"
+    ss.run_smart_sync_job(job_id, runner=runner, clock=lambda: datetime(2026, 11, 11, 12, 0))
+
+    assert copied == ["a", "b", "c"]                      # a не повторили
+    items = get_job_items(job_id)
+    assert len(items) == 3 and {i["status"] for i in items} == {"done"}
+    job = get_job(job_id)
+    assert job["status"] == "done" and not job["error_message"]
+
+    r = client.post("/api/smart-sync/jobs/{}/continue".format(job_id))
+    assert r.status_code == 409                            # готовый не продолжают
 
 
 def test_same_wave_is_not_started_twice(client):

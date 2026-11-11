@@ -118,6 +118,9 @@
                     <div class="ssync-row mt-2">
                         <div><label class="form-label" for="ssyncJobs">Потоки gpcopy</label>
                             <input id="ssyncJobs" type="number" min="1" max="32" class="form-control"></div>
+                        <div><label class="form-label" for="ssyncParallel">Пачек одновременно</label>
+                            <input id="ssyncParallel" type="number" min="1" max="8" class="form-control"
+                                   title="Сколько gpcopy идут параллельно. Нагрузка ≈ пачек × потоков gpcopy"></div>
                         <div><label class="form-label" for="ssyncBig">Отдельно от пачки, ГБ</label>
                             <input id="ssyncBig" type="number" min="1" class="form-control"></div>
                         <div><label class="form-label" for="ssyncBatchGb">Пачка до, ГБ</label>
@@ -300,6 +303,7 @@
         ]);
         $("ssyncExclude").value = (s.exclude || []).join(" ");
         $("ssyncJobs").value = s.jobs;
+        $("ssyncParallel").value = s.parallel || 1;
         $("ssyncBig").value = s.big_gb;
         $("ssyncBatchGb").value = s.batch_gb;
         $("ssyncBatchN").value = s.batch_tables;
@@ -345,7 +349,8 @@
             settings: {
                 waves: ssyncReadWaves(),
                 exclude: $("ssyncExclude").value,
-                jobs: $("ssyncJobs").value, big_gb: $("ssyncBig").value,
+                jobs: $("ssyncJobs").value, parallel: $("ssyncParallel").value,
+                big_gb: $("ssyncBig").value,
                 batch_gb: $("ssyncBatchGb").value, batch_tables: $("ssyncBatchN").value,
                 full_weekday: $("ssyncFullDay").value, gpcopy_path: $("ssyncPath").value,
             },
@@ -450,6 +455,36 @@
         return !!r && ["running", "stopping", "pending", "queued"].indexOf(r.status) >= 0;
     }
 
+    function ssyncCanContinue(r) {
+        return !!r && ["interrupted", "cancelled", "failed"].indexOf(r.status) >= 0;
+    }
+
+    function ssyncBatchText(b) {
+        return b.running > 1
+            ? "идут пачки: " + fmtN(b.running) + " · начато " + fmtN(b.n) + " из " + fmtN(b.of)
+            : "пачка " + fmtN(b.n) + " из " + fmtN(b.of);
+    }
+
+    function ssyncContinue(jobId, btn) {
+        var go = function () {
+            if (btn) { btn.disabled = true; }
+            api("/api/smart-sync/jobs/" + jobId + "/continue", "POST", {}).then(function (d) {
+                if (btn) { btn.disabled = false; }
+                if (!d.ok) { ssyncMsg(d.message || "Не продолжилось", "bad"); return; }
+                ssyncMsg("Запуск #" + jobId + " продолжен", "good");
+                ssyncLoadProgress();
+                ssyncLoadRuns();
+            }).catch(function (e) {
+                if (btn) { btn.disabled = false; }
+                ssyncMsg(String(e), "bad");
+            });
+        };
+        var q = "Продолжить запуск #" + jobId + "? Недоехавшие таблицы будут перезалиты с прода " +
+            "(--truncate), уже скопированные — нет. Срок «новое не начинать после» считается от сейчас.";
+        if (window.gpConfirm) { window.gpConfirm(q).then(function (y) { if (y) { go(); } }); }
+        else if (confirm(q)) { go(); }
+    }
+
     function ssyncSkipLabel(e) {
         e = String(e || "");
         if (/^Не успели/.test(e)) { return "не успели"; }
@@ -489,7 +524,7 @@
         var bits = ["скопировано " + fmtN(c.done) + " из " + fmtN(r.total) + " табл."];
         if (r.bytes_total) { bits.push(fmtBytes(r.bytes_done) + " из " + fmtBytes(r.bytes_total)); }
         if (c.running) { bits.push("копируется сейчас: " + fmtN(c.running)); }
-        if (live && r.batch && r.batch.n) { bits.push("пачка " + fmtN(r.batch.n) + " из " + fmtN(r.batch.of)); }
+        if (live && r.batch && r.batch.n) { bits.push(ssyncBatchText(r.batch)); }
         if (c.failed) { bits.push("ошибок " + fmtN(c.failed)); }
         if (c.skipped) { bits.push("пропущено " + fmtN(c.skipped)); }
         if (c.interrupted) { bits.push("не дошли " + fmtN(c.interrupted)); }
@@ -510,10 +545,14 @@
         }
         if (r.status === "interrupted") {
             html += '<div class="ssync-hint">Opsentri перезапускали во время волны. Скопированное ' +
-                "отмечено по пачкам gpcopy и повторно не копируется — запустите волну ещё раз, " +
-                "она продолжит с оставшихся таблиц.</div>";
+                "отмечено по пачкам gpcopy и повторно не копируется.</div>";
         } else if (!live && r.error && r.status !== "done") {
             html += '<div class="ssync-hint">' + esc(r.error) + "</div>";
+        }
+        if (ssyncCanContinue(r)) {
+            html += '<div class="mt-2"><button class="btn btn-sm btn-primary" type="button" data-continue="' +
+                r.job_id + '">▶ Продолжить с места остановки</button> <span class="ssync-hint">осталось ' +
+                fmtN(r.total - (c.done || 0)) + " табл.; скопированное не повторяется</span></div>";
         }
         return html;
     }
@@ -698,9 +737,7 @@
                     parts.push("скопировано " + fmtN(j.done_items) + " из " + fmtN(j.total_items) +
                         (j.status === "running" ? " (" + Math.round(Number(j.progress_percent) || 0) + "%)" : ""));
                 }
-                if (j.status === "running" && s.batch && s.batch.n) {
-                    parts.push("пачка " + fmtN(s.batch.n) + " из " + fmtN(s.batch.of));
-                }
+                if (j.status === "running" && s.batch && s.batch.n) { parts.push(ssyncBatchText(s.batch)); }
                 if (s.left) { parts.push("не успели " + fmtN(s.left)); }
                 if (j.status === "interrupted") { parts.push("прервана рестартом Opsentri"); }
                 else if (j.failed_items || s.failed) { parts.push("ошибок " + fmtN(j.failed_items || s.failed)); }
@@ -709,6 +746,10 @@
                     '<span class="ssync-hint">' + esc(j.started_at || "") +
                     (j.finished_at ? " → " + esc(String(j.finished_at).slice(11)) : "") + "</span>" +
                     "<span>" + esc(parts.join(" · ")) + "</span>" +
+                    (ssyncCanContinue(j) && j.total_items
+                        ? '<button class="btn btn-sm btn-outline-primary ms-auto" type="button" data-continue="' +
+                          j.id + '">▶ Продолжить</button>'
+                        : "") +
                     (j.error_message && j.status !== "done" && j.status !== "interrupted"
                         ? '<span class="ssync-hint" style="flex-basis: 100%;">' +
                           esc(String(j.error_message).slice(0, 300)) + "</span>"
@@ -738,6 +779,11 @@
         $("ssyncSchedule").onclick = function () { ssyncSchedule(true); };
         $("ssyncUnschedule").onclick = function () { ssyncSchedule(false); };
         $("ssyncRefresh").onclick = ssyncLoadRuns;
+        // «Продолжить» — и в строке хода волны, и в ленте запусков
+        document.addEventListener("click", function (e) {
+            var b = e.target.closest ? e.target.closest("[data-continue]") : null;
+            if (b) { ssyncContinue(parseInt(b.getAttribute("data-continue"), 10), b); }
+        });
         ssyncLoad(null);
         setInterval(ssyncLoadRuns, 15000);
     }

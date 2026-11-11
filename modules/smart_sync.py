@@ -41,6 +41,7 @@ DEFAULT_SETTINGS = {
     "batch_gb": 200,       # пачка мелких листьев на один запуск gpcopy
     "batch_tables": 500,
     "jobs": 4,
+    "parallel": 1,         # пачек gpcopy одновременно
     "gpcopy_path": "/usr/local/gpdb/greenplum-db/bin/gpcopy",
     "full_weekday": None,  # 0=пн … 6=вс: копировать волну целиком
 }
@@ -125,6 +126,7 @@ def normalize_settings(data):
     out["batch_gb"] = _int(data, "batch_gb", 1, 100000, "Пачка, ГБ")
     out["batch_tables"] = _int(data, "batch_tables", 1, 5000, "Пачка, таблиц")
     out["jobs"] = _int(data, "jobs", 1, 32, "Потоки gpcopy")
+    out["parallel"] = _int(data, "parallel", 1, 8, "Пачек одновременно")
 
     path = str(data.get("gpcopy_path") or DEFAULT_SETTINGS["gpcopy_path"]).strip()
 
@@ -797,6 +799,77 @@ def _covered(it, unit):
     return it["leaves"] if it["action"] == "new" else [unit]
 
 
+def _active_batches(smart):
+    """{child_id: {n, units, save}} — идущие пачки; «batch» — запись до параллели."""
+    out = {}
+
+    for key, meta in (smart.get("active") or {}).items():
+        out[int(key)] = meta
+
+    legacy = smart.get("batch") or {}
+
+    if legacy.get("job"):
+        out.setdefault(int(legacy["job"]), legacy)
+
+    return out
+
+
+def batch_summary(smart):
+    """Для страницы: начато пачек n из of, идёт сейчас running — или None."""
+    active = _active_batches(smart or {})
+
+    if not active:
+        return None
+
+    return {"n": int((smart or {}).get("started_batches")
+                     or max(int(m.get("n") or 0) for m in active.values())),
+            "of": (smart or {}).get("batches"), "running": len(active)}
+
+
+def continue_job(job_id):
+    """
+    «Продолжить» прерванный / остановленный / недоделанный запуск волны: та же
+    задача, недоехавшие таблицы снова в очередь. Скопированное не повторяется
+    (отпечатки), срок — заново от «сейчас» по времени волны.
+    """
+    from job_manager import clear_stop_flag, get_job
+
+    job = get_job(job_id)
+
+    if not job or job.get("job_type") != "smart_sync":
+        raise ValueError("Это не запуск автосинхронизации")
+
+    if job.get("status") not in ("interrupted", "cancelled", "failed"):
+        raise ValueError("Продолжить можно только прерванный, остановленный или "
+                         "недоделанный запуск")
+
+    cfg = _cfg(job)
+    twin = _live_twin(cfg.get("plan_id"), int(cfg.get("wave") or 0), job_id)
+
+    if twin:
+        raise ValueError("Эта волна уже идёт: задача #{}".format(twin))
+
+    smart = cfg.get("smart") or {}
+
+    if smart:
+        smart["deadline"] = None
+        cfg["smart"] = smart
+
+    from job_manager import update_job_config
+
+    update_job_config(job_id, cfg)
+
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute("UPDATE job_items SET status = 'queued', error_message = NULL, "
+                    "finished_at = NULL WHERE job_id = ? AND status NOT IN ('done')",
+                    (int(job_id),))
+        cur.execute("UPDATE jobs SET status = 'queued', finished_at = NULL, "
+                    "error_message = NULL, stop_requested = 0 WHERE id = ?", (int(job_id),))
+
+    clear_stop_flag(job_id)
+    return job_id
+
+
 def _cfg(job):
     try:
         return json.loads(job.get("config_json") or "{}")
@@ -858,12 +931,12 @@ def _wait_leftover_children(plan, job_id):
                 request_stop_job(child)
             _sleep(10)
 
-        batch = (parents[parent].get("smart") or {}).get("batch") or {}
+        meta = _active_batches(parents[parent].get("smart") or {}).get(child)
 
-        if int(batch.get("job") or 0) != child:
+        if not meta:
             continue
 
-        save = batch.get("save") or {}
+        save = meta.get("save") or {}
         saved = [((s, t), fp)
                  for row in get_job_items(child) if row["status"] == "done"
                  for s, t, fp in save.get("{}.{}".format(row["schema_name"], row["table_name"]), [])]
@@ -900,14 +973,14 @@ def _job_progress(job, cfg):
 
     smart = cfg.get("smart") or {}
     rows = get_job_items(job["id"])
-    batch = smart.get("batch") or {}
+    active = _active_batches(smart)
     live = {}
 
-    # внутри идущей пачки — какие её партиции уже доехали (строки дочерней gpcopy)
-    if job.get("status") == "running" and batch.get("job"):
-        units = batch.get("units") or {}
+    # внутри идущих пачек — какие их партиции уже доехали (строки дочерних gpcopy)
+    for child, meta in (active.items() if job.get("status") == "running" else ()):
+        units = meta.get("units") or {}
 
-        for row in get_job_items(batch["job"]):
+        for row in get_job_items(child):
             unit = "{}.{}".format(row["schema_name"], row["table_name"])
             root = units.get(unit)
 
@@ -970,7 +1043,7 @@ def _job_progress(job, cfg):
         "progress": job.get("progress_percent") or 0,
         "error": (job.get("error_message") or "")[:300] if job.get("status") != "done" else "",
         "deadline": smart.get("deadline"), "full": bool(cfg.get("full")),
-        "batch": {"n": batch.get("n"), "of": batch.get("of")} if batch else None,
+        "batch": batch_summary(smart),
         "batches": smart.get("batches"),
         "total": len(rows), "counts": counts,
         "bytes_total": bytes_total, "bytes_done": bytes_done,
@@ -1127,82 +1200,131 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
                 todo.append(dict(it, leaves=leaves))
 
         batches = make_batches(todo, sizes, settings)
-        children, late = list(config["smart"].get("children") or []), False
+        children = list(config["smart"].get("children") or [])
         config["smart"]["batches"] = len(batches)
+        config["smart"].pop("batch", None)
 
         # что ещё не скопировано по таблице: закончились единицы — статус таблицы
         # ставим сразу, а не в конце волны (страница показывает это на лету)
         pending = {it["root"]: set([it["root"]] if it["action"] == "new" else it["leaves"])
                    for it in todo}
         closed = {}
+        queue = list(enumerate(batches, 1))
+        active = {}               # идущие пачки: child -> что в ней (страница, рестарт)
+        flags = {"late": False}
+        lock = threading.Lock()
 
-        for n, batch in enumerate(batches, 1):
-            if is_stop_requested(job_id):
-                break
-
-            if deadline and clock() >= deadline:
-                late = True
-                break
-
-            child = create_job("gpcopy", plan["source_connection_id"], {
-                "source_connection_id": plan["source_connection_id"],
-                "dest_connection_id": plan["dest_connection_id"],
-                "tables": [{"schema": s, "table": t} for s, t in batch["leaves"]],
-                "truncate": True,
-                "jobs": settings["jobs"],
-                "gpcopy_path": settings["gpcopy_path"],
-                "smart_parent": job_id,
-                "item_action": "SMART SYNC {}/{}".format(n, len(batches)),
-            })
-            children.append(child)
-            config["smart"]["children"] = children
-            # отпечатки пачки — чтобы после рестарта Opsentri зачесть то, что
-            # gpcopy докопировала без нас (см. _wait_leftover_children)
-            config["smart"]["batch"] = {
-                "n": n, "of": len(batches), "job": child,
-                "units": {_name(u): _name(owner[u]["root"]) for u in batch["leaves"]},
-                "save": {_name(u): [[l[0], l[1], owner[u]["fingerprints"][l]]
-                                    for l in _covered(owner[u], u)
-                                    if l in owner[u]["fingerprints"]]
-                         for u in batch["leaves"]}}
+        def publish():
+            config["smart"]["children"] = list(children)
+            config["smart"]["active"] = {str(k): v for k, v in active.items()}
             update_job_config(job_id, config)
 
-            for root in batch["roots"]:
-                if item_ids.get(root):
-                    mark_item_running(item_ids[root])
+        def take():
+            """Следующая пачка — если не «Стоп» и срок волны не прошёл."""
+            with lock:
+                if not queue or is_stop_requested(job_id):
+                    return None
 
-            _run_child(job_id, child, runner)
+                if deadline and clock() >= deadline:
+                    flags["late"] = True
+                    return None
 
+                n, batch = queue.pop(0)
+                child = create_job("gpcopy", plan["source_connection_id"], {
+                    "source_connection_id": plan["source_connection_id"],
+                    "dest_connection_id": plan["dest_connection_id"],
+                    "tables": [{"schema": s, "table": t} for s, t in batch["leaves"]],
+                    "truncate": True,
+                    "jobs": settings["jobs"],
+                    "gpcopy_path": settings["gpcopy_path"],
+                    "smart_parent": job_id,
+                    "item_action": "SMART SYNC {}/{}".format(n, len(batches)),
+                })
+                children.append(child)
+                # отпечатки пачки — чтобы после рестарта Opsentri зачесть то, что
+                # gpcopy докопировала без нас (см. _wait_leftover_children)
+                active[child] = {
+                    "n": n,
+                    "units": {_name(u): _name(owner[u]["root"]) for u in batch["leaves"]},
+                    "save": {_name(u): [[l[0], l[1], owner[u]["fingerprints"][l]]
+                                        for l in _covered(owner[u], u)
+                                        if l in owner[u]["fingerprints"]]
+                             for u in batch["leaves"]}}
+                config["smart"]["started_batches"] = n
+                publish()
+
+                for root in batch["roots"]:
+                    if item_ids.get(root):
+                        mark_item_running(item_ids[root])
+
+                return batch, child
+
+        def finish(batch, child):
+            """Итог пачки -> отпечатки, строки таблиц, прогресс волны."""
             rows = {(i["schema_name"], i["table_name"]): i for i in get_job_items(child)}
-            saved = []
 
-            for unit in batch["leaves"]:
-                it = owner[unit]
-                row = rows.get(unit) or {}
+            with lock:
+                saved = []
 
-                if row.get("status") == "done":
-                    covered = _covered(it, unit)
-                    outcome[it["root"]]["done"].update(covered)
-                    saved += [(l, it["fingerprints"][l]) for l in covered
-                              if l in it["fingerprints"]]
-                else:
-                    outcome[it["root"]]["failed"][unit] = (
-                        row.get("error_message")
-                        or "не скопировано (задача #{})".format(child))[:300]
+                for unit in batch["leaves"]:
+                    it = owner[unit]
+                    row = rows.get(unit) or {}
 
-            if saved:
-                save_state(plan["id"], saved, job_id=job_id)
+                    if row.get("status") == "done":
+                        covered = _covered(it, unit)
+                        outcome[it["root"]]["done"].update(covered)
+                        saved += [(l, it["fingerprints"][l]) for l in covered
+                                  if l in it["fingerprints"]]
+                    else:
+                        outcome[it["root"]]["failed"][unit] = (
+                            row.get("error_message")
+                            or "не скопировано (задача #{})".format(child))[:300]
 
-            for root in {owner[u]["root"] for u in batch["leaves"]}:
-                pending[root].difference_update(batch["leaves"])
-                it, res, iid = items[root], outcome[root], item_ids.get(root)
-                _set_item_part_progress(iid, it, res)
+                if saved:
+                    save_state(plan["id"], saved, job_id=job_id)
 
-                if not pending[root] and (res["failed"] or set(it["leaves"]) <= res["done"]):
-                    closed[root] = _close_item(iid, it, res, False, deadline)
+                for root in {owner[u]["root"] for u in batch["leaves"]}:
+                    pending[root].difference_update(batch["leaves"])
+                    it, res, iid = items[root], outcome[root], item_ids.get(root)
+                    _set_item_part_progress(iid, it, res)
 
-            refresh_job_progress(job_id)
+                    if not pending[root] and (res["failed"] or set(it["leaves"]) <= res["done"]):
+                        closed[root] = _close_item(iid, it, res, False, deadline)
 
+                active.pop(child, None)
+                publish()
+                refresh_job_progress(job_id)
+
+        def worker():
+            while True:
+                got = take()
+
+                if not got:
+                    return
+
+                batch, child = got
+
+                try:
+                    _run_child(job_id, child, runner)
+                except Exception:
+                    pass          # пачка не доехала — finish() отметит её листья ошибкой
+                finally:
+                    finish(batch, child)
+
+        parallel = max(1, min(int(settings.get("parallel") or 1), len(batches) or 1))
+
+        if parallel == 1:
+            worker()
+        else:
+            pool = [threading.Thread(target=worker, daemon=True) for _ in range(parallel)]
+
+            for t in pool:
+                t.start()
+
+            for t in pool:
+                t.join()
+
+        late = flags["late"]
         stopped = is_stop_requested(job_id)
 
         for root, it in items.items():
@@ -1215,6 +1337,7 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
 
         refresh_job_progress(job_id)
         config["smart"].pop("batch", None)
+        config["smart"].pop("active", None)
         config["smart"].update({"left": left, "failed": failed, "late": late})
         update_job_config(job_id, config)
 

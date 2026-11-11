@@ -126,6 +126,7 @@ POLICY = {
     "api_smart_sync_analyze": "sync.view",
     "api_smart_sync_analysis": "sync.view",
     "api_smart_sync_progress": "sync.view",
+    "api_smart_sync_continue": "sync.run",
     "api_smart_sync_run": "sync.run",
     "api_smart_sync_schedule": "schedules.edit",
     "api_gpcopy_increment_start": "sync.run",
