@@ -245,3 +245,51 @@ def test_plan_routes_and_schedules(client):
 
 def test_page_renders(client):
     assert client.get("/smart-sync").status_code == 200
+
+
+# ------------------------------------------------------------ размеры без ожидания ETL
+
+class LockTimeout(Exception):
+    pgcode = "55P03"
+
+
+class FakeSizeConn(object):
+    """gp_dist_random по пачке; таблицу 7 держит ETL — lock_timeout."""
+
+    def __init__(self, busy=7):
+        self.busy = busy
+        self.sql = []
+        self.chunks = []
+
+    def cursor(self):
+        conn = self
+
+        class Cur(object):
+            def execute(self, sql, params=None):
+                conn.sql.append(sql)
+                self.rows = []
+                if "gp_dist_random" not in sql:
+                    return
+                oids = [int(x) for x in __import__("re").findall(r"\((\d+)::oid\)", sql)]
+                conn.chunks.append(len(oids))
+                if conn.busy in oids:
+                    raise LockTimeout("canceling statement due to lock timeout")
+                self.rows = [(o, o * 10) for o in oids]
+
+            def fetchall(self):
+                return self.rows
+
+        return Cur()
+
+
+def test_read_sizes_never_waits_for_etl():
+    conn = FakeSizeConn(busy=7)
+    locked = []
+
+    sizes = ss.read_sizes(conn, range(1, 251), locked)
+
+    assert conn.chunks[:3] == [100, 100, 100] or max(conn.chunks) == ss.SIZE_CHUNK
+    assert locked == [7] and 7 not in sizes               # неизвестно, а не ноль
+    assert sizes[8] == 80 and len(sizes) == 249
+    assert any("lock_timeout = %s" in q for q in conn.sql)
+    assert conn.sql[-2] == "SET lock_timeout = 0"         # сессия возвращена как была

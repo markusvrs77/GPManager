@@ -350,24 +350,74 @@ def read_catalog(conn):
     return {"relations": relations, "last_op": last_op, "dml": dml, "stats": stats}
 
 
-def read_sizes(conn, oids):
-    """{oid: байт на сегментах}; на обычном Postgres — на сервере."""
+SIZE_CHUNK = 100
+SIZE_LOCK_TIMEOUT = "2s"
+
+
+def _is_lock_timeout(error):
+    return (getattr(error, "pgcode", None) == "55P03"
+            or "lock timeout" in str(error).lower())
+
+
+def read_sizes(conn, oids, locked=None):
+    """
+    {oid: байт на сегментах}; на обычном Postgres — на сервере.
+
+    pg_total_relation_size берёт AccessShareLock на каждую таблицу до конца
+    запроса. Чтобы не ждать ETL и не держать его: пачки по SIZE_CHUNK,
+    чужую блокировку ждём не дольше SIZE_LOCK_TIMEOUT. Пачка упёрлась в
+    блокировку — её таблицы по одной; занятая ETL таблица остаётся без
+    размера (её oid — в locked): размер неизвестен, а не ноль.
+    """
     cur = conn.cursor()
     oids = sorted(set(int(o) for o in oids))
     out = {}
+    mode = {"distributed": True}
+    cur.execute("SET lock_timeout = %s", (SIZE_LOCK_TIMEOUT,))
+    cur.execute("SET statement_timeout = '300s'")
 
-    for i in range(0, len(oids), 500):
-        chunk = oids[i:i + 500]
-        values = ", ".join("({}::oid)".format(o) for o in chunk)
-
-        try:
+    def run(chunk):
+        if mode["distributed"]:
+            values = ", ".join("({}::oid)".format(o) for o in chunk)
             cur.execute(_SIZE_SQL.format(values=values))
-        except Exception:
+        else:
             cur.execute("SELECT oid::bigint, pg_total_relation_size(oid)::bigint "
                         "FROM pg_class WHERE oid = ANY(%s::oid[])", (chunk,))
+        return cur.fetchall()
 
-        for oid, size in cur.fetchall():
-            out[int(oid)] = int(size or 0)
+    try:
+        for i in range(0, len(oids), SIZE_CHUNK):
+            chunk = oids[i:i + SIZE_CHUNK]
+
+            try:
+                rows = run(chunk)
+            except Exception as e:
+                if _is_lock_timeout(e):
+                    rows = []
+
+                    for oid in chunk:
+                        try:
+                            rows += run([oid])
+                        except Exception as one:
+                            if not _is_lock_timeout(one):
+                                raise
+                            if locked is not None:
+                                locked.append(oid)
+                elif mode["distributed"]:
+                    # обычный Postgres: gp_dist_random нет
+                    mode["distributed"] = False
+                    rows = run(chunk)
+                else:
+                    raise
+
+            for oid, size in rows:
+                out[int(oid)] = int(size or 0)
+    finally:
+        try:
+            cur.execute("SET lock_timeout = 0")
+            cur.execute("SET statement_timeout = '600s'")
+        except Exception:
+            pass
 
     return out
 
@@ -561,12 +611,13 @@ def analyze(plan, wave_index=None, full=None):
         indexes = (range(len(settings["waves"])) if wave_index is None
                    else [int(wave_index)])
         sizes = {}
+        locked = []   # размер не прочитан: таблицу держит ETL
 
         if catalog["dml"] is None:
             in_plan = [o for root, e in src_tree.items()
                        if wave_of(root, settings) in indexes
                        for o in e["leaves"].values()]
-            sizes = read_sizes(src, in_plan)
+            sizes = read_sizes(src, in_plan, locked)
 
         waves = []
 
@@ -583,7 +634,7 @@ def analyze(plan, wave_index=None, full=None):
                         need.append(oid)
 
             if need:
-                sizes.update(read_sizes(src, need))
+                sizes.update(read_sizes(src, need, locked))
 
             result = plan_wave(catalog, dest_catalog, settings, i, state, sizes=sizes,
                                full=full, src_tree=src_tree, dst_tree=dst_tree)
@@ -602,6 +653,7 @@ def analyze(plan, wave_index=None, full=None):
             "tables_total": len(src_tree),
             "outside": len(src_tree) - in_plan_roots,
             "sizes": sizes,
+            "sizes_locked": len(set(locked)),
             "catalog": catalog,
             "src_tree": src_tree,
         }
@@ -637,6 +689,7 @@ def public_analysis(result, limit=300):
         })
 
     return {"mode": result["mode"], "last_op": result["last_op"],
+            "sizes_locked": result.get("sizes_locked", 0),
             "tables_total": result["tables_total"], "outside": result["outside"],
             "waves": waves}
 

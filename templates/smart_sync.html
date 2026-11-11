@@ -423,7 +423,9 @@
             box.innerHTML = '<div class="ssync-hint mb-2">Таблиц на проде: ' + fmtN(d.tables_total) +
                 (d.outside ? " · вне волн: " + fmtN(d.outside) : "") +
                 " · признак изменений: " + esc(d.mode) +
-                (d.last_op ? " + TRUNCATE/DDL" : "") + "</div>" +
+                (d.last_op ? " + TRUNCATE/DDL" : "") +
+                (d.sizes_locked ? " · размер не прочитан у " + fmtN(d.sizes_locked) +
+                    " (их сейчас держит ETL — объём занижен)" : "") + "</div>" +
                 d.waves.map(ssyncWaveResult).join("");
             box.querySelectorAll("[data-run]").forEach(function (b) {
                 b.onclick = function () { ssyncRun(parseInt(b.getAttribute("data-run"), 10), b); };
