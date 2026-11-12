@@ -799,6 +799,17 @@ def _covered(it, unit):
     return it["leaves"] if it["action"] == "new" else [unit]
 
 
+MAX_PARALLEL = 8               # потолок «gpcopy одновременно»
+PARALLEL_REREAD_SECONDS = 10   # как быстро волна видит новое число из плана
+
+
+def _parallel_of(settings):
+    try:
+        return max(1, min(int((settings or {}).get("parallel") or 1), MAX_PARALLEL))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _active_batches(smart):
     """{child_id: {n, units, save}} — идущие пачки; «batch» — запись до параллели."""
     out = {}
@@ -823,7 +834,8 @@ def batch_summary(smart):
 
     return {"n": int((smart or {}).get("started_batches")
                      or max(int(m.get("n") or 0) for m in active.values())),
-            "of": (smart or {}).get("batches"), "running": len(active)}
+            "of": (smart or {}).get("batches"), "running": len(active),
+            "limit": (smart or {}).get("parallel")}
 
 
 def continue_job(job_id):
@@ -1211,19 +1223,47 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
         closed = {}
         queue = list(enumerate(batches, 1))
         active = {}               # идущие пачки: child -> что в ней (страница, рестарт)
-        flags = {"late": False}
+        flags = {"late": False, "error": None}
         lock = threading.Lock()
+        cond = threading.Condition(lock)
+        limit = {"n": _parallel_of(settings), "at": None}
+
+        def current_limit():
+            """«gpcopy одновременно» из плана — меняется на ходу, без перезапуска волны."""
+            import time
+
+            now = time.monotonic()
+
+            if limit["at"] is None or now - limit["at"] >= PARALLEL_REREAD_SECONDS:
+                limit["at"] = now
+
+                try:
+                    fresh = get_plan(plan["id"])
+                except Exception:
+                    fresh = None
+
+                if fresh:
+                    limit["n"] = _parallel_of(fresh["settings"])
+
+            return limit["n"]
 
         def publish():
             config["smart"]["children"] = list(children)
             config["smart"]["active"] = {str(k): v for k, v in active.items()}
+            config["smart"]["parallel"] = limit["n"]
             update_job_config(job_id, config)
 
         def take():
-            """Следующая пачка — если не «Стоп» и срок волны не прошёл."""
-            with lock:
-                if not queue or is_stop_requested(job_id):
-                    return None
+            """Следующая пачка — если не «Стоп», срок не прошёл и есть свободное место."""
+            with cond:
+                while True:
+                    if flags["late"] or flags["error"] or not queue or is_stop_requested(job_id):
+                        return None
+
+                    if len(active) < current_limit():
+                        break
+
+                    cond.wait(max(PARALLEL_REREAD_SECONDS, 0.05))
 
                 if deadline and clock() >= deadline:
                     flags["late"] = True
@@ -1294,12 +1334,21 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
                 active.pop(child, None)
                 publish()
                 refresh_job_progress(job_id)
+                cond.notify_all()          # место освободилось — следующая пачка
 
         def worker():
             while True:
-                got = take()
+                try:
+                    got = take()
+                except Exception as e:     # задачу gpcopy не создать — волна падает целиком
+                    with cond:
+                        flags["error"] = flags["error"] or e
+                        cond.notify_all()
+                    return
 
                 if not got:
+                    with cond:
+                        cond.notify_all()
                     return
 
                 batch, child = got
@@ -1311,18 +1360,19 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
                 finally:
                     finish(batch, child)
 
-        parallel = max(1, min(int(settings.get("parallel") or 1), len(batches) or 1))
+        # потоков — сколько можно максимум; сколько из них копирует, решает
+        # current_limit(): число из плана можно поднять или снизить во время волны
+        pool = [threading.Thread(target=worker, daemon=True)
+                for _ in range(max(1, min(MAX_PARALLEL, len(batches))))]
 
-        if parallel == 1:
-            worker()
-        else:
-            pool = [threading.Thread(target=worker, daemon=True) for _ in range(parallel)]
+        for t in pool:
+            t.start()
 
-            for t in pool:
-                t.start()
+        for t in pool:
+            t.join()
 
-            for t in pool:
-                t.join()
+        if flags["error"]:
+            raise flags["error"]
 
         late = flags["late"]
         stopped = is_stop_requested(job_id)

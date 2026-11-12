@@ -131,6 +131,7 @@
                     «gpcopy одновременно» — сколько пачек копируются параллельно (большая таблица — отдельная
                     пачка). «Потоков» — сколько таблиц одной пачки gpcopy копирует сразу (<code>--jobs</code>);
                     пачке из одной большой таблицы это не помогает. Нагрузка ≈ одно × другое.
+                    Можно менять во время волны: сохраните план — через ~10 с подхватится.
                 </div>
 
                 <details class="mb-3">
@@ -514,9 +515,8 @@
     }
 
     function ssyncBatchText(b) {
-        return b.running > 1
-            ? "идут пачки: " + fmtN(b.running) + " · начато " + fmtN(b.n) + " из " + fmtN(b.of)
-            : "пачка " + fmtN(b.n) + " из " + fmtN(b.of);
+        return "идёт gpcopy: " + fmtN(b.running) + (b.limit ? " из " + fmtN(b.limit) + " разрешённых" : "") +
+            " · начато пачек " + fmtN(b.n) + " из " + fmtN(b.of);
     }
 
     function ssyncContinue(jobId, btn) {

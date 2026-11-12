@@ -223,7 +223,7 @@ def test_runner_marks_tables_as_each_batch_finishes_and_progress_shows_it(monkey
     assert during_second["tables"]["s.a"]["s"] == "done"
     assert during_second["tables"]["s.b"]["s"] == "running"
     assert during_second["tables"]["s.c"]["s"] == "queued"
-    assert during_second["batch"] == {"n": 2, "of": 3, "running": 1}
+    assert during_second["batch"] == {"n": 2, "of": 3, "running": 1, "limit": 1}
     assert during_second["counts"]["done"] == 1 and during_second["total"] == 3
     assert during_second["bytes_total"] == 3 and during_second["bytes_done"] == 1
 
@@ -317,6 +317,37 @@ def test_parallel_batches_run_at_the_same_time(monkeypatch):
     assert {i["status"] for i in get_job_items(job_id)} == {"done"}
     assert set(ss.load_state(plan_id)) == {("s", "a"), ("s", "b"), ("s", "c")}
     assert "active" not in json.loads(get_job(job_id)["config_json"])["smart"]
+
+
+def test_parallel_can_be_raised_while_wave_runs(monkeypatch):
+    import threading
+
+    plan_id = _plan()                                   # gpcopy одновременно = 1
+    monkeypatch.setattr(ss, "PARALLEL_REREAD_SECONDS", 0)
+    monkeypatch.setattr(ss, "analyze", lambda plan, wave, full=None: fake_analysis())
+    both = threading.Barrier(2, timeout=5)
+    met = []
+
+    def runner(child_id):
+        from job_manager import mark_item_done
+        if not met:
+            # во время первой пачки подняли до 2 и сохранили план
+            p = ss.get_plan(plan_id)
+            ss.save_plan({"name": p["name"], "source_connection_id": 1, "dest_connection_id": 2,
+                          "settings": dict(p["settings"], parallel=2)}, plan_id=plan_id)
+            met.append(child_id)
+        else:
+            met.append(child_id)
+            both.wait()                                 # 2-я и 3-я пачки — одновременно
+        for item in get_job_items(child_id):
+            mark_item_done(item["id"])
+
+    job_id = create_job("smart_sync", 1, {"plan_id": plan_id, "wave": 0})
+    ss.run_smart_sync_job(job_id, runner=runner)
+
+    assert len(met) == 3
+    assert get_job(job_id)["status"] == "done"
+    assert json.loads(get_job(job_id)["config_json"])["smart"]["parallel"] == 2
 
 
 def test_continue_interrupted_run_from_where_it_stopped(monkeypatch, client):
