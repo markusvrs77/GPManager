@@ -1516,7 +1516,8 @@ def _analysis_worker(plan, full):
     plan_id = int(plan["id"])
 
     try:
-        result = public_analysis(analyze(plan, None, full=full or None))
+        # весь список таблиц, не первые 300: страница фильтрует и ищет сама
+        result = public_analysis(analyze(plan, None, full=full or None), limit=None)
         _save_analysis(plan_id, status="done", finished_at=_now(), error=None,
                        result_json=json.dumps(result, ensure_ascii=False))
     except Exception as e:

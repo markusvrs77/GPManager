@@ -22,7 +22,15 @@
 .ssync-kpi span { font-size: 12px; color: var(--text-muted); }
 .ssync-wres { border-top: 1px solid var(--hairline); padding-top: 10px; margin-top: 10px; }
 .ssync-wres:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
-.ssync-list { max-height: 260px; overflow: auto; font-size: 12.5px; }
+.ssync-list { max-height: 420px; overflow: auto; font-size: 12.5px; }
+.ssync-filter { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.ssync-filter input { max-width: 260px; }
+.ssync-filter select { max-width: 200px; }
+.ssync-days { display: flex; gap: 4px; flex-wrap: wrap; }
+.ssync-days label { font-size: 12px; border: 1px solid var(--hairline); border-radius: 6px;
+  padding: 2px 7px; cursor: pointer; user-select: none; }
+.ssync-days input { margin-right: 3px; vertical-align: -1px; }
+.ssync-days label:has(input:checked) { border-color: var(--a1); color: var(--a1); }
 .ssync-list table { width: 100%; }
 .ssync-list td, .ssync-list th { padding: 3px 6px; border-bottom: 1px solid var(--hairline);
   white-space: nowrap; }
@@ -113,14 +121,21 @@
                 <textarea id="ssyncExclude" class="form-control mb-3" rows="2"
                           placeholder="*.*_bkp_*  tmp_*.*"></textarea>
 
+                <div class="ssync-row mb-1">
+                    <div><label class="form-label" for="ssyncParallel">gpcopy одновременно</label>
+                        <input id="ssyncParallel" type="number" min="1" max="8" class="form-control"></div>
+                    <div><label class="form-label" for="ssyncJobs">Потоков в каждой gpcopy</label>
+                        <input id="ssyncJobs" type="number" min="1" max="32" class="form-control"></div>
+                </div>
+                <div class="ssync-hint mb-3">
+                    «gpcopy одновременно» — сколько пачек копируются параллельно (большая таблица — отдельная
+                    пачка). «Потоков» — сколько таблиц одной пачки gpcopy копирует сразу (<code>--jobs</code>);
+                    пачке из одной большой таблицы это не помогает. Нагрузка ≈ одно × другое.
+                </div>
+
                 <details class="mb-3">
-                    <summary class="ssync-hint">Нагрузка и полная сверка</summary>
+                    <summary class="ssync-hint">Размер пачек и копирование целиком раз в неделю</summary>
                     <div class="ssync-row mt-2">
-                        <div><label class="form-label" for="ssyncJobs">Потоки gpcopy</label>
-                            <input id="ssyncJobs" type="number" min="1" max="32" class="form-control"></div>
-                        <div><label class="form-label" for="ssyncParallel">Пачек одновременно</label>
-                            <input id="ssyncParallel" type="number" min="1" max="8" class="form-control"
-                                   title="Сколько gpcopy идут параллельно. Нагрузка ≈ пачек × потоков gpcopy"></div>
                         <div><label class="form-label" for="ssyncBig">Отдельно от пачки, ГБ</label>
                             <input id="ssyncBig" type="number" min="1" class="form-control"></div>
                         <div><label class="form-label" for="ssyncBatchGb">Пачка до, ГБ</label>
@@ -129,9 +144,9 @@
                             <input id="ssyncBatchN" type="number" min="1" class="form-control"></div>
                     </div>
                     <div class="ssync-row mt-2">
-                        <div><label class="form-label" for="ssyncFullDay">Полная сверка раз в неделю</label>
+                        <div><label class="form-label" for="ssyncFullDay">Копировать всё целиком по</label>
                             <select id="ssyncFullDay" class="form-select">
-                                <option value="">не делать</option>
+                                <option value="">никогда — только изменившееся</option>
                                 <option value="0">понедельник</option><option value="1">вторник</option>
                                 <option value="2">среда</option><option value="3">четверг</option>
                                 <option value="4">пятница</option><option value="5">суббота</option>
@@ -141,9 +156,10 @@
                             <input id="ssyncPath" class="form-control"></div>
                     </div>
                     <div class="ssync-hint mt-2">
-                        В день полной сверки волна копируется целиком, без проверки изменений, — страховка
-                        от изменений, которые каталог не показал. Сторож блокировок и приоритет ETL
-                        настраиваются на странице «Синхронизация».
+                        Это <b>не дни запуска</b> (их задаёт блок «Расписание»): если запуск выпал на этот
+                        день, волна копируется целиком, без проверки изменений, — страховка от изменений,
+                        которые каталог не показал. Сторож блокировок и приоритет ETL настраиваются на
+                        странице «Синхронизация».
                     </div>
                 </details>
 
@@ -175,12 +191,15 @@
         <div class="card shadow-sm mb-3">
             <div class="card-header d-flex align-items-center gap-2">
                 <span class="me-auto">Расписание</span>
-                <select id="ssyncDays" class="form-select form-select-sm" style="max-width: 170px;"
-                        aria-label="Дни запуска">
-                    <option value="*">каждый день</option>
-                    <option value="1-5">по будням</option>
-                    <option value="1-6">кроме воскресенья</option>
-                </select>
+                <div class="ssync-days" id="ssyncDays" role="group" aria-label="Дни запуска">
+                    <label><input type="checkbox" value="1" checked>Пн</label>
+                    <label><input type="checkbox" value="2" checked>Вт</label>
+                    <label><input type="checkbox" value="3" checked>Ср</label>
+                    <label><input type="checkbox" value="4" checked>Чт</label>
+                    <label><input type="checkbox" value="5" checked>Пт</label>
+                    <label><input type="checkbox" value="6" checked>Сб</label>
+                    <label><input type="checkbox" value="0" checked>Вс</label>
+                </div>
                 <button class="btn btn-sm btn-primary" id="ssyncSchedule" type="button">Поставить</button>
                 <button class="btn btn-sm btn-outline-secondary" id="ssyncUnschedule" type="button">Снять</button>
             </div>
@@ -391,6 +410,31 @@
 
     var ACTIONS = { "new": ["new", "нет в тесте — целиком"], changed: ["", "изменилось"] };
 
+    // фильтр списка по статусу копирования (data-state строки)
+    var SSYNC_FILTERS = [["", "все"], ["done", "скопировано"], ["running", "копируется"],
+        ["queued", "в очереди"], ["failed", "ошибка"], ["skipped", "не успели / пропущено"],
+        ["interrupted", "прервано"], ["left", "ещё не скопировано"], ["none", "без статуса запуска"]];
+
+    function ssyncFilter(wres) {
+        if (!wres) { return; }
+        var qBox = wres.querySelector("[data-fq]");
+        var sBox = wres.querySelector("[data-fs]");
+        if (!qBox || !sBox) { return; }
+        var q = qBox.value.trim().toLowerCase();
+        var s = sBox.value;
+        var rows = wres.querySelectorAll("tr[data-name]");
+        var shown = 0;
+
+        Array.prototype.forEach.call(rows, function (tr) {
+            var st = tr.getAttribute("data-state");
+            var okState = !s || st === s || (s === "left" && st !== "done");
+            var ok = okState && (!q || tr.getAttribute("data-name").indexOf(q) >= 0);
+            tr.style.display = ok ? "" : "none";
+            if (ok) { shown += 1; }
+        });
+        wres.querySelector("[data-fc]").textContent = "показано " + fmtN(shown) + " из " + fmtN(rows.length);
+    }
+
     function ssyncWaveResult(w) {
         var kpi = function (v, label) {
             return '<div class="ssync-kpi"><b>' + v + "</b><span>" + label + "</span></div>";
@@ -417,11 +461,20 @@
         if (notes.length) { html += '<div class="ssync-hint mb-2">' + esc(notes.join(" · ")) + "</div>"; }
 
         if (w.items.length) {
-            html += '<div class="ssync-list"><table><thead><tr><th>Таблица</th><th>Что</th>' +
+            html += '<div class="ssync-filter">' +
+                '<input type="search" class="form-control form-control-sm" data-fq ' +
+                'placeholder="Поиск: схема.таблица" aria-label="Поиск таблицы">' +
+                '<select class="form-select form-select-sm" data-fs aria-label="Статус копирования">' +
+                SSYNC_FILTERS.map(function (f) {
+                    return '<option value="' + f[0] + '">' + esc(f[1]) + "</option>";
+                }).join("") + "</select>" +
+                '<span class="ssync-hint" data-fc></span></div>' +
+                '<div class="ssync-list"><table><thead><tr><th>Таблица</th><th>Что</th>' +
                 "<th>Партиций</th><th>Объём</th><th>Синхр.</th></tr></thead><tbody>" +
                 w.items.map(function (it) {
                     var a = ACTIONS[it.action] || ["", it.action];
-                    return "<tr><td>" + esc(it.table) + '</td><td><span class="ssync-tag ' + a[0] + '">' +
+                    return '<tr data-name="' + esc(String(it.table).toLowerCase()) + '" data-state="none"><td>' +
+                        esc(it.table) + '</td><td><span class="ssync-tag ' + a[0] + '">' +
                         esc(a[1]) + "</span>" +
                         (it.extra ? ' <span class="ssync-tag warn">лишних ' + fmtN(it.extra) + "</span>" : "") +
                         "</td><td>" + fmtN(it.parts) + (it.missing ? " (+" + fmtN(it.missing) + " новых)" : "") +
@@ -430,7 +483,8 @@
                         esc(it.synced_at || "ещё не было") + "</td></tr>";
                 }).join("") + "</tbody></table></div>" +
                 (w.changed_tables > w.items.length
-                    ? '<div class="ssync-hint">Показаны первые ' + w.items.length + " из " + fmtN(w.changed_tables) + "</div>"
+                    ? '<div class="ssync-hint">В этой проверке сохранены только первые ' + fmtN(w.items.length) +
+                      " из " + fmtN(w.changed_tables) + " — нажмите «Проверить», чтобы получить весь список</div>"
                     : "");
         }
         return html + "</div>";
@@ -573,10 +627,16 @@
             box.innerHTML = r ? ssyncLiveHtml(r, current) : "";
             if (opened && box.querySelector("details")) { box.querySelector("details").open = true; }
 
-            box.closest("[data-wave]").querySelectorAll("[data-st]").forEach(function (td) {
+            var wres = box.closest("[data-wave]");
+
+            wres.querySelectorAll("[data-st]").forEach(function (td) {
                 var t = current && r.tables ? r.tables[td.getAttribute("data-st")] : null;
-                td.innerHTML = (t && ssyncCell(t, live)) || esc(td.getAttribute("data-was"));
+                var cell = (t && ssyncCell(t, live)) || esc(td.getAttribute("data-was"));
+                var st = !t ? "none" : (t.s === "pending" ? "queued" : t.s);
+                if (td._ssv !== cell) { td.innerHTML = cell; td._ssv = cell; }     // 2 000 строк раз в 4 с
+                td.parentNode.setAttribute("data-state", st);
             });
+            ssyncFilter(wres);
         });
     }
 
@@ -684,18 +744,61 @@
 
     /* ---------------- расписание ---------------- */
 
+    // дни недели cron: 0 = вс, 1 = пн … 6 = сб
+    var DAY_NAMES = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
+
+    function ssyncCronDays(cron) {
+        var f = String(cron || "").trim().split(/\s+/)[4] || "*";
+        if (f === "*") { return [0, 1, 2, 3, 4, 5, 6]; }
+        var out = [];
+        f.split(",").forEach(function (part) {
+            var ab = part.split("-").map(function (x) { return parseInt(x, 10) % 7; });
+            for (var d = ab[0]; d <= (ab.length > 1 ? ab[1] : ab[0]); d++) {
+                if (out.indexOf(d) < 0) { out.push(d); }
+            }
+        });
+        return out;
+    }
+
+    function ssyncDaysText(days) {
+        if (days.length === 7) { return "каждый день"; }
+        if (days.length === 1) {
+            return ["по воскресеньям", "по понедельникам", "по вторникам", "по средам",
+                "по четвергам", "по пятницам", "по субботам"][days[0]];
+        }
+        if (days.length === 5 && [1, 2, 3, 4, 5].every(function (d) { return days.indexOf(d) >= 0; })) {
+            return "по будням";
+        }
+        return [1, 2, 3, 4, 5, 6, 0].filter(function (d) { return days.indexOf(d) >= 0; })
+            .map(function (d) { return DAY_NAMES[d]; }).join(", ");
+    }
+
+    function ssyncDaysValue() {
+        var days = Array.prototype.filter.call($("ssyncDays").querySelectorAll("input"), function (i) {
+            return i.checked;
+        }).map(function (i) { return i.value; });
+        return days.length === 7 ? "*" : days.sort().join(",");
+    }
+
     function ssyncRenderSchedules() {
         var box = $("ssyncSchedules");
         var plan = state.plan;
         if (!plan) { box.innerHTML = '<div class="ssync-hint">Плана ещё нет.</div>'; return; }
         var sch = plan.schedules || {};
+        var first = sch[Object.keys(sch)[0]];
+        // галочки дней — как в поставленном расписании
+        var set = ssyncCronDays(first ? first.cron : "*");
+        $("ssyncDays").querySelectorAll("input").forEach(function (i) {
+            i.checked = set.indexOf(parseInt(i.value, 10)) >= 0;
+        });
         box.innerHTML = plan.settings.waves.map(function (w, i) {
             var s = sch[String(i)];
             return '<div class="ssync-sched"><b style="min-width: 140px;">' + esc(w.name) + "</b>" +
                 "<span>" + (w.start ? "старт " + esc(w.start) : "без времени старта — только вручную") +
                 (w.deadline ? " · новое не начинать после " + esc(w.deadline) : "") + "</span>" +
                 '<span class="ms-auto ssync-hint">' + (s
-                    ? (s.enabled ? "по расписанию · след. " + esc(s.next_run_at || "—") : "выключено") +
+                    ? (s.enabled ? esc(ssyncDaysText(ssyncCronDays(s.cron))) + " · след. " +
+                        esc(s.next_run_at || "—") : "выключено") +
                       (s.last_status ? " · последний: " + esc(s.last_status) : "")
                     : "не поставлено") + "</span></div>";
         }).join("");
@@ -704,8 +807,10 @@
     function ssyncSchedule(on) {
         var plan = state.plan;
         if (!plan) { ssyncMsg("Сначала сохраните план", "bad"); return; }
+        var days = ssyncDaysValue();
+        if (on && !days) { ssyncMsg("Отметьте хотя бы один день запуска", "bad"); return; }
         api("/api/smart-sync/plans/" + plan.id + "/schedule", on ? "POST" : "DELETE",
-            on ? { days: $("ssyncDays").value } : undefined).then(function (d) {
+            on ? { days: days } : undefined).then(function (d) {
             if (!d.ok) { ssyncMsg(d.message || "Не вышло", "bad"); return; }
             state.plan = d.plan;
             state.plans = state.plans.map(function (p) { return p.id === d.plan.id ? d.plan : p; });
@@ -779,6 +884,13 @@
         $("ssyncSchedule").onclick = function () { ssyncSchedule(true); };
         $("ssyncUnschedule").onclick = function () { ssyncSchedule(false); };
         $("ssyncRefresh").onclick = ssyncLoadRuns;
+        // поиск и фильтр списка таблиц волны
+        $("ssyncAnalysis").addEventListener("input", function (e) {
+            if (e.target.matches("[data-fq], [data-fs]")) { ssyncFilter(e.target.closest("[data-wave]")); }
+        });
+        $("ssyncAnalysis").addEventListener("change", function (e) {
+            if (e.target.matches("[data-fs]")) { ssyncFilter(e.target.closest("[data-wave]")); }
+        });
         // «Продолжить» — и в строке хода волны, и в ленте запусков
         document.addEventListener("click", function (e) {
             var b = e.target.closest ? e.target.closest("[data-continue]") : null;

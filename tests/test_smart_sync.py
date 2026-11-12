@@ -435,6 +435,13 @@ def test_plan_routes_and_schedules(client):
     assert set(r["plan"]["schedules"]) == {"0", "1"}           # время волн подхвачено
     assert r["plan"]["schedules"]["1"]["cron"] == "0 3 * * *"
 
+    # «по пятницам»: дни запуска — в cron, не «полная сверка»
+    r = client.post("/api/smart-sync/plans/{}/schedule".format(plan_id),
+                    json={"days": "5"}).get_json()
+    assert sorted(s["cron"] for s in r["schedules"]) == ["0 3 * * 5", "30 0 * * 5"]
+    assert client.post("/api/smart-sync/plans/{}/schedule".format(plan_id),
+                       json={"days": "1,3,5"}).get_json()["schedules"][0]["cron"].endswith(" 1,3,5")
+
     bad = client.post("/api/smart-sync/plans", json=dict(body, settings={"waves": []}))
     assert bad.status_code == 400
 
@@ -522,6 +529,16 @@ def test_analysis_is_stored_and_survives_reload(client, monkeypatch):
     a = client.get("/api/smart-sync/plans/{}/analysis".format(plan_id)).get_json()["analysis"]
     assert a["status"] == "done" and a["finished_at"]
     assert a["result"]["waves"][0]["changed_tables"] == 3
+
+
+def test_stored_analysis_keeps_the_whole_list_not_first_300():
+    many = fake_analysis()
+    item = many["waves"][0]["items"][0]
+    many["waves"][0]["items"] = [dict(item, root=("s", "t{}".format(i))) for i in range(1200)]
+
+    assert len(ss.public_analysis(many)["waves"][0]["items"]) == 300        # по умолчанию урезано
+    full = ss.public_analysis(many, limit=None)["waves"][0]
+    assert len(full["items"]) == 1200 and full["changed_tables"] == 1200
 
 
 def test_analysis_interrupted_by_restart_is_not_running_forever():
