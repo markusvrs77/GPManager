@@ -539,6 +539,29 @@
         else if (confirm(q)) { go(); }
     }
 
+    function ssyncStop(jobId, btn) {
+        var go = function () {
+            if (btn) { btn.disabled = true; }
+            api("/api/jobs/" + jobId + "/stop", "POST", {}).then(function (d) {
+                if (!d.ok) {
+                    if (btn) { btn.disabled = false; }
+                    ssyncMsg(d.message || "Не остановилось", "bad");
+                    return;
+                }
+                ssyncMsg("Запуск #" + jobId + " останавливается", "good");
+                ssyncLoadProgress();
+                ssyncLoadRuns();
+            }).catch(function (e) {
+                if (btn) { btn.disabled = false; }
+                ssyncMsg(String(e), "bad");
+            });
+        };
+        var q = "Остановить запуск #" + jobId + "? Идущие gpcopy прервутся (их таблицы в тесте " +
+            "докопируются при «Продолжить»), новые пачки не начнутся.";
+        if (window.gpConfirm) { window.gpConfirm(q).then(function (y) { if (y) { go(); } }); }
+        else if (confirm(q)) { go(); }
+    }
+
     function ssyncSkipLabel(e) {
         e = String(e || "");
         if (/^Не успели/.test(e)) { return "не успели"; }
@@ -569,8 +592,14 @@
             (r.finished_at ? " → " + esc(String(r.finished_at).slice(11)) : "") +
             (!live && !current ? " · был до этой проверки" : "");
 
+        var stopBtn = live && r.status !== "stopping"
+            ? '<div class="mt-2"><button class="btn btn-sm btn-outline-danger" type="button" data-stop="' +
+              r.job_id + '">⏹ Остановить</button> <span class="ssync-hint">идущие gpcopy прервутся, ' +
+              "недоехавшие таблицы можно будет «Продолжить»</span></div>"
+            : (r.status === "stopping" ? '<div class="ssync-hint mt-1">Останавливаю — жду, пока прервутся gpcopy…</div>' : "");
+
         if (!r.total) {
-            return "<b>" + head + "</b>" + '<div class="ssync-hint">' + (live
+            return "<b>" + head + "</b>" + stopBtn + '<div class="ssync-hint">' + (live
                 ? "Ищу изменившиеся таблицы на проде (сначала дожидаюсь gpcopy, оставшейся от прошлого запуска, если она ещё идёт)…"
                 : esc(r.error || "Копировать было нечего")) + "</div>";
         }
@@ -605,6 +634,7 @@
         } else if (!live && r.error && r.status !== "done") {
             html += '<div class="ssync-hint">' + esc(r.error) + "</div>";
         }
+        html += stopBtn;
         if (ssyncCanContinue(r)) {
             html += '<div class="mt-2"><button class="btn btn-sm btn-primary" type="button" data-continue="' +
                 r.job_id + '">▶ Продолжить с места остановки</button> <span class="ssync-hint">осталось ' +
@@ -857,6 +887,10 @@
                         ? '<button class="btn btn-sm btn-outline-primary ms-auto" type="button" data-continue="' +
                           j.id + '">▶ Продолжить</button>'
                         : "") +
+                    (ssyncIsLive(j) && j.status !== "stopping"
+                        ? '<button class="btn btn-sm btn-outline-danger ms-auto" type="button" data-stop="' +
+                          j.id + '">⏹ Остановить</button>'
+                        : "") +
                     (j.error_message && j.status !== "done" && j.status !== "interrupted"
                         ? '<span class="ssync-hint" style="flex-basis: 100%;">' +
                           esc(String(j.error_message).slice(0, 300)) + "</span>"
@@ -897,6 +931,8 @@
         document.addEventListener("click", function (e) {
             var b = e.target.closest ? e.target.closest("[data-continue]") : null;
             if (b) { ssyncContinue(parseInt(b.getAttribute("data-continue"), 10), b); }
+            var s = e.target.closest ? e.target.closest("[data-stop]") : null;
+            if (s) { ssyncStop(parseInt(s.getAttribute("data-stop"), 10), s); }
         });
         ssyncLoad(null);
         setInterval(ssyncLoadRuns, 15000);

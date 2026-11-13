@@ -1303,6 +1303,7 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
         def finish(batch, child):
             """Итог пачки -> отпечатки, строки таблиц, прогресс волны."""
             rows = {(i["schema_name"], i["table_name"]): i for i in get_job_items(child)}
+            stopping = is_stop_requested(job_id)
 
             with lock:
                 saved = []
@@ -1310,6 +1311,9 @@ def run_smart_sync_job(job_id, runner=None, clock=datetime.now):
                 for unit in batch["leaves"]:
                     it = owner[unit]
                     row = rows.get(unit) or {}
+
+                    if row.get("status") != "done" and stopping:
+                        continue          # прервано «Стопом», не ошибка: таблица остаётся «не доехала»
 
                     if row.get("status") == "done":
                         covered = _covered(it, unit)

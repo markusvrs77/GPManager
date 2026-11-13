@@ -396,6 +396,35 @@ def test_continue_interrupted_run_from_where_it_stopped(monkeypatch, client):
     assert r.status_code == 409                            # готовый не продолжают
 
 
+def test_stop_mid_batch_is_stopped_not_error(monkeypatch):
+    from job_manager import mark_item_done, request_stop_job
+
+    plan_id = _plan()
+    monkeypatch.setattr(ss, "analyze", lambda plan, wave, full=None: fake_analysis())
+    job_id = create_job("smart_sync", 1, {"plan_id": plan_id, "wave": 0})
+    seen = []
+
+    def runner(child_id):
+        seen.append(child_id)
+        if len(seen) == 1:
+            for item in get_job_items(child_id):
+                mark_item_done(item["id"])
+            return
+        # вторая пачка: нажали «Остановить» (то же, что делает /api/jobs/<id>/stop) —
+        # gpcopy прервана, таблица не доехала
+        request_stop_job(job_id)
+
+    ss.run_smart_sync_job(job_id, runner=runner, clock=lambda: datetime(2026, 11, 11, 1, 0))
+
+    items = {i["table_name"]: i for i in get_job_items(job_id)}
+    assert len(seen) == 2                                  # третья пачка не началась
+    assert items["a"]["status"] == "done"
+    assert items["b"]["status"] == "skipped" and "Остановлено" in items["b"]["error_message"]
+    assert items["c"]["status"] == "skipped"
+    assert get_job(job_id)["status"] == "cancelled"
+    assert ss.continue_job(job_id) == job_id               # и её можно продолжить
+
+
 def test_same_wave_is_not_started_twice(client):
     from job_manager import mark_job_running
 
