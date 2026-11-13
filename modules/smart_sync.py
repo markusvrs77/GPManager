@@ -1054,7 +1054,8 @@ def _job_progress(job, cfg):
         "started_at": job.get("started_at"), "finished_at": job.get("finished_at"),
         "progress": job.get("progress_percent") or 0,
         "error": (job.get("error_message") or "")[:300] if job.get("status") != "done" else "",
-        "deadline": smart.get("deadline"), "full": bool(cfg.get("full")),
+        # полная сверка: вручную («как при полной сверке») или по дню недели плана
+        "deadline": smart.get("deadline"), "full": bool(cfg.get("full") or smart.get("full")),
         "batch": batch_summary(smart),
         "batches": smart.get("batches"),
         "total": len(rows), "counts": counts,

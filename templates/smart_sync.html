@@ -586,6 +586,8 @@
         if (live && r.deadline) { bits.push("новое не начинать после " + esc(String(r.deadline).slice(11))); }
 
         var html = "<b>" + head + "</b>" +
+            (r.full ? ' <span class="ssync-tag warn">полная сверка — копируется вся волна, без проверки ' +
+                "изменений (вручную или «Копировать всё целиком по» дню недели)</span>" : "") +
             '<div class="bar"><i style="width: ' + pct.toFixed(1) + '%;"></i></div>' +
             '<div class="ssync-hint">' + esc(Math.round(pct) + "% · " + bits.join(" · ")) + "</div>";
 

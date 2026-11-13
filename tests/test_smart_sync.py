@@ -229,6 +229,7 @@ def test_runner_marks_tables_as_each_batch_finishes_and_progress_shows_it(monkey
 
     r = client.get("/api/smart-sync/plans/{}/progress".format(plan_id)).get_json()
     final = r["waves"]["0"]
+    assert final["full"] is False                         # обычный день — только изменившееся
     assert r["ok"] and final["status"] == "done" and final["counts"] == {"done": 3}
     assert final["batch"] is None and final["tables"]["s.c"]["t"]
 
