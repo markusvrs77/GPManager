@@ -118,6 +118,7 @@ POLICY = {
     "api_gpcopy_start": "sync.run",
     "api_gpcopy_start_date": "sync.run",
     "api_gpcopy_retry_failed": "sync.run",
+    "api_gpcopy_continue": "sync.run",
     "api_gpcopy_drop_stages": "sync.run",
     "api_sync_lock_settings": {"GET": "sync.view", "POST": "sync.run"},
     "smart_sync_page": "sync.view",

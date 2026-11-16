@@ -63,6 +63,7 @@ from modules.gpcopy import (
     build_gpcopy_date_include_json_preview,
     build_retry_config,
     build_stage_resume_config,
+    create_continue_job,
     drop_kept_stages,
     clear_window_in_dest,
     get_date_columns_for_table,
@@ -818,6 +819,41 @@ def api_gpcopy_retry_failed():
     })
 
 
+@app.route("/api/gpcopy/continue", methods=["POST"])
+def api_gpcopy_continue():
+    """Продолжить остановленную/упавшую gpcopy: только то, что не доехало."""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        job_id = int(data.get("job_id") or 0)
+    except (TypeError, ValueError):
+        job_id = 0
+
+    if not job_id:
+        return jsonify({"ok": False, "message": "job_id обязателен"}), 400
+
+    job = get_job(job_id)
+
+    if not job or not job_in_scope(job):
+        return jsonify({"ok": False, "message": "Задача не найдена"}), 404
+
+    try:
+        new_id, left = create_continue_job(job_id)
+    except LookupError as e:
+        return jsonify({"ok": False, "message": str(e)}), 404
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 409
+
+    threading.Thread(target=run_gpcopy_job, args=(new_id,),
+                     daemon=True).start()
+
+    return jsonify({
+        "ok": True, "job_id": new_id, "total_items": len(left),
+        "message": "Продолжение #{}: осталось {} объектов".format(
+            new_id, len(left)),
+    })
+
+
 # ------------------------------------------------------------------
 # Умная синхронизация: планы, анализ «что изменилось», запуск, расписание
 # ------------------------------------------------------------------
@@ -1376,6 +1412,11 @@ def api_jobs_recent():
 
         # сохранённые промежуточные таблицы (дозагрузка или удаление)
         j["stage_kept"] = len(cfg.get("stage_kept") or [])
+
+        # «Продолжить»: чем продолжена и в каком режиме шла задача
+        j["continued_by"] = cfg.get("continued_by")
+        j["continue_of"] = cfg.get("continue_of_job_id")
+        j["copy_mode"] = cfg.get("mode") or cfg.get("copy_mode") or ""
 
         # ежедневная синхронизация: сводка волны и её план
         if cfg.get("smart") is not None or j.get("job_type") == "smart_sync":

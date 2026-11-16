@@ -3016,6 +3016,25 @@
             };
         });
 
+        box.querySelectorAll("button[data-run-continue]").forEach(function (btn) {
+            btn.onclick = function (ev) {
+                ev.stopPropagation();
+                var id = parseInt(btn.getAttribute("data-run-continue"), 10);
+                btn.disabled = true;
+                api("/api/gpcopy/continue", "POST", { job_id: id })
+                    .then(function (r) {
+                        btn.disabled = false;
+                        if (!r.ok) {
+                            toast(r.message || "Не удалось продолжить", "error");
+                            return;
+                        }
+                        toast(r.message, "success");
+                        state.openRun = r.job_id;
+                        loadRuns();
+                    });
+            };
+        });
+
         // Открытый лог переживает перерисовку: пока задача идёт, карточка
         // перерисовывается на каждом опросе, и лог закрывался сам через
         // секунду. Закрывает его только повторное нажатие.
@@ -3360,6 +3379,21 @@
                     : "") +
                 " · в очереди: <b>" + fmtN(cnt.rest) + "</b></span>" +
                 "</div>";
+        }
+
+        // остановленная/упавшая полная копия — продолжить без уже доехавшего
+        if (j.job_type === "gpcopy" && !j.stage_kept &&
+                (!j.copy_mode || j.copy_mode === "full") &&
+                ["cancelled", "interrupted", "failed"].indexOf(j.status) >= 0 &&
+                (j.done_items || 0) < (j.total_items || 0)) {
+            html += '<div style="margin: 6px 0 10px; display: flex; gap: 8px;' +
+                ' align-items: center; flex-wrap: wrap;">' +
+                '<button class="gpp-btn sm" data-run-continue="' + j.id + '">' +
+                "▶ Продолжить с места остановки</button>" +
+                '<span class="cols">готово ' + fmtN(j.done_items) + " из " +
+                fmtN(j.total_items) + " — скопированное не трогаем" +
+                (j.continued_by ? " · уже продолжали: #" + esc(String(j.continued_by)) : "") +
+                "</span></div>";
         }
 
         if (j.status === "failed" &&

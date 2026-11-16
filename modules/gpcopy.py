@@ -859,6 +859,189 @@ def build_retry_config(config, failed_leaves, existing_mode="truncate",
     return retry
 
 
+CONTINUE_STATUSES = ("cancelled", "interrupted", "failed")
+
+# служебное прошлого прогона — продолжению не нужно и мешало бы
+_CONTINUE_DROP_KEYS = (
+    "failed_leaves", "finished_leaves", "stage_merges", "stage_kept",
+    "lock_state", "smart_parent", "retry_of_job_id", "continue_of_job_id",
+    "continued_by", "expanded_tables", "include_tables", "dest_tables",
+)
+
+
+def build_continue_config(config, items, finished=None, leaves_of=None):
+    """
+    «Продолжить с места остановки»: конфиг новой задачи только по тому,
+    что не доехало. Готовые (done) строки не трогаем вовсе.
+
+    finished — (schema, table), которые gpcopy отчитал Finished (из лога).
+    Таблица, у которой часть партиций уже скопирована, заменяется
+    недоехавшими партициями: leaves_of(schema, table) -> [(s, t)]. Не
+    дробим таблицы с картой в другую цель и режим drop (он пересоздал бы
+    каждую партицию отдельно) — такие идут целиком.
+
+    Возвращает (config, [(schema, table)]); ValueError — продолжать нельзя.
+    """
+    mode = (config.get("mode") or config.get("copy_mode") or "").strip()
+
+    if mode and mode != "full":
+        raise ValueError(
+            "Продолжение доступно только для полного копирования")
+
+    if config.get("stage_kept"):
+        raise ValueError(
+            "У задачи сохранены промежуточные таблицы — используйте "
+            "«Дозагрузить упавшие»: она дольёт их без повторного копирования")
+
+    if config.get("stage_resume") or config.get("include_tables"):
+        raise ValueError(
+            "Эту задачу продолжить нельзя — перезапустите копирование")
+
+    done = set(tuple(p) for p in (finished or []))
+    targets = config.get("targets") or {}
+    can_split = not to_bool(config.get("drop"), False)
+    left = []
+
+    for item in items or []:
+        if get_item_value(item, "status") == "done":
+            continue
+
+        schema = get_item_value(item, "schema_name")
+        table = get_item_value(item, "table_name")
+
+        if not schema or not table or (schema, table) in done:
+            continue
+
+        copied = [p for p in done
+                  if p != (schema, table)
+                  and leaf_belongs_to_item(p[0], p[1], schema, table)]
+        parts = None
+
+        if copied and can_split and leaves_of is not None \
+                and not is_mapped(targets, schema, table):
+            try:
+                parts = leaves_of(schema, table)
+            except Exception:
+                parts = None   # не узнали партиции — таблица целиком
+
+        if parts:
+            left.extend(p for p in (tuple(x) for x in parts) if p not in done)
+        else:
+            left.append((schema, table))
+
+    left = list(dict.fromkeys(left))
+
+    if not left:
+        raise ValueError("Всё уже скопировано — продолжать нечего")
+
+    keys = {"{}.{}".format(s, t) for s, t in left}
+    cont = dict(config)
+
+    for key in _CONTINUE_DROP_KEYS:
+        cont.pop(key, None)
+
+    tables = [{"schema": s, "table": t} for s, t in left]
+    cont["tables"] = tables
+    cont["selected_tables"] = tables
+    cont["item_action"] = "GPCOPY CONTINUE"
+
+    if targets:
+        cont["targets"] = {k: v for k, v in targets.items() if k in keys}
+
+    return cont, left
+
+
+LIVE_JOB_STATUSES = ("queued", "pending", "running", "stopping")
+
+
+def create_continue_job(job_id):
+    """
+    Заводит задачу-продолжение остановленной/упавшей gpcopy и возвращает
+    (new_job_id, [(schema, table)]). Запуск — забота вызывающего.
+    LookupError — задачи нет; ValueError — продолжать нельзя.
+    """
+    try:
+        from job_manager import create_job
+    except ImportError:
+        from modules.job_manager import create_job
+
+    job = get_job(int(job_id))
+
+    if not job:
+        raise LookupError("Задача не найдена")
+
+    if get_item_value(job, "job_type") != "gpcopy":
+        raise ValueError("Продолжение доступно для полного копирования gpcopy")
+
+    status = get_item_value(job, "status")
+
+    if status not in CONTINUE_STATUSES:
+        raise ValueError(
+            "Продолжить можно остановленную, прерванную или упавшую задачу "
+            "(сейчас: {})".format(status))
+
+    config = json.loads(get_item_value(job, "config_json") or "{}")
+
+    # второе нажатие не должно завести параллельную копию того же
+    prev = config.get("continued_by")
+
+    if prev:
+        prev_job = get_job(int(prev))
+
+        if prev_job and get_item_value(prev_job, "status") in LIVE_JOB_STATUSES:
+            raise ValueError(
+                "Продолжение уже идёт: #{}".format(int(prev)))
+
+    finished = set(tuple(p) for p in (config.get("finished_leaves") or []))
+    finished |= parse_finished_tables(read_job_log(job_id))
+
+    conn_box = {}
+
+    def leaves_of(schema, table):
+        if "conn" not in conn_box:
+            source = get_connection_by_id(int(
+                config.get("source_connection_id")
+                or config.get("connection_id")))
+            conn_box["conn"] = open_psycopg2_connection_by_cfg(source)
+
+        try:
+            from modules.gpcopy_partition import list_leaf_partitions
+        except ImportError:
+            from gpcopy_partition import list_leaf_partitions
+
+        return list_leaf_partitions(conn_box["conn"], schema, table)
+
+    try:
+        cont, left = build_continue_config(
+            config, get_job_items(int(job_id)), finished, leaves_of)
+    finally:
+        if conn_box.get("conn") is not None:
+            try:
+                conn_box["conn"].close()
+            except Exception:
+                pass
+
+    cont["continue_of_job_id"] = int(job_id)
+    new_id = create_job(job_type="gpcopy",
+                        connection_id=get_item_value(job, "connection_id"),
+                        config=cont)
+
+    config["continued_by"] = new_id
+    update_job_config(int(job_id), config)
+
+    return new_id, left
+
+
+def read_job_log(job_id):
+    """Текст постоянного лога gpcopy-задачи ('' — нет файла)."""
+    try:
+        with open(_job_log_path(job_id), "r", encoding="utf-8",
+                  errors="replace") as fh:
+            return fh.read()
+    except (OSError, IOError, ValueError):
+        return ""
+
+
 def leaf_belongs_to_item(leaf_schema, leaf_table, item_schema, item_table):
     """
     Партиция принадлежит выбранной таблице, если та же схема и имя —
