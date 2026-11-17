@@ -2584,6 +2584,7 @@
             tables: tables, gpcopy_path: ex.gpcopy_path, jobs: ex.jobs,
             count_mode: $("gppPartExact").checked ? "exact" : "stats",
             recompute: partAutoOn(),
+            analyze: $("gppPartAnalyze").checked,
         };
         if (!partAutoOn() && state.partDiff) {
             var checkedParts = partCheckedList();
@@ -2657,6 +2658,7 @@
         base.tables = tables;
         base.count_mode = $("gppPartExact").checked ? "exact" : "stats";
         base.recompute = true;
+        base.analyze = $("gppPartAnalyze").checked;
         return Promise.resolve(base);
     }
 
@@ -3382,7 +3384,8 @@
         }
 
         // остановленная/упавшая полная копия — продолжить без уже доехавшего
-        if (j.job_type === "gpcopy" && !j.stage_kept &&
+        if ((j.job_type === "gpcopy" || j.job_type === "gpcopy_partition_diff") &&
+                !j.stage_kept &&
                 (!j.copy_mode || j.copy_mode === "full") &&
                 ["cancelled", "interrupted", "failed"].indexOf(j.status) >= 0 &&
                 (j.done_items || 0) < (j.total_items || 0)) {

@@ -106,6 +106,103 @@ def test_continue_route_starts_job_without_copied_tables(client, monkeypatch):
     assert "уже идёт" in r2.get_json()["message"]
 
 
+def test_partition_continue_uses_saved_plan_minus_copied():
+    import modules.gpcopy as g
+
+    items = [{"schema_name": "s", "table_name": "a", "status": "done"},
+             {"schema_name": "s", "table_name": "b", "status": "cancelled"}]
+    config = dict(BASE, tables=[{"schema": "s", "table": "a"},
+                                {"schema": "s", "table": "b"}],
+                  recompute=True, count_mode="stats",
+                  planned_leaves=[["s", "a_1_prt_1"], ["s", "b_1_prt_1"],
+                                  ["s", "b_1_prt_2"]])
+
+    cont, roots = g.build_partition_continue_config(
+        config, items, {("s", "b_1_prt_1")})
+
+    assert roots == [("s", "b")]
+    assert cont["tables"] == [{"schema": "s", "table": "b"}]
+    assert cont["partitions"] == [{"schema": "s", "table": "b_1_prt_2"}]
+    assert cont["recompute"] is False
+    assert not cont.get("analyze")
+
+
+def test_partition_continue_without_plan_recomputes_left_tables_only():
+    import modules.gpcopy as g
+
+    items = [{"schema_name": "s", "table_name": "a", "status": "done"},
+             {"schema_name": "s", "table_name": "b", "status": "running"}]
+
+    cont, roots = g.build_partition_continue_config(
+        dict(BASE, recompute=False, partitions=[{"schema": "s", "table": "x"}]),
+        items)
+
+    assert roots == [("s", "b")]
+    assert cont["recompute"] is True and "partitions" not in cont
+
+
+def test_partition_job_does_not_analyze_unless_asked(monkeypatch):
+    """ANALYZE каждой партиции занимал часы — теперь только по галочке."""
+    import modules.gpcopy_partition as gp
+    from job_manager import create_job, get_job
+    import json
+
+    seen = {}
+
+    def fake_build(**kw):
+        seen["analyze"] = kw.get("analyze")
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(gp, "get_connection_by_id", lambda cid: {"id": cid})
+    monkeypatch.setattr(gp, "skip_covered_items", lambda items, cid: (items, set()))
+    monkeypatch.setattr(gp, "make_include_table_file", lambda items, db: None)
+    monkeypatch.setattr(gp, "get_conn_dbname", lambda cfg: "db")
+    monkeypatch.setattr(gp, "build_gpcopy_command", fake_build)
+
+    for flag, expected in ((None, False), (True, True)):
+        cfg = dict(BASE, tables=[{"schema": "s", "table": "t"}],
+                   partitions=[{"schema": "s", "table": "t_1_prt_1"}])
+        if flag is not None:
+            cfg["analyze"] = flag
+        job_id = create_job("gpcopy_partition_diff", 1, cfg)
+        gp.run_gpcopy_partition_diff_job(job_id)
+
+        assert seen["analyze"] is expected
+        saved = json.loads(get_job(job_id)["config_json"])
+        assert saved["planned_leaves"] == [["s", "t_1_prt_1"]]
+
+
+def test_continue_route_runs_partition_job_with_partition_runner(client, monkeypatch):
+    import app as app_module
+    import modules.gpcopy as g
+    from job_manager import create_job, get_job
+    from db import sqlite_cursor
+
+    ran = []
+    monkeypatch.setattr(app_module, "run_gpcopy_partition_diff_job",
+                        lambda jid: ran.append(("part", jid)))
+    monkeypatch.setattr(app_module, "run_gpcopy_job",
+                        lambda jid: ran.append(("full", jid)))
+    monkeypatch.setattr(g, "read_job_log", lambda job_id: "")
+
+    job_id = create_job("gpcopy_partition_diff", 1, dict(
+        BASE, tables=[{"schema": "s", "table": "b"}], recompute=True))
+    with sqlite_cursor(commit=True) as cur:
+        cur.execute("UPDATE jobs SET status = 'cancelled' WHERE id = ?", (job_id,))
+
+    r = client.post("/api/gpcopy/continue", json={"job_id": job_id})
+
+    assert r.status_code == 200, r.get_json()
+    new_id = r.get_json()["job_id"]
+    assert get_job(new_id)["job_type"] == "gpcopy_partition_diff"
+    import time
+    for _ in range(50):
+        if ran:
+            break
+        time.sleep(0.02)
+    assert ran == [("part", new_id)]
+
+
 def test_continue_route_rejects_running_job(client):
     from job_manager import create_job
 

@@ -844,8 +844,10 @@ def api_gpcopy_continue():
     except ValueError as e:
         return jsonify({"ok": False, "message": str(e)}), 409
 
-    threading.Thread(target=run_gpcopy_job, args=(new_id,),
-                     daemon=True).start()
+    runner = (run_gpcopy_partition_diff_job
+              if job.get("job_type") == "gpcopy_partition_diff"
+              else run_gpcopy_job)
+    threading.Thread(target=runner, args=(new_id,), daemon=True).start()
 
     return jsonify({
         "ok": True, "job_id": new_id, "total_items": len(left),

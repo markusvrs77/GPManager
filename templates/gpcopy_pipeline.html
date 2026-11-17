@@ -761,6 +761,12 @@ details.gpp-tgt > summary { padding: 7px 11px; font-size: 13px; }
                            style="accent-color: var(--a1);">
                     Считать расхождение при каждом запуске (нужно для расписания)
                 </label>
+                <label class="gpp-hint" style="margin: 0; cursor: pointer;"
+                       title="gpcopy --analyze: после копирования ANALYZE каждой перелитой партиции. Долго; без него сравнение по статистике может снова показать расхождение — тогда включите точный пересчёт">
+                    <input type="checkbox" id="gppPartAnalyze"
+                           style="accent-color: var(--a1);">
+                    ANALYZE после копирования (медленно)
+                </label>
             </div>
             <div class="gpp-key-list" id="gppPartPreview" style="margin-top: 8px;"></div>
         </div>
@@ -919,7 +925,7 @@ details.gpp-tgt > summary { padding: 7px 11px; font-size: 13px; }
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=23"></script>
+<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=24"></script>
 {% if (toolkit or 'gp') == 'pg' %}
 <script src="{{ url_for('static', filename='js/pg_compare.js') }}?v=8"></script>
 {% endif %}

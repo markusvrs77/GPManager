@@ -951,6 +951,59 @@ def build_continue_config(config, items, finished=None, leaves_of=None):
     return cont, left
 
 
+def build_partition_continue_config(config, items, finished=None):
+    """
+    «Продолжить» синхронизацию партиций: только таблицы, что не доделаны.
+    Есть план прошлого прогона (planned_leaves) — доливаем его остаток без
+    пересчёта; нет — расхождение считается заново, но только по ним.
+    Возвращает (config, [(schema, table)] корней). Чистая функция.
+    """
+    done = set(tuple(p) for p in (finished or []))
+    roots = []
+    done_roots = []
+
+    for item in items or []:
+        schema = get_item_value(item, "schema_name")
+        table = get_item_value(item, "table_name")
+
+        if not schema or not table:
+            continue
+
+        if get_item_value(item, "status") in ("done", "skipped"):
+            done_roots.append((schema, table))
+        elif (schema, table) not in roots:
+            roots.append((schema, table))
+
+    if not roots:
+        raise ValueError("Всё уже скопировано — продолжать нечего")
+
+    cont = dict(config)
+
+    for key in _CONTINUE_DROP_KEYS + ("partitions", "planned_leaves"):
+        cont.pop(key, None)
+
+    cont["tables"] = [{"schema": s, "table": t} for s, t in roots]
+    planned = [tuple(p) for p in (config.get("planned_leaves") or [])]
+
+    if planned:
+        # партицию готовой таблицы не берём; имя не по «_1_prt_» —
+        # лучше перелить, чем потерять
+        rest = [p for p in planned
+                if p not in done
+                and not any(leaf_belongs_to_item(p[0], p[1], s, t)
+                            for s, t in done_roots)]
+
+        if not rest:
+            raise ValueError("Всё уже скопировано — продолжать нечего")
+
+        cont["partitions"] = [{"schema": s, "table": t} for s, t in rest]
+        cont["recompute"] = False
+    else:
+        cont["recompute"] = True
+
+    return cont, roots
+
+
 LIVE_JOB_STATUSES = ("queued", "pending", "running", "stopping")
 
 
@@ -970,8 +1023,12 @@ def create_continue_job(job_id):
     if not job:
         raise LookupError("Задача не найдена")
 
-    if get_item_value(job, "job_type") != "gpcopy":
-        raise ValueError("Продолжение доступно для полного копирования gpcopy")
+    job_type = get_item_value(job, "job_type")
+
+    if job_type not in ("gpcopy", "gpcopy_partition_diff"):
+        raise ValueError(
+            "Продолжение доступно для полного копирования и синхронизации "
+            "партиций")
 
     status = get_item_value(job, "status")
 
@@ -994,6 +1051,17 @@ def create_continue_job(job_id):
 
     finished = set(tuple(p) for p in (config.get("finished_leaves") or []))
     finished |= parse_finished_tables(read_job_log(job_id))
+
+    if job_type == "gpcopy_partition_diff":
+        cont, left = build_partition_continue_config(
+            config, get_job_items(int(job_id)), finished)
+        cont["continue_of_job_id"] = int(job_id)
+        new_id = create_job(job_type=job_type,
+                            connection_id=get_item_value(job, "connection_id"),
+                            config=cont)
+        config["continued_by"] = new_id
+        update_job_config(int(job_id), config)
+        return new_id, left
 
     conn_box = {}
 

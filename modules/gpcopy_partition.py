@@ -20,12 +20,14 @@ try:
         get_job, get_job_items, mark_job_running, mark_job_done,
         is_stop_requested, clear_stop_flag, mark_job_cancelled,
         refresh_job_progress, set_item_parts, set_job_runtime,
+        update_job_config,
     )
 except ImportError:
     from modules.job_manager import (
         get_job, get_job_items, mark_job_running, mark_job_done,
         is_stop_requested, clear_stop_flag, mark_job_cancelled,
         refresh_job_progress, set_item_parts, set_job_runtime,
+        update_job_config,
     )
 
 try:
@@ -41,7 +43,7 @@ try:
         get_conn_dbname, get_conn_host, get_conn_port, get_conn_user,
         make_include_table_file, safe_mark_job_failed, get_item_value,
         DEFAULT_GPCOPY_PATH, _job_log_path, _watch_gpcopy_log,
-        finalize_gpcopy_job, find_owner_item,
+        finalize_gpcopy_job, find_owner_item, to_bool,
     )
 except ImportError:
     from gpcopy import (
@@ -51,7 +53,7 @@ except ImportError:
         get_conn_dbname, get_conn_host, get_conn_port, get_conn_user,
         make_include_table_file, safe_mark_job_failed, get_item_value,
         DEFAULT_GPCOPY_PATH, _job_log_path, _watch_gpcopy_log,
-        finalize_gpcopy_job, find_owner_item,
+        finalize_gpcopy_job, find_owner_item, to_bool,
     )
 
 
@@ -424,6 +426,17 @@ def run_gpcopy_partition_diff_job(job_id):
 
         copy_items = _dedupe_copy_items(copy_items)
 
+        # что именно решили перелить — по этому «Продолжить» дольёт остаток,
+        # не пересчитывая расхождение заново
+        try:
+            saved = json.loads(get_item_value(get_job(job_id), "config_json")
+                               or "{}")
+            saved["planned_leaves"] = [[ci["schema_name"], ci["table_name"]]
+                                       for ci in copy_items]
+            update_job_config(job_id, saved)
+        except Exception:
+            pass
+
         if is_stop_requested(job_id):
             mark_job_cancelled(job_id)
             return
@@ -480,10 +493,11 @@ def run_gpcopy_partition_diff_job(job_id):
             include_tables_file=include_file,
             jobs=int(config.get("jobs") or 4),
             truncate=True,
-            # без ANALYZE в приёмнике остаётся старый reltuples, и
-            # следующее сравнение «по статистике» снова видит расхождение
-            # там, где его нет, — режим вырождался в еженедельную заливку
-            analyze=True,
+            # ANALYZE каждой перелитой партиции — долго, поэтому только по
+            # галочке. Без него в приёмнике остаётся старый reltuples, и
+            # сравнение «по статистике» может снова увидеть расхождение —
+            # тогда точнее «Точный пересчёт COUNT(*)»
+            analyze=to_bool(config.get("analyze"), False),
             dest_mapping_file=write_dest_mapping_file(dest_cfg),
             rpc_port=pick_rpc_port(),
         )

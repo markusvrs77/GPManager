@@ -200,11 +200,11 @@ def test_partition_runner_sends_each_partition_once(partition_run):
     assert seen["include"] == [P1, INV]
 
 
-def test_partition_runner_asks_gpcopy_to_analyze(partition_run):
-    """Без ANALYZE сравнение по статистике снова видит расхождение."""
+def test_partition_runner_does_not_force_analyze(partition_run):
+    """ANALYZE каждой партиции занимал часы — по умолчанию выключен."""
     seen = partition_run([OSV, INV])
 
-    assert seen["command"]["analyze"] is True
+    assert seen["command"]["analyze"] is False
     assert seen["command"]["truncate"] is True
 
 
