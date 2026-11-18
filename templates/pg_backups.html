@@ -45,8 +45,15 @@
 .pgb-msg.err { color: var(--crit); }
 .pgb-msg.ok { color: var(--ok); }
 
+/* правая колонка: дампы + задачи, списки в своих границах */
+.pgb-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.pgb-scroll { overflow-y: auto; overscroll-behavior: contain;
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  padding: 0 8px; }
+.pgb-scroll-dumps { max-height: 300px; }
+.pgb-scroll-jobs { max-height: 520px; }
+
 /* задачи pg_dump / pg_restore + шторка «Подробнее» */
-.pgb-jobs { margin-top: 14px; }
 .pgb-job { border-bottom: 1px solid var(--hairline); }
 .pgb-job:last-child { border-bottom: none; }
 .pgb-job-head { display: flex; align-items: center; gap: 10px; padding: 10px 4px;
@@ -171,22 +178,25 @@
             {% endif %}
         </div>
 
-        <!-- список дампов -->
-        <div class="pgb-panel">
-            <h6>Дампы
-                <button class="btn btn-sm btn-outline-primary" style="margin-left: auto;"
-                        onclick="pgbLoad()" type="button">Обновить</button></h6>
-            <div id="pgbList"><div class="pgb-hint">Загрузка…</div></div>
+        <!-- справа: дампы сверху, задачи снизу; у каждого списка своя прокрутка -->
+        <div class="pgb-side">
+            <div class="pgb-panel">
+                <h6>Дампы
+                    <button class="btn btn-sm btn-outline-primary" style="margin-left: auto;"
+                            onclick="pgbLoad()" type="button">Обновить</button></h6>
+                <div id="pgbList" class="pgb-scroll pgb-scroll-dumps">
+                    <div class="pgb-hint">Загрузка…</div></div>
+            </div>
+
+            <div class="pgb-panel">
+                <h6>Задачи (pg_dump / pg_restore)
+                    <button class="btn btn-sm btn-outline-primary" style="margin-left: auto;"
+                            onclick="pgbLoadJobs()" type="button">Обновить</button></h6>
+                <div id="pgbJobs" class="pgb-scroll pgb-scroll-jobs">
+                    <div class="pgb-hint">Загрузка…</div></div>
+            </div>
         </div>
 
-    </div>
-
-    <!-- задачи дампа и восстановления -->
-    <div class="pgb-panel pgb-jobs">
-        <h6>Задачи (pg_dump / pg_restore)
-            <button class="btn btn-sm btn-outline-primary" style="margin-left: auto;"
-                    onclick="pgbLoadJobs()" type="button">Обновить</button></h6>
-        <div id="pgbJobs"><div class="pgb-hint">Загрузка…</div></div>
     </div>
 </div>
 
@@ -673,7 +683,7 @@
         if (!openJobs[id]) { pgbToggleJob(id); }
         var row = document.getElementById("pgbJob-" + id);
         if (row) {
-            row.scrollIntoView({ behavior: "smooth", block: "start" });
+            row.scrollIntoView({ behavior: "smooth", block: "nearest" });
         } else if (window.gpToast) {
             gpToast("Задача #" + id + " не найдена среди последних", "warning");
         }
