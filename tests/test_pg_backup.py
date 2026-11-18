@@ -79,3 +79,65 @@ def test_pg_outcome_and_password_not_in_argv():
 
     assert dump_file_path("/d", "x", "20260101000000").replace("\\", "/") == \
         "/d/pgdump_x_20260101000000.dump"
+
+
+def test_pg_error_hint_known_causes():
+    from modules.pg_backup import pg_error_hint
+
+    assert "Версия pg_dump" in pg_error_hint(
+        "pg_dump: error: aborting because of server version mismatch")
+    assert "пароль" in pg_error_hint(
+        'FATAL:  password authentication failed for user "u"')
+    assert "файл дампа" in pg_error_hint(
+        'pg_dump: error: could not open output file "/x/a.dump": '
+        "No such file or directory")
+    # «нет таблиц» точнее общего «does not exist»
+    assert "schema.table" in pg_error_hint(
+        "pg_dump: error: no matching tables were found")
+    assert pg_error_hint("что-то непонятное") == ""
+
+
+def test_launch_error_message():
+    from modules.pg_backup import launch_error_message
+
+    exc = FileNotFoundError(2, "No such file", "/usr/bin/pg_dump")
+    text = launch_error_message(exc, "/usr/bin/pg_dump")
+    assert "/usr/bin/pg_dump" in text and "Установи" in text
+
+    other = FileNotFoundError(2, "No such file", "/logs/job_1.log")
+    assert "/logs/job_1.log" in launch_error_message(other, "/usr/bin/pg_dump")
+
+    assert launch_error_message(ValueError("x"), "p") == "x"
+
+
+def test_run_pg_dump_missing_binary_records_clear_error(monkeypatch):
+    import modules.pg_backup as pb
+
+    failed = {}
+
+    monkeypatch.setattr(pb, "get_job", lambda jid: {"config_json": (
+        '{"connection_id": 1, "dbname": "app", "backup_dir": "/d", '
+        '"backup_timestamp": "20260727120000", '
+        '"pg_dump_path": "/nope/pg_dump"}')})
+    monkeypatch.setattr(pb, "get_job_items", lambda jid: [{"id": 7}])
+    for name in ("mark_job_running", "mark_item_running",
+                 "refresh_job_progress"):
+        monkeypatch.setattr(pb, name, lambda *a, **k: None)
+    monkeypatch.setattr(pb, "get_connection_by_id",
+                        lambda cid: {"host": "h", "username": "u"})
+    monkeypatch.setattr(pb, "mark_item_failed",
+                        lambda iid, msg: failed.setdefault("item", msg))
+    monkeypatch.setattr(pb, "mark_job_failed",
+                        lambda jid, msg: failed.setdefault("job", msg))
+
+    def boom(job_id, cmd, env, finalize):
+        raise FileNotFoundError(2, "No such file", cmd[0])
+
+    monkeypatch.setattr(pb, "_run_external_tool", boom)
+
+    pb.run_pg_dump_job(1)
+
+    assert "Не найден исполняемый файл: /nope/pg_dump" in failed["job"]
+    assert "Команда: /nope/pg_dump" in failed["job"]
+    assert "/nope/pg_dump" in failed["item"]
+    assert "PGPASSWORD" not in failed["job"]

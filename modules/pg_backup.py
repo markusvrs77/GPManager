@@ -195,6 +195,67 @@ def _extract_pg_errors(log_text, limit=10):
     return found[-limit:] or extract_backup_errors(log_text, limit)
 
 
+# частые причины падения pg_dump/pg_restore -> что делать (чистые правила)
+_PG_HINTS = (
+    ("server version mismatch",
+     "Версия pg_dump старше версии сервера. Поставь клиент той же или более "
+     "новой версии (postgresql<N>-client) или укажи путь к нему."),
+    ("password authentication failed",
+     "Неверный логин или пароль в подключении — проверь его на вкладке "
+     "«Подключения»."),
+    ("no pg_hba.conf entry",
+     "Сервер не пускает хост Opsentri: нужна строка в pg_hba.conf."),
+    ("connection refused",
+     "Сервер недоступен: проверь хост, порт и что PostgreSQL запущен."),
+    ("could not translate host name",
+     "Имя хоста не резолвится — проверь хост в подключении."),
+    ("could not open output file",
+     "Нельзя создать файл дампа: каталога нет или у пользователя Opsentri "
+     "нет прав на запись в него."),
+    ("permission denied for",
+     "У пользователя БД нет прав на чтение части объектов — нужен владелец "
+     "или роль с SELECT на эти таблицы."),
+    ("no space left on device",
+     "На диске с каталогом дампа закончилось место."),
+    ("no matching tables were found",
+     "Указанные таблицы не найдены — пиши их как schema.table."),
+    ("no matching schemas were found",
+     "Указанные схемы не найдены — проверь имена."),
+    ("does not exist",
+     "Объект или база не найдены — проверь имя БД, схемы и таблицы."),
+)
+
+
+def pg_error_hint(text):
+    """Подсказка 'что делать' по тексту ошибки или лога; '' если не узнали."""
+    low = (text or "").lower()
+
+    for needle, hint in _PG_HINTS:
+        if needle in low:
+            return hint
+
+    return ""
+
+
+def launch_error_message(exc, cmd_path):
+    """Ошибка до запуска процесса (нет бинаря и т.п.) -> текст для человека."""
+    if isinstance(exc, FileNotFoundError):
+        missing = getattr(exc, "filename", None)
+
+        if missing and str(missing) != str(cmd_path):
+            return "Файл или каталог не найден: {}".format(missing)
+
+        return (
+            "Не найден исполняемый файл: {}. Установи клиент PostgreSQL "
+            "(pg_dump/pg_restore) на сервер Opsentri или укажи путь к нему."
+        ).format(cmd_path)
+
+    if isinstance(exc, PermissionError):
+        return "Нет прав на запуск: {} ({})".format(cmd_path, exc)
+
+    return str(exc)
+
+
 def finalize_pg_job(job_id, job_type, config, items, log_text, rc,
                     command_text):
     """Единая финализация pg_dump/pg_restore (и раннер, и переподхват)."""
@@ -222,9 +283,11 @@ def finalize_pg_job(job_id, job_type, config, items, log_text, rc,
         return
 
     errors = _extract_pg_errors(log_text)
-    report = "Команда: {}\n\n{}\n\nХвост лога:\n{}".format(
+    hint = pg_error_hint("\n".join(errors) or log_text)
+    report = "{}Команда: {}\n\n{}\n\nХвост лога:\n{}".format(
+        "Что делать: {}\n\n".format(hint) if hint else "",
         command_text,
-        "\n".join(errors) or "(строк с ошибками не найдено)",
+        "\n".join(errors) or "(строк с ошибками не найдено, код {})".format(rc),
         (log_text or "")[-5000:],
     )
 
@@ -254,6 +317,7 @@ def _run_pg_job(job_id, job_type, build):
         mark_item_running(item["id"])
 
     refresh_job_progress(job_id)
+    cmd = None
 
     try:
         conn_cfg = get_connection_by_id(int(config["connection_id"]))
@@ -272,14 +336,21 @@ def _run_pg_job(job_id, job_type, build):
         _run_external_tool(job_id, cmd, env, finalize)
 
     except Exception as e:
+        text = launch_error_message(e, cmd[0] if cmd else job_type)
+        hint = pg_error_hint(text)
+
         for item in items:
             try:
-                mark_item_failed(item["id"], str(e)[:500])
+                mark_item_failed(item["id"], text[:500])
             except Exception:
                 pass
 
         refresh_job_progress(job_id)
-        mark_job_failed(job_id, str(e)[:4000])
+        mark_job_failed(job_id, "{}{}{}".format(
+            text,
+            "\n\nЧто делать: " + hint if hint else "",
+            "\n\nКоманда: " + " ".join(cmd) if cmd else "",
+        )[:4000])
 
 
 def run_pg_dump_job(job_id):

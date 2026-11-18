@@ -44,6 +44,41 @@
 .pgb-msg { font-size: 13px; margin-top: 10px; }
 .pgb-msg.err { color: var(--crit); }
 .pgb-msg.ok { color: var(--ok); }
+
+/* задачи pg_dump / pg_restore + шторка «Подробнее» */
+.pgb-jobs { margin-top: 14px; }
+.pgb-job { border-bottom: 1px solid var(--hairline); }
+.pgb-job:last-child { border-bottom: none; }
+.pgb-job-head { display: flex; align-items: center; gap: 10px; padding: 10px 4px;
+  font-size: 13px; flex-wrap: wrap; min-width: 0; }
+.pgb-job-id { font-family: var(--font-mono); font-weight: 700; flex: none; }
+.pgb-job-err { color: var(--crit); font-size: 12px; flex: 1 1 260px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pgb-st.running, .pgb-st.queued, .pgb-st.pending { color: var(--run);
+  border: 1px solid var(--run); }
+.pgb-st.cancelled, .pgb-st.interrupted { color: var(--warn);
+  border: 1px solid var(--warn); }
+.pgb-job-head .pgb-st { margin-left: 0; }
+.pgb-job-head .pgb-more { margin-left: auto; flex: none; }
+.pgb-det { background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); padding: 12px; margin: 0 4px 12px;
+  font-size: 12.5px; }
+.pgb-det-cause { background: var(--crit-tint); border-left: 3px solid var(--crit);
+  border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 10px;
+  white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono);
+  font-size: 12px; max-height: 260px; overflow: auto; }
+.pgb-det-run { background: var(--run-tint); border-left: 3px solid var(--run);
+  border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 10px; }
+.pgb-det-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 12px; margin-bottom: 10px; }
+.pgb-det-kv dt { color: var(--text-muted); font-weight: 600; }
+.pgb-det-kv dd { margin: 0; font-family: var(--font-mono); word-break: break-all; }
+.pgb-det-log { background: var(--bg); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); padding: 8px 10px; margin: 6px 0 0;
+  font-family: var(--font-mono); font-size: 11.5px; white-space: pre-wrap;
+  word-break: break-word; max-height: 340px; overflow: auto; }
+.pgb-det-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  color: var(--text-muted); }
 </style>
 
 <div class="pgb">
@@ -142,6 +177,14 @@
         </div>
 
     </div>
+
+    <!-- задачи дампа и восстановления -->
+    <div class="pgb-panel pgb-jobs">
+        <h6>Задачи (pg_dump / pg_restore)
+            <button class="btn btn-sm btn-outline-primary" style="margin-left: auto;"
+                    onclick="pgbLoadJobs()" type="button">Обновить</button></h6>
+        <div id="pgbJobs"><div class="pgb-hint">Загрузка…</div></div>
+    </div>
 </div>
 
 <script>
@@ -198,6 +241,11 @@
                         " · " + esc(b.backup_dir || "") + "</div></div>" +
                         '<span class="pgb-st ' + esc(b.status) + '">' +
                         esc(b.status) + "</span>" +
+                        (b.status === "failed" && b.job_id
+                            ? ' <button class="btn btn-sm btn-outline-danger" ' +
+                              'type="button" onclick="pgbShowJob(' +
+                              parseInt(b.job_id, 10) + ')">Подробнее</button>'
+                            : "") +
                         (restorable
                             ? ' <button class="btn btn-sm btn-outline-primary" ' +
                               'onclick="pgbToggleRestore(' + b.id + ')">Восстановить</button>'
@@ -272,6 +320,8 @@
                 }
                 openRestore = null;
                 pgbLoad();
+                openJobs[d.job_id] = true;
+                pgbLoadJobs();
                 if (window.gpToast) {
                     gpToast("Восстановление запущено: задача #" + d.job_id, "success");
                 }
@@ -317,7 +367,9 @@
                 if (!d.ok) { msg(d.message || "Ошибка", "err"); return; }
 
                 msg("Дамп запущен — задача #" + d.job_id +
-                    ". Прогресс в «Запусках» на дашборде.", "ok");
+                    ". Ход и лог — в «Задачах» ниже.", "ok");
+                openJobs[d.job_id] = true;
+                pgbLoadJobs();
                 setTimeout(pgbLoad, 1500);
             }).catch(function (e) {
                 startBtn.disabled = false;
@@ -432,8 +484,321 @@
         });
     }
 
+    // ---------- задачи pg_dump / pg_restore + шторка «Подробнее» ----------
+    var JOB_TYPES = { pg_dump: "Дамп", pg_restore: "Восстановление" };
+    var JOB_STATUS = {
+        queued: "в очереди", pending: "в очереди", running: "идёт",
+        done: "готово", failed: "ошибка", cancelled: "остановлена",
+        interrupted: "прервана",
+    };
+    var ACTIVE = { queued: 1, pending: 1, running: 1 };
+    var openJobs = {};      // id -> true: шторка раскрыта
+    var jobState = {};      // id -> статус из последней ленты
+    var jobsTimer = null;
+
+    function parseDt(s) {
+        if (!s) { return null; }
+        var d = new Date(String(s).replace(" ", "T"));
+        return isNaN(d.getTime()) ? null : d;
+    }
+
+    function fmtDur(job) {
+        var a = parseDt(job.started_at);
+        if (!a) { return ""; }
+        var b = parseDt(job.finished_at) || new Date();
+        var sec = Math.max(0, Math.round((b - a) / 1000));
+        var h = Math.floor(sec / 3600);
+        var m = Math.floor((sec % 3600) / 60);
+        var s = sec % 60;
+        return (h ? h + " ч " : "") + (h || m ? m + " мин " : "") + s + " с";
+    }
+
+    function firstLine(text) {
+        var lines = String(text || "").split("\n");
+        // «Что делать: …» — подсказка, а не причина: показываем саму ошибку
+        for (var i = 0; i < lines.length; i++) {
+            var l = lines[i].trim();
+            if (l && l.indexOf("Что делать:") !== 0 && l.indexOf("Команда:") !== 0) {
+                return l;
+            }
+        }
+        return "";
+    }
+
+    window.pgbLoadJobs = function () {
+        fetch("/api/jobs/recent?types=pg_dump,pg_restore&limit=15")
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                var box = document.getElementById("pgbJobs");
+                var jobs = (d && d.ok && d.jobs) || [];
+                var anyActive = false;
+
+                if (!jobs.length) {
+                    box.innerHTML = '<div class="pgb-hint">Задач пока нет.</div>';
+                    scheduleJobs(false);
+                    return;
+                }
+
+                // раскрытые шторки переносим в новую разметку как есть —
+                // не сбрасываем прокрутку и выделение в логе
+                var kept = {};
+                Object.keys(openJobs).forEach(function (id) {
+                    var el = document.getElementById("pgbDet-" + id);
+                    if (el) { kept[id] = el.parentNode.removeChild(el); }
+                });
+
+                box.innerHTML = jobs.map(function (j) {
+                    var st = j.status || "";
+                    var err = st === "failed" ? firstLine(j.error_message) : "";
+                    if (ACTIVE[st]) { anyActive = true; }
+                    return '<div class="pgb-job" id="pgbJob-' + j.id + '">' +
+                        '<div class="pgb-job-head">' +
+                        '<span class="pgb-job-id">#' + j.id + "</span>" +
+                        '<span class="pgb-tag">' +
+                        esc(JOB_TYPES[j.job_type] || j.job_type) + "</span>" +
+                        '<span class="pgb-st ' + esc(st) + '">' +
+                        esc(JOB_STATUS[st] || st) + "</span>" +
+                        '<span class="pgb-meta">' + esc(j.source_name || "") +
+                        (j.started_at ? " · " + esc(j.started_at) : "") +
+                        (j.started_at ? " · " + esc(fmtDur(j)) : "") + "</span>" +
+                        (err ? '<span class="pgb-job-err" title="' + esc(err) + '">' +
+                            esc(err) + "</span>" : "") +
+                        (ACTIVE[st]
+                            ? '<button class="btn btn-sm btn-outline-danger" ' +
+                              'type="button" style="margin-left:auto;" ' +
+                              'onclick="pgbStopJob(' + j.id + ', this)">' +
+                              "Остановить</button>"
+                            : "") +
+                        '<button class="btn btn-sm btn-outline-secondary pgb-more" ' +
+                        (ACTIVE[st] ? 'style="margin-left:0;" ' : "") +
+                        'type="button" aria-expanded="' + (openJobs[j.id] ? "true" : "false") +
+                        '" onclick="pgbToggleJob(' + j.id + ')">' +
+                        (openJobs[j.id] ? "Свернуть ▴" : "Подробнее ▾") + "</button>" +
+                        "</div></div>";
+                }).join("");
+
+                jobs.forEach(function (j) {
+                    var prev = jobState[j.id];
+                    jobState[j.id] = j.status;
+
+                    if (!openJobs[j.id]) { return; }
+
+                    var row = document.getElementById("pgbJob-" + j.id);
+                    var det = kept[j.id];
+
+                    if (det) {
+                        row.appendChild(det);
+                    } else {
+                        det = makeDet(j.id);
+                        row.appendChild(det);
+                    }
+
+                    // идёт — обновляем шторку; только что закончилась — тоже
+                    if (ACTIVE[j.status] || prev !== j.status || !kept[j.id]) {
+                        loadDetails(j.id);
+                    }
+                });
+
+                scheduleJobs(anyActive);
+            })
+            .catch(function () { scheduleJobs(false); });
+    };
+
+    function scheduleJobs(fast) {
+        if (jobsTimer) { clearTimeout(jobsTimer); }
+        jobsTimer = setTimeout(pgbLoadJobs, fast ? 3000 : 15000);
+    }
+
+    function makeDet(id) {
+        var det = document.createElement("div");
+        det.className = "pgb-det";
+        det.id = "pgbDet-" + id;
+        det.innerHTML = '<div class="pgb-hint">Загрузка…</div>';
+        return det;
+    }
+
+    window.pgbToggleJob = function (id) {
+        if (openJobs[id]) {
+            delete openJobs[id];
+            var el = document.getElementById("pgbDet-" + id);
+            if (el) { el.parentNode.removeChild(el); }
+        } else {
+            openJobs[id] = true;
+            var row = document.getElementById("pgbJob-" + id);
+            if (row) {
+                row.appendChild(makeDet(id));
+                loadDetails(id);
+            }
+        }
+
+        var btn = document.querySelector("#pgbJob-" + id + " .pgb-more");
+        if (btn) {
+            btn.textContent = openJobs[id] ? "Свернуть ▴" : "Подробнее ▾";
+            btn.setAttribute("aria-expanded", openJobs[id] ? "true" : "false");
+        }
+    };
+
+    // остановка задачи: флаг стопа -> процесс pg_dump/pg_restore завершается
+    window.pgbStopJob = function (id, btn) {
+        var go = function () {
+            if (btn) { btn.disabled = true; btn.textContent = "Останавливаю…"; }
+            fetch("/api/jobs/" + id + "/stop", { method: "POST" })
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    if (window.gpToast) {
+                        gpToast(d.ok ? "Остановка задачи #" + id + " запрошена"
+                            : (d.message || "Не удалось остановить"),
+                            d.ok ? "info" : "danger");
+                    }
+                    pgbLoadJobs();
+                })
+                .catch(function (e) {
+                    if (btn) { btn.disabled = false; btn.textContent = "Остановить"; }
+                    if (window.gpToast) { gpToast(String(e), "danger"); }
+                });
+        };
+        var text = "Остановить задачу #" + id + "? Незаконченный файл дампа " +
+            "будет неполным.";
+
+        if (window.gpConfirm) {
+            window.gpConfirm(text).then(function (yes) { if (yes) { go(); } });
+        } else if (confirm(text)) { go(); }
+    };
+
+    // из списка дампов: раскрыть задачу и прокрутить к ней
+    window.pgbShowJob = function (id) {
+        if (!openJobs[id]) { pgbToggleJob(id); }
+        var row = document.getElementById("pgbJob-" + id);
+        if (row) {
+            row.scrollIntoView({ behavior: "smooth", block: "start" });
+        } else if (window.gpToast) {
+            gpToast("Задача #" + id + " не найдена среди последних", "warning");
+        }
+    };
+
+    // что сейчас делает pg_dump / pg_restore — по строкам --verbose
+    function progressFromLog(text) {
+        var re = /(dumping contents of table|processing data for table|restoring data for table|creating [A-Z ]+|reading [a-z ]+)\s*"?([^"\n]*)"?/;
+        var lines = String(text || "").split("\n");
+        var tables = 0;
+        var last = "";
+
+        for (var i = 0; i < lines.length; i++) {
+            var l = lines[i];
+            if (/dumping contents of table|processing data for table/.test(l)) {
+                tables++;
+            }
+            var m = l.match(re);
+            if (m) { last = (m[1] + " " + (m[2] || "")).trim(); }
+        }
+        return { tables: tables, last: last };
+    }
+
+    function detCfg(job) {
+        try { return JSON.parse(job.config_json || "{}"); } catch (e) { return {}; }
+    }
+
+    function loadDetails(id) {
+        var det = document.getElementById("pgbDet-" + id);
+        if (!det) { return; }
+
+        Promise.all([
+            fetch("/api/jobs/" + id + "/status").then(function (r) { return r.json(); }),
+            fetch("/api/jobs/" + id + "/log").then(function (r) {
+                return r.json().catch(function () { return { ok: false }; });
+            }),
+        ]).then(function (res) {
+            det = document.getElementById("pgbDet-" + id);
+            if (!det) { return; }
+
+            var st = res[0] || {};
+            var lg = res[1] || {};
+            var job = st.job || {};
+            var cfg = detCfg(job);
+            var status = job.status || "";
+            var html = "";
+
+            if (status === "failed") {
+                var cause = job.error_message ||
+                    ((st.items || []).map(function (it) {
+                        return it.error_message || "";
+                    }).filter(Boolean).join("\n")) ||
+                    "Причина не записана — смотри лог ниже.";
+                html += '<div class="pgb-det-cause">' + esc(cause) + "</div>";
+            } else if (ACTIVE[status]) {
+                var p = progressFromLog(lg.text);
+                html += '<div class="pgb-det-run"><b>' +
+                    (job.job_type === "pg_restore" ? "Идёт восстановление" : "Идёт дамп") +
+                    "</b> · " + esc(fmtDur(job)) +
+                    (p.tables ? " · таблиц обработано: " + p.tables : "") +
+                    (p.last ? '<div style="margin-top:4px;">Сейчас: <code>' +
+                        esc(p.last) + "</code></div>" : "") +
+                    "</div>";
+            } else if (status === "done") {
+                html += '<div class="pgb-det-run" style="background:var(--ok-tint);' +
+                    'border-left-color:var(--ok);"><b>Готово</b> за ' +
+                    esc(fmtDur(job)) + "</div>";
+            }
+
+            var kv = [];
+            if (job.job_type === "pg_dump") {
+                kv.push(["База", cfg.dbname]);
+                if (cfg.backup_dir && cfg.backup_timestamp) {
+                    kv.push(["Файл", cfg.backup_dir.replace(/[\\/]+$/, "") + "/pgdump_" +
+                        (cfg.dbname || "") + "_" + cfg.backup_timestamp + ".dump"]);
+                }
+                kv.push(["Что", cfg.schema_only ? "только DDL"
+                    : (cfg.data_only ? "только данные" : "схема + данные")]);
+                if (cfg.include_schemas) { kv.push(["Схемы", cfg.include_schemas]); }
+                if (cfg.include_tables) { kv.push(["Таблицы", cfg.include_tables]); }
+            } else {
+                kv.push(["Файл дампа", cfg.dump_file]);
+                kv.push(["Целевая БД", cfg.target_db]);
+            }
+            kv.push(["Начата", job.started_at]);
+            kv.push(["Завершена", job.finished_at]);
+
+            html += '<dl class="pgb-det-kv">' + kv.filter(function (r) {
+                return r[1];
+            }).map(function (r) {
+                return "<dt>" + esc(r[0]) + "</dt><dd>" + esc(r[1]) + "</dd>";
+            }).join("") + "</dl>";
+
+            html += '<div class="pgb-det-bar"><b>Лог</b>' +
+                (lg.ok ? '<span class="pgb-meta">' + esc(lg.path || "") +
+                    (lg.truncated ? " · показан хвост" : "") + "</span>" +
+                    '<a class="btn btn-sm btn-outline-secondary" style="margin-left:auto;" ' +
+                    'href="/api/jobs/' + id + '/log.txt">Скачать лог</a>'
+                    : '<span class="pgb-meta">' + esc(lg.message ||
+                        "лога нет — процесс не запустился") + "</span>") +
+                "</div>";
+
+            // прокрутка лога: держим низ, если пользователь был внизу
+            var oldPre = det.querySelector(".pgb-det-log");
+            var stick = !oldPre ||
+                oldPre.scrollTop + oldPre.clientHeight >= oldPre.scrollHeight - 20;
+            var oldTop = oldPre ? oldPre.scrollTop : 0;
+
+            if (lg.ok) {
+                html += '<pre class="pgb-det-log">' +
+                    esc(lg.text || "(лог пока пуст)") + "</pre>";
+            }
+
+            det.innerHTML = html;
+
+            var pre = det.querySelector(".pgb-det-log");
+            if (pre) { pre.scrollTop = stick ? pre.scrollHeight : oldTop; }
+        }).catch(function (e) {
+            if (det) {
+                det.innerHTML = '<div class="pgb-msg err">Не удалось загрузить: ' +
+                    esc(String(e)) + "</div>";
+            }
+        });
+    }
+
     pgbLoad();
     setInterval(pgbLoad, 15000);
+    pgbLoadJobs();
 })();
 </script>
 
