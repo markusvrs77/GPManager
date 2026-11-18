@@ -3510,6 +3510,16 @@ def api_pg_databases():
         return jsonify({"ok": False, "message": str(e)[:1000]}), 500
 
 
+def _pg_run_place(data):
+    """Где запускать pg_dump/pg_restore: по SSH на сервере БД или здесь."""
+    return {
+        "run_on": "local" if data.get("run_on") == "local" else "db_server",
+        "ssh_host": (data.get("ssh_host") or "").strip(),
+        "ssh_user": (data.get("ssh_user") or "").strip(),
+        "ssh_port": data.get("ssh_port") or 22,
+    }
+
+
 @app.route("/api/pg/backup/start", methods=["POST"])
 def api_pg_backup_start():
     data = request.get_json(silent=True) or {}
@@ -3540,9 +3550,13 @@ def api_pg_backup_start():
         "schema_only": bool(data.get("schema_only")),
         "pg_dump_path": (data.get("pg_dump_path") or "").strip(),
     }
+    config.update(_pg_run_place(data))
 
     try:
+        from modules.pg_backup import pg_ssh_target
+
         build_pg_dump_command(dict(config))
+        pg_ssh_target(config, conn_cfg)
     except ValueError as e:
         return jsonify({"ok": False, "message": str(e)}), 400
 
@@ -3597,7 +3611,10 @@ def api_pg_backup_restore():
         "data_only": bool(data.get("data_only")),
         "jobs": data.get("jobs") or 1,
         "pg_restore_path": (data.get("pg_restore_path") or "").strip(),
+        # файл дампа лежит на сервере БД, с которого его сняли
+        "dump_connection_id": int(data.get("dump_connection_id") or 0) or None,
     }
+    config.update(_pg_run_place(data))
 
     try:
         build_pg_restore_command(dict(config))

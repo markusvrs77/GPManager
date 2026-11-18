@@ -118,7 +118,7 @@ def test_run_pg_dump_missing_binary_records_clear_error(monkeypatch):
     monkeypatch.setattr(pb, "get_job", lambda jid: {"config_json": (
         '{"connection_id": 1, "dbname": "app", "backup_dir": "/d", '
         '"backup_timestamp": "20260727120000", '
-        '"pg_dump_path": "/nope/pg_dump"}')})
+        '"pg_dump_path": "/nope/pg_dump", "run_on": "local"}')})
     monkeypatch.setattr(pb, "get_job_items", lambda jid: [{"id": 7}])
     for name in ("mark_job_running", "mark_item_running",
                  "refresh_job_progress"):
@@ -130,7 +130,7 @@ def test_run_pg_dump_missing_binary_records_clear_error(monkeypatch):
     monkeypatch.setattr(pb, "mark_job_failed",
                         lambda jid, msg: failed.setdefault("job", msg))
 
-    def boom(job_id, cmd, env, finalize):
+    def boom(job_id, cmd, env, finalize, **kwargs):
         raise FileNotFoundError(2, "No such file", cmd[0])
 
     monkeypatch.setattr(pb, "_run_external_tool", boom)
@@ -141,3 +141,62 @@ def test_run_pg_dump_missing_binary_records_clear_error(monkeypatch):
     assert "Команда: /nope/pg_dump" in failed["job"]
     assert "/nope/pg_dump" in failed["item"]
     assert "PGPASSWORD" not in failed["job"]
+
+
+def test_pg_ssh_target_defaults_and_local(monkeypatch):
+    import modules.gp_remote as gr
+    from modules.pg_backup import pg_ssh_target
+
+    monkeypatch.setattr(gr, "is_local_host", lambda h: h == "127.0.0.1")
+
+    t = pg_ssh_target({}, {"host": "10.0.0.5"})
+    assert t == {"host": "10.0.0.5", "user": "postgres", "port": 22}
+
+    assert pg_ssh_target({}, {"host": "127.0.0.1"}) is None      # тот же хост
+    assert pg_ssh_target({"run_on": "local"}, {"host": "10.0.0.5"}) is None
+
+    t = pg_ssh_target({"ssh_user": "dba", "ssh_port": "2222"},
+                      {"host": "db1"})
+    assert t == {"host": "db1", "user": "dba", "port": 2222}
+
+    with pytest.raises(ValueError):
+        pg_ssh_target({"ssh_user": "bad user"}, {"host": "db1"})
+    with pytest.raises(ValueError):
+        pg_ssh_target({}, {"host": "db1; rm -rf /"})
+
+
+def test_wrap_pg_ssh_password_in_stdin_and_server_binary():
+    from modules.pg_backup import build_pg_dump_command, wrap_pg_ssh
+
+    cmd, _ = build_pg_dump_command({
+        "dbname": "cashbdb", "backup_dir": "/dwh-backup/backup/cashbdb",
+        "backup_timestamp": "20261119050943"})
+    env = {"PGHOST": "db1", "PGPORT": "5432", "PGUSER": "u",
+           "PGPASSWORD": "s3cr3t"}
+    target = {"host": "db1", "user": "postgres", "port": 22}
+
+    argv, stdin = wrap_pg_ssh(target, "pg_dump", cmd, env, "")
+    script = argv[-1]
+
+    assert argv[0] == "ssh" and "postgres@db1" in argv
+    assert "s3cr3t" not in " ".join(argv)            # пароль только в stdin
+    assert stdin == "s3cr3t\n"
+    assert "/proc/$P/exe" in script                   # бинарь как у сервера
+    assert "/usr/bin/pg_dump" not in script           # не путь Opsentri
+    assert "OPSENTRI_REMOTE_PID=$$" in script
+    assert "/dwh-backup/backup/cashbdb/pgdump_cashbdb_20261119050943.dump" \
+        in script
+
+    argv2, _ = wrap_pg_ssh(target, "pg_dump", cmd, env, "/usr/pgsql-16/bin/pg_dump")
+    assert "BIN=/usr/pgsql-16/bin/pg_dump;" in argv2[-1]
+    assert "/proc/$P/exe" not in argv2[-1]
+
+
+def test_pg_dump_path_validated():
+    from modules.pg_backup import build_pg_dump_command
+
+    with pytest.raises(ValueError):
+        build_pg_dump_command({
+            "dbname": "a", "backup_dir": "/d",
+            "backup_timestamp": "20260727120000",
+            "pg_dump_path": "/usr/bin/pg_dump; id"})

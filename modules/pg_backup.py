@@ -11,6 +11,7 @@ PGPASSWORD. Формат дампа - custom (-Fc): один файл, сжат�
 import datetime
 import json
 import os
+import posixpath
 import re
 
 from job_manager import (
@@ -64,9 +65,21 @@ def make_timestamp(now=None):
 
 def dump_file_path(backup_dir, dbname, timestamp):
     """Детерминированное имя файла дампа."""
-    return os.path.join(
+    # файл всегда на Linux-сервере (БД или Opsentri): разделитель «/»
+    return posixpath.join(
         backup_dir, "pgdump_{}_{}.dump".format(dbname, timestamp)
     )
+
+
+def _bin_path(value, default):
+    """Путь к бинарю: абсолютный, без пробелов и спецсимволов."""
+    path = str(value or "").strip() or default
+
+    if not re.match(r"^/[A-Za-z0-9_./-]+$", path) or ".." in path.split("/"):
+        raise ValueError("Путь к бинарю — абсолютный, без пробелов: {}".format(
+            path))
+
+    return path
 
 
 def build_pg_dump_command(config):
@@ -89,7 +102,7 @@ def build_pg_dump_command(config):
     out_file = dump_file_path(backup_dir, dbname, timestamp)
 
     cmd = [
-        config.get("pg_dump_path") or DEFAULT_PG_DUMP_PATH,
+        _bin_path(config.get("pg_dump_path"), DEFAULT_PG_DUMP_PATH),
         "--format=custom",
         "--file", out_file,
         "--verbose",
@@ -132,7 +145,7 @@ def build_pg_restore_command(config):
         raise ValueError("Целевая БД обязательна")
 
     cmd = [
-        config.get("pg_restore_path") or DEFAULT_PG_RESTORE_PATH,
+        _bin_path(config.get("pg_restore_path"), DEFAULT_PG_RESTORE_PATH),
         "--verbose",
         "--no-owner",
     ]
@@ -197,6 +210,18 @@ def _extract_pg_errors(log_text, limit=10):
 
 # частые причины падения pg_dump/pg_restore -> что делать (чистые правила)
 _PG_HINTS = (
+    ("не найден на сервере бд",
+     "На сервере БД нет клиента PostgreSQL — укажи путь к pg_dump/pg_restore "
+     "в форме или установи его."),
+    ("permission denied (publickey",
+     "SSH не пускает: положи ключ сервера Opsentri в ~/.ssh/authorized_keys "
+     "пользователя SSH на сервере БД (вход без пароля)."),
+    ("host key verification failed",
+     "Ключ хоста SSH изменился — проверь known_hosts на сервере Opsentri."),
+    ("could not resolve hostname",
+     "Имя хоста SSH не резолвится — проверь хост."),
+    ("connection timed out",
+     "SSH-порт сервера БД недоступен с сервера Opsentri (сеть или firewall)."),
     ("server version mismatch",
      "Версия pg_dump старше версии сервера. Поставь клиент той же или более "
      "новой версии (postgresql<N>-client) или укажи путь к нему."),
@@ -301,6 +326,133 @@ def finalize_pg_job(job_id, job_type, config, items, log_text, rc,
     mark_job_failed(job_id, report[:12000])
 
 
+DEFAULT_PG_SSH_USER = "postgres"
+
+_SSH_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
+_SSH_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+
+
+def pg_ssh_target(config, conn_cfg):
+    """
+    Где запускать pg_dump/pg_restore. None — здесь, на сервере Opsentri;
+    иначе {host, user, port} сервера БД. По умолчанию — по SSH на хосте
+    подключения: файл дампа и бинарь берутся с сервера БД.
+    """
+    if config.get("run_on") == "local":
+        return None
+
+    host = str(config.get("ssh_host") or conn_cfg.get("host") or "").strip()
+    user = str(config.get("ssh_user") or DEFAULT_PG_SSH_USER).strip()
+
+    try:
+        port = int(config.get("ssh_port") or 22)
+    except (TypeError, ValueError):
+        raise ValueError("Порт SSH — число")
+
+    if not host or not _SSH_HOST_RE.match(host):
+        raise ValueError("Хост SSH — имя или IP без пробелов: {}".format(host))
+
+    # БД на этом же сервере — SSH не нужен
+    if not config.get("ssh_host"):
+        try:
+            from modules.gp_remote import is_local_host
+        except ImportError:
+            from gp_remote import is_local_host
+
+        if is_local_host(host):
+            return None
+
+    if not _SSH_USER_RE.match(user):
+        raise ValueError("Некорректный пользователь SSH: {}".format(user))
+
+    if not 1 <= port <= 65535:
+        raise ValueError("Порт SSH — от 1 до 65535")
+
+    return {"host": host, "user": user, "port": port}
+
+
+def _binary_lookup_script(tool):
+    """
+    sh: найти tool на сервере БД -> $BIN. Сначала каталог бинарей
+    запущенного PostgreSQL (версия совпадёт с сервером), затем
+    /usr/pgsql-*/bin и /usr/lib/postgresql/*/bin (новейший), затем PATH.
+    """
+    return (
+        'BIN=""; '
+        'P=$(pgrep -o -x postgres 2>/dev/null || pgrep -o -x postmaster 2>/dev/null); '
+        'if [ -n "$P" ]; then '
+        'D=$(dirname "$(readlink -f /proc/$P/exe 2>/dev/null)" 2>/dev/null); '
+        'if [ -x "$D/{t}" ]; then BIN="$D/{t}"; fi; fi; '
+        'if [ -z "$BIN" ]; then BIN=$(ls -1d /usr/pgsql-*/bin/{t} '
+        '/usr/lib/postgresql/*/bin/{t} 2>/dev/null | sort -V | tail -1); fi; '
+        'if [ -z "$BIN" ]; then BIN=$(command -v {t} 2>/dev/null); fi; '
+        'if [ -z "$BIN" ]; then echo "{t}: error: {t} не найден на сервере БД '
+        '$(hostname)"; exit 127; fi; '
+    ).format(t=tool)
+
+
+def wrap_pg_ssh(target, tool, cmd, env, explicit_path):
+    """
+    Команда pg_dump/pg_restore для запуска по SSH на сервере БД ->
+    (argv ssh, stdin). Пароль — первой строкой stdin, не в командной строке.
+    Перед exec печатается PID — по нему работает «Остановить».
+    """
+    import shlex
+
+    try:
+        from modules.gp_remote import REMOTE_PID_MARK, ssh_base
+    except ImportError:
+        from gp_remote import REMOTE_PID_MARK, ssh_base
+
+    exports = " ".join(
+        "{}={}".format(k, shlex.quote(str(env[k])))
+        for k in ("PGHOST", "PGPORT", "PGUSER", "PGDATABASE")
+        if env.get(k)
+    )
+
+    if explicit_path:
+        find_bin = "BIN={}; ".format(shlex.quote(explicit_path))
+    else:
+        find_bin = _binary_lookup_script(tool)
+
+    script = (
+        "IFS= read -r PGPASSWORD || true; "
+        "if [ -n \"$PGPASSWORD\" ]; then export PGPASSWORD; "
+        "else unset PGPASSWORD; fi; "
+        "{exports}"
+        "{find_bin}"
+        "echo \"Opsentri: $(hostname): $BIN ($(\"$BIN\" --version 2>&1))\"; "
+        "echo {mark}$$; "
+        "exec \"$BIN\" {args}"
+    ).format(
+        exports="export {}; ".format(exports) if exports else "",
+        find_bin=find_bin,
+        mark=REMOTE_PID_MARK,
+        args=" ".join(shlex.quote(a) for a in cmd[1:]),
+    )
+
+    password = str(env.get("PGPASSWORD") or "").replace("\n", "")
+    ssh_target = dict(target)
+
+    return ssh_base(ssh_target) + [script], password + "\n"
+
+
+def _prepare_pg_run(job_type, config, cmd, env, where_cfg):
+    """-> (argv, env, stdin, target, подпись для отчёта)."""
+    target = pg_ssh_target(config, where_cfg)
+
+    if not target:
+        return cmd, env, None, None, " ".join(cmd)
+
+    explicit = (config.get(job_type + "_path") or "").strip()
+    ssh_cmd, stdin_data = wrap_pg_ssh(target, job_type, cmd, env, explicit)
+    clean_env = {k: v for k, v in os.environ.items() if not k.startswith("PG")}
+    shown = "{} {}  [по SSH на {}@{}]".format(
+        explicit or job_type, " ".join(cmd[1:]), target["user"], target["host"])
+
+    return ssh_cmd, clean_env, stdin_data, target, shown
+
+
 def _run_pg_job(job_id, job_type, build):
     """Общий каркас раннеров pg_dump / pg_restore."""
     job = get_job(job_id)
@@ -318,6 +470,7 @@ def _run_pg_job(job_id, job_type, build):
 
     refresh_job_progress(job_id)
     cmd = None
+    run_cmd = None
 
     try:
         conn_cfg = get_connection_by_id(int(config["connection_id"]))
@@ -328,15 +481,27 @@ def _run_pg_job(job_id, job_type, build):
         cmd = build(config, conn_cfg)
         env = build_pg_env(conn_cfg)
 
+        # восстановление идёт там, где лежит файл дампа
+        where_cfg = conn_cfg
+        dump_conn_id = config.get("dump_connection_id")
+
+        if dump_conn_id and int(dump_conn_id) != int(config["connection_id"]):
+            where_cfg = get_connection_by_id(int(dump_conn_id)) or conn_cfg
+
+        run_cmd, run_env, stdin_data, target, shown = _prepare_pg_run(
+            job_type, config, cmd, env, where_cfg)
+
         def finalize(log_text, rc):
             finalize_pg_job(
-                job_id, job_type, config, items, log_text, rc, " ".join(cmd),
+                job_id, job_type, config, items, log_text, rc, shown,
             )
 
-        _run_external_tool(job_id, cmd, env, finalize)
+        _run_external_tool(job_id, run_cmd, run_env, finalize,
+                           stdin_data=stdin_data, target=target)
 
     except Exception as e:
-        text = launch_error_message(e, cmd[0] if cmd else job_type)
+        text = launch_error_message(
+            e, (run_cmd or cmd or [job_type])[0])
         hint = pg_error_hint(text)
 
         for item in items:

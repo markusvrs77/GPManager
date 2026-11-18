@@ -109,7 +109,8 @@
             <select id="pgbConn" class="form-select form-select-sm mb-3">
                 {% for c in connections %}
                 <option value="{{ c.id }}"
-                        data-db="{{ c.database_name or '' }}">
+                        data-db="{{ c.database_name or '' }}"
+                        data-host="{{ c.host or '' }}">
                     {{ c.name }} / {{ c.host }} / {{ c.database_name or '' }}
                 </option>
                 {% endfor %}
@@ -127,7 +128,27 @@
                 <option value="data_only">Только данные (--data-only)</option>
             </select>
 
-            <label class="form-label">Каталог для дампа (на сервере Opsentri)</label>
+            <label class="form-label">Где запускать pg_dump</label>
+            <select id="pgbRunOn" class="form-select form-select-sm mb-2">
+                <option value="db_server">На сервере БД (по SSH) — его pg_dump и его диск</option>
+                <option value="local">На сервере Opsentri</option>
+            </select>
+            <div id="pgbSshBox" class="d-flex gap-2 mb-1 flex-wrap">
+                <input id="pgbSshUser" class="form-control form-control-sm"
+                       style="max-width: 150px;" placeholder="SSH: postgres"
+                       title="Пользователь SSH на сервере БД">
+                <input id="pgbSshPort" type="number" min="1" max="65535"
+                       class="form-control form-control-sm" style="max-width: 90px;"
+                       placeholder="22" title="Порт SSH">
+                <input id="pgbBin" class="form-control form-control-sm"
+                       style="flex: 1; min-width: 180px;"
+                       placeholder="pg_dump: авто (как у сервера БД)"
+                       title="Путь к pg_dump; пусто — тот, которым запущен PostgreSQL">
+            </div>
+            <div class="pgb-hint mb-3" id="pgbRunHint"></div>
+
+            <label class="form-label">Каталог для дампа
+                (<span id="pgbDirWhere">на сервере БД</span>)</label>
             <input id="pgbDir" class="form-control form-control-sm mb-1"
                    placeholder="/data/pg_backups">
             <div class="pgb-hint mb-3">
@@ -298,7 +319,8 @@
             '<button class="btn btn-sm btn-primary" ' +
             'onclick="pgbRestore(\'' + esc(b.backup_timestamp) + '\', \'' +
             esc(b.backup_dir || "") + '\', \'' + esc(b.dbname || "") +
-            '\')">Запустить восстановление</button>' +
+            '\', ' + parseInt(b.connection_id, 10) +
+            ')">Запустить восстановление</button>' +
             "</div>";
     }
 
@@ -307,7 +329,7 @@
         pgbLoad();
     };
 
-    window.pgbRestore = function (timestamp, backupDir, dbname) {
+    window.pgbRestore = function (timestamp, backupDir, dbname, dumpConnId) {
         var body = {
             connection_id: parseInt(document.getElementById("pgrConn").value, 10),
             backup_timestamp: timestamp,
@@ -318,7 +340,13 @@
             clean: document.getElementById("pgrClean").checked,
             data_only: document.getElementById("pgrDataOnly").checked,
             jobs: parseInt(document.getElementById("pgrJobs").value, 10) || 1,
+            // файл дампа — на сервере БД, где его сняли: туда и идём
+            dump_connection_id: dumpConnId,
         };
+        var place = pgbPlaceFor(dumpConnId);
+        body.run_on = place.run_on;
+        body.ssh_user = place.ssh_user;
+        body.ssh_port = place.ssh_port;
 
         var go = function () {
             fetch("/api/pg/backup/restore", {
@@ -373,6 +401,10 @@
                         parseInt(document.getElementById("pgbCompression").value, 10) || null,
                     schema_only: t === "schema_only",
                     data_only: t === "data_only",
+                    run_on: pgbPlace().run_on,
+                    ssh_user: pgbPlace().ssh_user,
+                    ssh_port: pgbPlace().ssh_port,
+                    pg_dump_path: pgbPlace().pg_dump_path,
                 }),
             }).then(function (r) { return r.json(); }).then(function (d) {
                 startBtn.disabled = false;
@@ -389,6 +421,67 @@
                 msg(String(e), "err");
             });
         });
+    }
+
+    // ---------- где запускать: по SSH на сервере БД или здесь ----------
+    // настройки запоминаются в браузере для каждого подключения
+    function placeKey(connId) { return "pgb.place." + connId; }
+
+    function readPlace(connId) {
+        try { return JSON.parse(localStorage.getItem(placeKey(connId)) || "null"); }
+        catch (e) { return null; }
+    }
+
+    function pgbPlace() {
+        var port = parseInt(document.getElementById("pgbSshPort").value, 10);
+        return {
+            run_on: document.getElementById("pgbRunOn").value,
+            ssh_user: document.getElementById("pgbSshUser").value.trim(),
+            ssh_port: port || 22,
+            pg_dump_path: document.getElementById("pgbBin").value.trim(),
+        };
+    }
+
+    function pgbPlaceFor(connId) {
+        var connSel = document.getElementById("pgbConn");
+        if (connSel && String(connSel.value) === String(connId)) { return pgbPlace(); }
+        return readPlace(connId) || { run_on: "db_server", ssh_user: "", ssh_port: 22 };
+    }
+
+    function pgbRunHint() {
+        var connSel = document.getElementById("pgbConn");
+        var opt = connSel.options[connSel.selectedIndex];
+        var host = opt ? (opt.getAttribute("data-host") || "") : "";
+        var p = pgbPlace();
+        var remote = p.run_on !== "local";
+
+        document.getElementById("pgbSshBox").style.display = remote ? "" : "none";
+        document.getElementById("pgbDirWhere").textContent =
+            remote ? "на сервере БД " + host : "на сервере Opsentri";
+        document.getElementById("pgbRunHint").textContent = remote
+            ? "pg_dump запустится по SSH на " + (p.ssh_user || "postgres") + "@" +
+              host + ":" + p.ssh_port + " — нужен вход по ключу без пароля " +
+              "с сервера Opsentri. Если БД на этом же сервере — запуск локальный."
+            : "pg_dump и каталог — на сервере Opsentri.";
+    }
+
+    function pgbSavePlace() {
+        var connSel = document.getElementById("pgbConn");
+        try {
+            localStorage.setItem(placeKey(connSel.value), JSON.stringify(pgbPlace()));
+        } catch (e) { /* хранилище недоступно */ }
+        pgbRunHint();
+    }
+
+    function pgbRestorePlace() {
+        var p = readPlace(document.getElementById("pgbConn").value) || {};
+        document.getElementById("pgbRunOn").value =
+            p.run_on === "local" ? "local" : "db_server";
+        document.getElementById("pgbSshUser").value = p.ssh_user || "";
+        document.getElementById("pgbSshPort").value =
+            p.ssh_port && p.ssh_port !== 22 ? p.ssh_port : "";
+        document.getElementById("pgbBin").value = p.pg_dump_path || "";
+        pgbRunHint();
     }
 
     // список БД сервера для выбранного подключения
@@ -422,6 +515,11 @@
 
     if (connSelEl) {
         connSelEl.addEventListener("change", pgbLoadDbs);
+        connSelEl.addEventListener("change", pgbRestorePlace);
+        ["pgbRunOn", "pgbSshUser", "pgbSshPort", "pgbBin"].forEach(function (id) {
+            document.getElementById(id).addEventListener("change", pgbSavePlace);
+        });
+        pgbRestorePlace();
         pgbLoadDbs();
     }
 
@@ -482,6 +580,10 @@
                             10) || null,
                         schema_only: t === "schema_only",
                         data_only: t === "data_only",
+                        run_on: pgbPlace().run_on,
+                        ssh_user: pgbPlace().ssh_user,
+                        ssh_port: pgbPlace().ssh_port,
+                        pg_dump_path: pgbPlace().pg_dump_path,
                     },
                 }),
             }).then(function (r) { return r.json(); }).then(function (d) {
