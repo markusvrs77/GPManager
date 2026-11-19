@@ -63,6 +63,14 @@
 .ssync-run .st.done { color: var(--ok); }
 .ssync-run .st.failed, .ssync-run .st.cancelled { color: var(--crit); }
 .ssync-run .st.running, .ssync-run .st.stopping { color: var(--a1); }
+/* блоки справа растут от данных — держим в своих границах, прокрутка внутри */
+#ssyncAnalysis, #ssyncSchedules, #ssyncRuns { overflow-y: auto;
+  overscroll-behavior: contain; }
+#ssyncAnalysis { max-height: 560px; }
+#ssyncSchedules { max-height: 240px; }
+#ssyncRuns { max-height: 420px; }
+.ssync-live details ul, .ssync-live details ol { max-height: 200px; overflow-y: auto;
+  overscroll-behavior: contain; }
 .ssync-sched { display: flex; gap: 10px; align-items: center; padding: 6px 0;
   border-bottom: 1px solid var(--hairline); font-size: 13px; flex-wrap: wrap; }
 </style>
