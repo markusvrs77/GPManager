@@ -125,6 +125,27 @@ def test_partition_continue_uses_saved_plan_minus_copied():
     assert cont["partitions"] == [{"schema": "s", "table": "b_1_prt_2"}]
     assert cont["recompute"] is False
     assert not cont.get("analyze")
+    # для карточки: из плана в 3 партиции 2 уже скопированы (a — готова
+    # целиком, b_1_prt_1 — Finished в логе)
+    assert cont["continue_copied"] == 2
+
+    # продолжение продолжения: счётчик копится по цепочке
+    cont2, _ = g.build_partition_continue_config(
+        dict(cont, planned_leaves=[["s", "b_1_prt_2"], ["s", "b_1_prt_3"]]),
+        items, {("s", "b_1_prt_2")})
+    assert cont2["partitions"] == [{"schema": "s", "table": "b_1_prt_3"}]
+    assert cont2["continue_copied"] == 3
+
+
+def test_partition_continue_recompute_drops_stale_copied_counter():
+    import modules.gpcopy as g
+
+    items = [{"schema_name": "s", "table_name": "b", "status": "failed"}]
+    cont, _ = g.build_partition_continue_config(
+        dict(BASE, continue_copied=5), items)
+
+    assert cont["recompute"] is True
+    assert "continue_copied" not in cont
 
 
 def test_partition_continue_without_plan_recomputes_left_tables_only():

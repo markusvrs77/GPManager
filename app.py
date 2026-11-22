@@ -1420,6 +1420,15 @@ def api_jobs_recent():
         j["continue_of"] = cfg.get("continue_of_job_id")
         j["copy_mode"] = cfg.get("mode") or cfg.get("copy_mode") or ""
 
+        # продолжение синхронизации партиций: что именно доливается
+        if (j.get("continue_of")
+                and j.get("job_type") == "gpcopy_partition_diff"):
+            j["continue_parts"] = {
+                "left": len(cfg.get("partitions") or []),
+                "copied": cfg.get("continue_copied"),
+                "recompute": bool(cfg.get("recompute")),
+            }
+
         # ежедневная синхронизация: сводка волны и её план
         if cfg.get("smart") is not None or j.get("job_type") == "smart_sync":
             from modules.smart_sync import batch_summary

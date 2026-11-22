@@ -979,7 +979,8 @@ def build_partition_continue_config(config, items, finished=None):
 
     cont = dict(config)
 
-    for key in _CONTINUE_DROP_KEYS + ("partitions", "planned_leaves"):
+    for key in _CONTINUE_DROP_KEYS + ("partitions", "planned_leaves",
+                                      "continue_copied"):
         cont.pop(key, None)
 
     cont["tables"] = [{"schema": s, "table": t} for s, t in roots]
@@ -998,6 +999,13 @@ def build_partition_continue_config(config, items, finished=None):
 
         cont["partitions"] = [{"schema": s, "table": t} for s, t in rest]
         cont["recompute"] = False
+        # для карточки: сколько партиций плана уже скопировано (с учётом
+        # прошлых продолжений той же цепочки)
+        try:
+            before = int(config.get("continue_copied") or 0)
+        except (TypeError, ValueError):
+            before = 0
+        cont["continue_copied"] = before + len(planned) - len(rest)
     else:
         cont["recompute"] = True
 

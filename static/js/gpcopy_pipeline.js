@@ -2312,6 +2312,9 @@
             ? $("gppSrc").selectedOptions[0].textContent : "?";
         var dstName = $("gppDst").selectedOptions[0]
             ? $("gppDst").selectedOptions[0].textContent : "?";
+        var srcAddr = connAddr($("gppSrc").selectedOptions[0]);
+        var dstAddr = connAddr($("gppDst").selectedOptions[0]);
+        var dstWarn = sameHostWarn($("gppDst").selectedOptions[0]);
 
         var whenTxt = state.when === "sched"
             ? "по расписанию — <b>" +
@@ -2332,8 +2335,12 @@
             " таблиц</b>" +
             (schemas.length ? " (" + schemas.slice(0, 4).map(esc).join(", ") +
                 (schemas.length > 4 ? "…" : "") + ")" : "") +
-            " из <b>" + esc(srcName.trim()) + "</b> в <b>" + esc(dstName.trim()) +
-            "</b> — <b>" + modeName() + "</b>, " + whenTxt + "." +
+            " из <b>" + esc(srcName.trim()) + "</b>" +
+            (srcAddr ? " (" + esc(srcAddr) + ")" : "") +
+            " в <b>" + esc(dstName.trim()) + "</b>" +
+            (dstAddr ? " (<b>" + esc(dstAddr) + "</b>)" : "") +
+            " — <b>" + modeName() + "</b>, " + whenTxt + "." +
+            (dstWarn ? " " + dstWarn + "." : "") +
             // в режиме партиций важно понимать, откуда берётся список
             (state.mode === "part"
                 ? (partAutoOn()
@@ -3359,6 +3366,29 @@
             (s.skipped ? " · skipped: " + fmtN(s.skipped) : "") +
             "</div>";
 
+        // продолжение партиций: строки ниже — таблицы, а льётся остаток
+        var cp = j.continue_parts;
+        if (cp) {
+            var cpText;
+            if (cp.recompute) {
+                cpText = "Продолжение #" + esc(String(j.continue_of)) +
+                    ": расхождение считается заново, льются только " +
+                    "несовпавшие партиции";
+            } else {
+                cpText = "Продолжение #" + esc(String(j.continue_of)) +
+                    ": доливает <b>" + fmtN(cp.left) + "</b> парт.";
+                if (cp.copied !== null && cp.copied !== undefined) {
+                    cpText += " из " + fmtN(cp.left + cp.copied) +
+                        " · уже скопировано " + fmtN(cp.copied) +
+                        " — их не трогаем";
+                } else {
+                    cpText += " — только недоехавшие, скопированное не трогаем";
+                }
+            }
+            html += '<div class="gpp-hint" style="margin: 4px 0 8px;">' +
+                cpText + "</div>";
+        }
+
         if (isActiveStatus(j.status)) {
             // мини-статус по строкам: сколько прямо сейчас в работе и готово
             var cnt = { running: 0, done: 0, failed: 0, rest: 0 };
@@ -3954,6 +3984,57 @@
 
     if ($("gppDdlCheck")) { $("gppDdlCheck").onclick = ddlRun; }
 
+    /* ---------------- адрес подключения: хост:порт ---------------- */
+
+    function connAddr(o) {
+        if (!o) { return ""; }
+        var host = (o.getAttribute("data-host") || "").trim();
+        var port = (o.getAttribute("data-port") || "").trim();
+        return host ? host + (port ? ":" + port : "") : "";
+    }
+
+    // другие подключения на том же хосте, но с другим портом: это другой
+    // экземпляр, и перепутать их легко — названия похожи, хост один
+    function sameHostOthers(o) {
+        if (!o) { return []; }
+        var host = (o.getAttribute("data-host") || "").trim().toLowerCase();
+        var port = (o.getAttribute("data-port") || "").trim();
+        if (!host) { return []; }
+
+        var seen = {};
+        var out = [];
+        [$("gppSrc"), $("gppDst")].forEach(function (sel) {
+            Array.from(sel.options).forEach(function (x) {
+                if (x.value === o.value || seen[x.value]) { return; }
+                seen[x.value] = true;
+                var h = (x.getAttribute("data-host") || "").trim().toLowerCase();
+                var p = (x.getAttribute("data-port") || "").trim();
+                if (h === host && p !== port) {
+                    out.push((x.getAttribute("data-name") || x.textContent.trim()) +
+                        (p ? " (порт " + p + ")" : ""));
+                }
+            });
+        });
+        return out;
+    }
+
+    function sameHostWarn(o) {
+        var others = sameHostOthers(o);
+        if (!others.length) { return ""; }
+        return '<span style="color: var(--warn);">⚠ на хосте ' +
+            esc((o.getAttribute("data-host") || "").trim()) +
+            " есть и другие экземпляры: " + esc(others.join(", ")) +
+            " — проверь порт</span>";
+    }
+
+    function renderDstMeta() {
+        var o = $("gppDst").selectedOptions[0];
+        var addr = connAddr(o);
+        var warn = sameHostWarn(o);
+        $("gppDstMeta").innerHTML = (addr ? esc(addr) : "&nbsp;") +
+            (warn ? "<br>" + warn : "");
+    }
+
     /* ---------------- fancy connection dropdown ---------------- */
 
     function fancySelect(sel) {
@@ -3990,7 +4071,8 @@
             dd.innerHTML = Array.from(sel.options).map(function (o) {
                 var l = optLabel(o);
                 var cur = o.value === sel.value;
-                var host = o.getAttribute("data-host") || "";
+                // с портом: на одном хосте бывает несколько экземпляров
+                var host = connAddr(o);
                 return '<div class="opt' + (cur ? " cur" : "") + '" data-v="' +
                     esc(o.value) + '"><span><span class="name">' + esc(l.name) +
                     "</span>" +
@@ -4189,6 +4271,7 @@
             // карта «Куда грузить» своя у каждой пары подключений
             tgtLoad();
             tgtRender();
+            renderDstMeta();
             renderSummary();
         };
         $("gppCatalogRefresh").onclick = function () { loadCatalog(true); };
@@ -4201,6 +4284,7 @@
 
         fancySelect($("gppSrc"));
         fancySelect($("gppDst"));
+        renderDstMeta();
 
         $("gppGo").onclick = go;
 

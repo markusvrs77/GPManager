@@ -444,7 +444,8 @@ details.gpp-tgt > summary { padding: 7px 11px; font-size: 13px; }
                 <option value="{{ c.id }}"
                         data-name="{{ c.name }}"
                         data-db="{{ c.database_name or c.database or c.dbname or '' }}"
-                        data-host="{{ c.host or '' }}">{{ c.name }}{% if c.database_name or c.database or c.dbname %} · {{ c.database_name or c.database or c.dbname }}{% endif %}</option>
+                        data-host="{{ c.host or '' }}"
+                        data-port="{{ c.port or '' }}">{{ c.name }}{% if c.database_name or c.database or c.dbname %} · {{ c.database_name or c.database or c.dbname }}{% endif %}</option>
                 {% endfor %}
             </select>
             <div class="meta" id="gppSrcMeta">каталог не загружен</div>
@@ -457,7 +458,8 @@ details.gpp-tgt > summary { padding: 7px 11px; font-size: 13px; }
                 <option value="{{ c.id }}"
                         data-name="{{ c.name }}"
                         data-db="{{ c.database_name or c.database or c.dbname or '' }}"
-                        data-host="{{ c.host or '' }}">{{ c.name }}{% if c.database_name or c.database or c.dbname %} · {{ c.database_name or c.database or c.dbname }}{% endif %}</option>
+                        data-host="{{ c.host or '' }}"
+                        data-port="{{ c.port or '' }}">{{ c.name }}{% if c.database_name or c.database or c.dbname %} · {{ c.database_name or c.database or c.dbname }}{% endif %}</option>
                 {% endfor %}
             </select>
             <div class="meta" id="gppDstMeta">&nbsp;</div>
@@ -925,7 +927,7 @@ details.gpp-tgt > summary { padding: 7px 11px; font-size: 13px; }
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=24"></script>
+<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=26"></script>
 {% if (toolkit or 'gp') == 'pg' %}
 <script src="{{ url_for('static', filename='js/pg_compare.js') }}?v=8"></script>
 {% endif %}
