@@ -607,11 +607,15 @@ def api_gpcopy_create_partitions():
     try:
         from modules.ddl_check import create_missing_partitions
 
-        results = create_missing_partitions(
-            data["source_connection_id"], data["dest_connection_id"], tables)
+        res = create_missing_partitions(
+            data["source_connection_id"], data["dest_connection_id"], tables,
+            limit=int(data.get("limit") or 0),
+            offset=int(data.get("offset") or 0))
+        results = res["results"]
         return jsonify({
             "ok": True,
             "results": results,
+            "remaining": res["remaining"],
             "created": sum(1 for r in results if r["ok"]),
             "failed": sum(1 for r in results if not r["ok"]),
         })

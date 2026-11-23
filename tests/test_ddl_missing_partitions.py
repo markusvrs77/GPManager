@@ -111,17 +111,32 @@ def test_create_runs_only_on_dest_and_reports_each(monkeypatch):
         {"p2": "CREATE p2", "p3": ValueError("не декларативная партиция")},
     )
 
-    out = ddl.create_missing_partitions(1, 2, [
+    res = ddl.create_missing_partitions(1, 2, [
         {"schema": ROOT[0], "table": ROOT[1]},
         {"schema": ROOT[0], "table": ROOT[1]},      # повтор не задваивает
     ])
+    out = res["results"]
 
+    assert res["remaining"] == 0
     assert conns[2].log == ["CREATE p2"]
     assert conns[1].log == []                     # в источник ничего не пишем
     assert conns[2].autocommit is True
     assert [(r["table"], r["ok"]) for r in out] == [("p2", True), ("p3", False)]
     assert "не декларативная" in out[1]["error"]
     assert conns[1].closed and conns[2].closed
+
+
+def test_create_goes_in_chunks_skipping_failed(monkeypatch):
+    """Тысяча партиций — не за один запрос; упавшие пропускаются offset'ом."""
+    leaves = ["p%02d" % i for i in range(1, 8)]
+    conns = _patch(monkeypatch, _tree(*leaves), _tree(),
+                   dict((t, "CREATE " + t) for t in leaves))
+
+    res = ddl.create_missing_partitions(
+        1, 2, [{"schema": ROOT[0], "table": ROOT[1]}], limit=3, offset=2)
+
+    assert conns[2].log == ["CREATE p03", "CREATE p04", "CREATE p05"]
+    assert res["remaining"] == 2
 
 
 def test_precheck_reports_missing_parts(monkeypatch):
@@ -142,21 +157,26 @@ def test_precheck_reports_missing_parts(monkeypatch):
 def test_create_partitions_route(client, monkeypatch):
     seen = {}
 
-    def fake_create(src, dst, tables):
-        seen["args"] = (src, dst, tables)
-        return [{"schema": "s", "table": "p1", "ok": True, "error": ""},
-                {"schema": "s", "table": "p2", "ok": False, "error": "x"}]
+    def fake_create(src, dst, tables, limit=0, offset=0):
+        seen["args"] = (src, dst, tables, limit, offset)
+        return {"results": [
+            {"schema": "s", "table": "p1", "ok": True, "error": ""},
+            {"schema": "s", "table": "p2", "ok": False, "error": "x"}],
+            "remaining": 5}
 
     monkeypatch.setattr(ddl, "create_missing_partitions", fake_create)
 
     r = client.post("/api/gpcopy/create-partitions", json={
         "source_connection_id": 1, "dest_connection_id": 2,
         "tables": [{"schema": "s", "table": "root"}],
+        "limit": 20, "offset": 3,
     })
 
+    body = r.get_json()
     assert r.status_code == 200
-    assert r.get_json()["created"] == 1 and r.get_json()["failed"] == 1
-    assert seen["args"][2] == [{"schema": "s", "table": "root"}]
+    assert body["created"] == 1 and body["failed"] == 1
+    assert body["remaining"] == 5
+    assert seen["args"][2:] == ([{"schema": "s", "table": "root"}], 20, 3)
 
 
 def test_create_partitions_route_needs_tables(client):

@@ -976,11 +976,17 @@ def _partition_ddl(cur, schema, table):
 
 
 def create_missing_partitions(source_connection_id, dest_connection_id,
-                              tables):
+                              tables, limit=0, offset=0):
     """
     Досоздать в приёмнике партиции, которые есть в источнике. tables —
     корни [{schema, table}]; чего не хватает, считается здесь заново.
-    Источник только читается. -> [{schema, table, root, ok, error}]
+    Источник только читается.
+
+    Партиция AO в Greenplum создаётся около секунды, тысяча — дольше
+    любого HTTP-запроса, поэтому работа идёт порциями: limit штук за
+    вызов (0 — все), offset — сколько первых недостающих пропустить
+    (это уже упавшие в прошлых порциях: они остаются в начале списка).
+    -> {"results": [{schema, table, root, ok, error}], "remaining": N}
     """
     src_cfg = get_connection_by_id(int(source_connection_id))
     dst_cfg = get_connection_by_id(int(dest_connection_id))
@@ -1000,32 +1006,38 @@ def create_missing_partitions(source_connection_id, dest_connection_id,
     dst_conn = open_psycopg2_connection_by_cfg(dst_cfg)
     dst_conn.autocommit = True
     out = []
+    remaining = 0
 
     try:
         missing = missing_partitions(fetch_partition_trees(src_conn, roots),
                                      fetch_partition_trees(dst_conn, roots))
+        todo = [(root, p) for root in roots for p in missing.get(root, [])]
+        todo = todo[max(int(offset or 0), 0):]
 
-        for root in roots:
-            for p in missing.get(root, []):
-                row = {"schema": p["schema"], "table": p["table"],
-                       "root": "{}.{}".format(*root), "ok": True, "error": ""}
+        if limit and int(limit) > 0:
+            remaining = max(len(todo) - int(limit), 0)
+            todo = todo[:int(limit)]
+
+        for root, p in todo:
+            row = {"schema": p["schema"], "table": p["table"],
+                   "root": "{}.{}".format(*root), "ok": True, "error": ""}
+
+            try:
+                with src_conn.cursor() as cur:
+                    sql_text = _partition_ddl(cur, p["schema"], p["table"])
+
+                with dst_conn.cursor() as cur:
+                    cur.execute(sql_text)
+            except Exception as e:
+                row["ok"] = False
+                row["error"] = str(e)[:500]
 
                 try:
-                    with src_conn.cursor() as cur:
-                        sql_text = _partition_ddl(cur, p["schema"], p["table"])
+                    src_conn.rollback()
+                except Exception:
+                    pass
 
-                    with dst_conn.cursor() as cur:
-                        cur.execute(sql_text)
-                except Exception as e:
-                    row["ok"] = False
-                    row["error"] = str(e)[:500]
-
-                    try:
-                        src_conn.rollback()
-                    except Exception:
-                        pass
-
-                out.append(row)
+            out.append(row)
     finally:
         for c in (src_conn, dst_conn):
             try:
@@ -1033,7 +1045,7 @@ def create_missing_partitions(source_connection_id, dest_connection_id,
             except Exception:
                 pass
 
-    return out
+    return {"results": out, "remaining": remaining}
 
 
 # ------------------------------------------------------------------
