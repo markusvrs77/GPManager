@@ -53,10 +53,49 @@ def test_partly_copied_table_continues_with_missing_partitions_only():
 
     assert left == [("s", "big_1_prt_3")]
 
-    # drop пересоздал бы каждую партицию — такую таблицу льём целиком
-    _, left = g.build_continue_config(dict(BASE, drop=True, truncate=False),
-                                      items, finished, leaves)
-    assert left == [("s", "big")]
+    # «Пересоздать»: таблица уже пересоздана (часть партиций доехала) —
+    # доливаем остаток с очисткой, без повторного DROP
+    cont, left = g.build_continue_config(
+        dict(BASE, drop=True, truncate=False), items, finished, leaves)
+    assert left == [("s", "big_1_prt_3")]
+    assert cont["drop"] is False and cont["truncate"] is True
+
+
+def test_gp7_partition_names_are_recognised_by_catalog():
+    """GP7: партиции не <табл>_1_prt_…, корень не должен уходить целиком."""
+    import modules.gpcopy as g
+
+    items = [{"schema_name": "dwh_dm", "table_name": "dm_stock_lot",
+              "status": "cancelled"}]
+    finished = {("dwh_dm", "dm_stock_lot_prt_20230102")}
+
+    def leaves(schema, table):
+        return [("dwh_dm", "dm_stock_lot_prt_20230102"),
+                ("dwh_dm", "dm_stock_lot_prt_20230103")]
+
+    _, left = g.build_continue_config(dict(BASE), items, finished, leaves)
+
+    assert left == [("dwh_dm", "dm_stock_lot_prt_20230103")]
+
+
+def test_drop_with_untouched_table_still_goes_whole():
+    """Не начатой таблице нужен DROP, а флаг один на запуск gpcopy."""
+    import modules.gpcopy as g
+
+    items = [{"schema_name": "s", "table_name": "big", "status": "cancelled"},
+             {"schema_name": "s", "table_name": "new", "status": "queued"}]
+    finished = {("s", "big_1_prt_1")}
+
+    def leaves(schema, table):
+        if table == "big":
+            return [("s", "big_1_prt_1"), ("s", "big_1_prt_2")]
+        return [("s", table)]
+
+    cont, left = g.build_continue_config(
+        dict(BASE, drop=True, truncate=False), items, finished, leaves)
+
+    assert left == [("s", "big"), ("s", "new")]
+    assert cont["drop"] is True
 
 
 def test_continue_refuses_when_nothing_left_or_other_mode():

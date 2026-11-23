@@ -901,8 +901,8 @@ def build_continue_config(config, items, finished=None, leaves_of=None):
 
     done = set(tuple(p) for p in (finished or []))
     targets = config.get("targets") or {}
-    can_split = not to_bool(config.get("drop"), False)
-    left = []
+    drop = to_bool(config.get("drop"), False)
+    plans = []
 
     for item in items or []:
         if get_item_value(item, "status") == "done":
@@ -914,22 +914,37 @@ def build_continue_config(config, items, finished=None, leaves_of=None):
         if not schema or not table or (schema, table) in done:
             continue
 
-        copied = [p for p in done
-                  if p != (schema, table)
-                  and leaf_belongs_to_item(p[0], p[1], schema, table)]
         parts = None
 
-        if copied and can_split and leaves_of is not None \
+        # Партиции — по каталогу источника, а не по имени: на GP7 они
+        # называются как угодно (dm_stock_lot_prt_20230102), а не
+        # <таблица>_1_prt_…, и таблица уходила в gpcopy целиком корнем
+        if done and leaves_of is not None \
                 and not is_mapped(targets, schema, table):
             try:
-                parts = leaves_of(schema, table)
+                leaves = [tuple(x) for x in leaves_of(schema, table)]
             except Exception:
-                parts = None   # не узнали партиции — таблица целиком
+                leaves = []   # не узнали партиции — таблица целиком
 
-        if parts:
-            left.extend(p for p in (tuple(x) for x in parts) if p not in done)
+            if (leaves and leaves != [(schema, table)]
+                    and any(p in done for p in leaves)):
+                parts = leaves
+
+        plans.append(((schema, table), parts))
+
+    # «Пересоздать»: таблица с уже скопированными партициями в приёмнике
+    # пересоздана — доливаем её остаток с очисткой, без повторного DROP.
+    # Если хоть одна таблица ещё не начата, ей DROP нужен, а флаг у
+    # gpcopy один на запуск — тогда всё целиком, как раньше.
+    drop_done = bool(drop and plans and all(parts for _key, parts in plans))
+    can_split = not drop or drop_done
+    left = []
+
+    for key, parts in plans:
+        if parts and can_split:
+            left.extend(p for p in parts if p not in done)
         else:
-            left.append((schema, table))
+            left.append(key)
 
     left = list(dict.fromkeys(left))
 
@@ -946,6 +961,12 @@ def build_continue_config(config, items, finished=None, leaves_of=None):
     cont["tables"] = tables
     cont["selected_tables"] = tables
     cont["item_action"] = "GPCOPY CONTINUE"
+
+    if drop_done:
+        # структура уже пересоздана; недолитые партиции могли залиться
+        # наполовину — очищаем их перед заливкой
+        cont["drop"] = False
+        cont["truncate"] = True
 
     if targets:
         cont["targets"] = {k: v for k, v in targets.items() if k in keys}
