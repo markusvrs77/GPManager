@@ -2783,8 +2783,14 @@
                                fmtN(total) + "…");
                     }).then(function (r) {
                         if (r.ok) {
+                            var firstBad = r.results.filter(function (x) {
+                                return !x.ok;
+                            })[0];
+
                             toast("Создано партиций: " + fmtN(r.created) +
-                                  (r.failed ? ", не удалось: " + fmtN(r.failed) : ""),
+                                  (r.failed ? ", не удалось: " + fmtN(r.failed) : "") +
+                                  (firstBad ? ". Например, " + firstBad.table +
+                                      ": " + firstBad.error : ""),
                                   r.failed ? "warning" : "success");
                         }
                     }).catch(function () {});
@@ -3693,6 +3699,13 @@
 
                     if (onProgress) { onProgress(acc); }
 
+                    // упала вся порция — ошибка общая, перебирать
+                    // остальные сотни партиций бессмысленно
+                    if ((d.results || []).length && !d.created) {
+                        acc.stopped = true;
+                        return acc;
+                    }
+
                     if (d.remaining > 0 && (d.results || []).length) {
                         return step();
                     }
@@ -3984,6 +3997,19 @@
                     partsBtn.textContent = "Создаю партиции… " +
                         fmtN(acc.created + acc.failed) + " из " + fmtN(total) +
                         (acc.failed ? " (ошибок " + fmtN(acc.failed) + ")" : "");
+
+                    // последняя ошибка — сразу, не дожидаясь конца
+                    var lastBad = acc.results.filter(function (r) {
+                        return !r.ok;
+                    }).pop();
+                    var rep = $("gppDdlReport");
+
+                    if (lastBad && rep) {
+                        rep.innerHTML = '<div class="gpp-hint" style="margin-top: 8px; ' +
+                            'color: var(--crit);">Последняя ошибка: ' +
+                            esc(lastBad.schema + "." + lastBad.table) + " — " +
+                            esc(lastBad.error) + "</div>";
+                    }
                 }).then(function (d) {
                     partsBtn.disabled = false;
 
@@ -3997,14 +4023,18 @@
                     }
 
                     toast("Создано партиций: " + fmtN(d.created) +
-                        (d.failed ? ", ошибок: " + fmtN(d.failed) : ""),
+                        (d.failed ? ", ошибок: " + fmtN(d.failed) : "") +
+                        (d.stopped ? ". Остановлено: упала вся порция, " +
+                            "причина — в списке под кнопкой" : ""),
                         d.failed ? "warning" : "success");
 
                     var report = { results: d.results, failed: d.failed,
                                    created: d.created };
 
                     ddlRun().then(function () {
-                        ddlReport("Создано партиций", report, "created");
+                        ddlReport(d.stopped
+                            ? "Остановлено после ошибок. Создано партиций"
+                            : "Создано партиций", report, "created");
                     });
                 }).catch(function (e) {
                     partsBtn.disabled = false;
