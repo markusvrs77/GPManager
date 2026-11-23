@@ -5232,6 +5232,43 @@ def api_gpcopy_partition_diff_preview_bulk():
         return jsonify({"ok": False, "message": str(e)}), 500
 
 
+@app.route("/api/gpcopy/table-diff/preview", methods=["POST"])
+def api_gpcopy_table_diff_preview():
+    """Сравнение целых таблиц с источником по числу строк (как diff партиций)."""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        from db import get_connection_by_id as _get_conn
+        from modules.gpcopy_partition import diff_tables_counts
+
+        source_cfg = _get_conn(int(data["source_connection_id"]))
+        dest_cfg = _get_conn(int(data["dest_connection_id"]))
+
+        raw = data.get("tables") or []
+        tables = list(dict.fromkeys(
+            (t["schema"], t["table"]) for t in raw))
+
+        if not tables:
+            return jsonify({"ok": False, "message": "tables is empty"}), 400
+
+        targets = _gpcopy_ddl_targets(data, raw)
+        rows = diff_tables_counts(
+            source_cfg, dest_cfg, tables, exact=bool(data.get("exact")),
+            **({"targets": targets} if targets else {}))
+
+        return jsonify({
+            "ok": True,
+            "tables": rows,
+            "differ": sum(1 for r in rows
+                          if r["action"] in ("copy_missing", "copy_changed")),
+        })
+
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:2000]}), 500
+
+
 @app.route("/api/gpcopy/partition-diff/start", methods=["POST"])
 def api_gpcopy_partition_diff_start():
     data = request.get_json(silent=True) or {}

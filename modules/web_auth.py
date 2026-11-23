@@ -114,6 +114,7 @@ POLICY = {
     "api_gpcopy_increment_preview": "sync.view",
     "api_gpcopy_partition_diff_preview": "sync.view",
     "api_gpcopy_partition_diff_preview_bulk": "sync.view",
+    "api_gpcopy_table_diff_preview": "sync.view",
     "api_gpcopy_sync_preview": "sync.view",
     "api_gpcopy_start": "sync.run",
     "api_gpcopy_start_date": "sync.run",

@@ -695,6 +695,16 @@ details.gpp-tgt > summary { padding: 7px 11px; font-size: 13px; }
                 через промежуточную таблицу — на приёмнике данные пишутся дважды, поэтому
                 медленнее. Не для «Пересоздать» и «Не трогать».</div>
             {% endif %}
+            <div class="gpp-row" style="margin-top: 10px;">
+                <button class="gpp-btn" id="gppFullCmpBtn"
+                        title="Число строк каждой выбранной таблицы в источнике и в приёмнике">
+                    Сравнить COUNT с источником</button>
+                <label class="gpp-hint" style="margin: 0; cursor: pointer;">
+                    <input type="checkbox" id="gppFullCmpExact" style="accent-color: var(--a1);">
+                    Точный пересчёт COUNT(*) — медленнее, но не зависит от свежести ANALYZE
+                </label>
+            </div>
+            <div class="gpp-key-list" id="gppFullCmp" style="margin-top: 8px;"></div>
         </div>
 
         <div class="gpp-params" id="gppP-inc">
@@ -946,7 +956,7 @@ details.gpp-tgt > summary { padding: 7px 11px; font-size: 13px; }
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=31"></script>
+<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=32"></script>
 {% if (toolkit or 'gp') == 'pg' %}
 <script src="{{ url_for('static', filename='js/pg_compare.js') }}?v=8"></script>
 {% endif %}

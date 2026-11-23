@@ -2243,6 +2243,168 @@
         };
     }
 
+    /* ---------------- full copy: COUNT vs источник ---------------- */
+
+    var FULL_CMP_SHOW = 500;
+
+    function fullCmpDiffers(r) {
+        return r.action === "copy_missing" || r.action === "copy_changed";
+    }
+
+    function fullCmpRun() {
+        var tables = selTables();
+        var box = $("gppFullCmp");
+
+        if (!tables.length) {
+            box.innerHTML = '<div class="gpp-hint warn">Сначала выбери таблицы (шаг 1).</div>';
+            return;
+        }
+
+        var tgtErr = tgtLaunchError();
+        if (tgtErr) {
+            box.innerHTML = '<div class="gpp-hint bad">' + esc(tgtErr) + "</div>";
+            return;
+        }
+
+        var exact = $("gppFullCmpExact").checked;
+        var btn = $("gppFullCmpBtn");
+        btn.disabled = true;
+        box.innerHTML = '<div class="gpp-hint">' +
+            (exact ? "Считаю COUNT(*) с обеих сторон…" : "Читаю статистику каталога…") +
+            "</div>";
+
+        var ac = new AbortController();
+        var op = opStart(
+            (exact ? "Сравнение COUNT (точный)" : "Сравнение COUNT (по статистике)") +
+            ": " + fmtN(tables.length) + " таблиц",
+            function () { ac.abort(); });
+
+        api("/api/gpcopy/table-diff/preview", "POST", tgtAttach({
+            source_connection_id: srcId(), dest_connection_id: dstId(),
+            tables: tables, exact: exact,
+        }, tables), ac.signal).then(function (d) {
+            opEnd(op);
+            btn.disabled = false;
+
+            if (!d.ok) {
+                box.innerHTML = '<div class="gpp-hint bad">' + esc(d.message) + "</div>";
+                return;
+            }
+
+            // отличающиеся — наверх, крупные расхождения первыми
+            d.tables.sort(function (a, b) {
+                var da = fullCmpDiffers(a) ? 1 : 0;
+                var db = fullCmpDiffers(b) ? 1 : 0;
+                if (da !== db) { return db - da; }
+                return Math.abs((b.src || 0) - (b.dest || 0)) -
+                    Math.abs((a.src || 0) - (a.dest || 0));
+            });
+            state.fullCmp = d.tables;
+            state.fullCmpExact = exact;
+            state.fullCmpView = "all";
+            fullCmpRender();
+        }).catch(function (e) {
+            opEnd(op);
+            btn.disabled = false;
+            box.innerHTML = op.cancelled
+                ? '<div class="gpp-hint">Сравнение отменено.</div>'
+                : '<div class="gpp-hint bad">' + esc(String(e)) + "</div>";
+        });
+    }
+
+    function fullCmpBadge(action) {
+        if (action === "skip") { return '<span class="gpp-key-badge pk">совпадает</span>'; }
+        if (action === "copy_missing") { return '<span class="gpp-key-badge comp">нет в приёмнике</span>'; }
+        if (action === "no_source") { return '<span class="gpp-key-badge comp">нет в источнике</span>'; }
+        return '<span class="gpp-key-badge comp">разл.</span>';
+    }
+
+    function fullCmpRowHtml(r) {
+        var counts = (r.src === null ? "нет" : fmtN(r.src)) + " → " +
+            (r.dest === null ? "нет" : fmtN(r.dest));
+        var delta = r.src !== null && r.dest !== null && r.src !== r.dest
+            ? " · разница " + (r.dest > r.src ? "+" : "−") +
+              fmtN(Math.abs(r.dest - r.src))
+            : "";
+
+        return '<div class="gpp-key-row"><span>' +
+            esc(r.schema + "." + r.table) +
+            (r.target ? ' <span class="gpp-tgt-to">→ ' + esc(r.target) + "</span>" : "") +
+            ' <span class="cols">· ' + counts + delta + "</span></span>" +
+            fullCmpBadge(r.action) + "</div>";
+    }
+
+    function fullCmpRender() {
+        var box = $("gppFullCmp");
+        var rows = state.fullCmp || [];
+
+        if (!rows.length) { box.innerHTML = ""; return; }
+
+        var nDiff = rows.filter(fullCmpDiffers).length;
+        var nSame = rows.filter(function (r) { return r.action === "skip"; }).length;
+        var view = state.fullCmpView;
+        var shown = rows.filter(function (r) {
+            if (view === "diff") { return fullCmpDiffers(r); }
+            if (view === "same") { return r.action === "skip"; }
+            return true;
+        });
+        var top = shown.slice(0, FULL_CMP_SHOW);
+
+        var chip = function (v, label, n) {
+            return '<button class="gpp-btn sm gpp-fcview' +
+                (view === v ? " primary" : "") + '" data-fcview="' + v + '">' +
+                label + " · " + fmtN(n) + "</button>";
+        };
+
+        setHtml(box,
+            '<div class="gpp-chips" style="margin-bottom: 6px;">' +
+            chip("all", "Все таблицы", rows.length) +
+            chip("diff", "Различаются", nDiff) +
+            chip("same", "Совпадают", nSame) +
+            "</div>" +
+            '<div class="gpp-hint" style="margin-top: 0;">Источник → приёмник, ' +
+            (state.fullCmpExact
+                ? "точный COUNT(*)."
+                : "по статистике каталога (оценка: таблица без свежего ANALYZE " +
+                  "может показать неверное число — тогда включи точный пересчёт).") +
+            (nDiff && nDiff < state.sel.size
+                ? ' <button class="gpp-btn sm" id="gppFullCmpKeep">Оставить в выборе ' +
+                  "только отличающиеся (" + fmtN(nDiff) + ")</button>"
+                : "") +
+            "</div>" +
+            '<div class="gpp-tbl-list" style="max-height: 320px;">' +
+            top.map(fullCmpRowHtml).join("") + "</div>" +
+            (shown.length > top.length
+                ? '<div class="gpp-hint">Показано ' + fmtN(top.length) + " из " +
+                  fmtN(shown.length) + ".</div>"
+                : ""));
+
+        box.querySelectorAll(".gpp-fcview").forEach(function (b) {
+            b.onclick = function () {
+                state.fullCmpView = b.getAttribute("data-fcview");
+                fullCmpRender();
+            };
+        });
+
+        var keep = $("gppFullCmpKeep");
+
+        if (keep) {
+            keep.onclick = function () {
+                var want = {};
+                rows.filter(fullCmpDiffers).forEach(function (r) {
+                    want[r.schema + "." + r.table] = true;
+                });
+                Array.from(state.sel).forEach(function (key) {
+                    if (!want[key]) { state.sel.delete(key); }
+                });
+                onSelectionChanged();
+                toast("В выборе оставлены " + fmtN(state.sel.size) +
+                      " отличающихся таблиц", "success");
+                fullCmpRender();
+            };
+        }
+    }
+
     /* ---------------- date window ---------------- */
 
     function pad(n) { return (n < 10 ? "0" : "") + n; }
@@ -4388,6 +4550,7 @@
         $("gppSyncKeys").onclick = resolveSyncKeys;
         $("gppSyncCompute").onclick = computeMissingKeys;
         $("gppPartPreviewBtn").onclick = partPreview;
+        if ($("gppFullCmpBtn")) { $("gppFullCmpBtn").onclick = fullCmpRun; }
 
         // selection modal
         $("gppOpenSel").onclick = function () {

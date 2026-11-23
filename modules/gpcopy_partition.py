@@ -326,6 +326,122 @@ def diff_partitions_stats(source_cfg, dest_cfg, tables, exact=False):
         dest_conn.close()
 
 
+# ------------------------------------------------------------
+# Сравнение целых таблиц по числу строк (полное копирование):
+# то же, что diff партиций, но итог — одна строка на таблицу.
+# ------------------------------------------------------------
+
+def classify_table_counts(pairs, src_counts, dest_counts):
+    """
+    Чистая функция. pairs: [((s, t) источника, (s, t) приёмника)];
+    src_counts / dest_counts: {(s, t): rows}, нет ключа — таблицы нет.
+    -> [{schema, table, target, src, dest, action}],
+    action: copy_missing | copy_changed | skip | no_source.
+    """
+    rows = []
+
+    for src_key, dst_key in pairs:
+        src = src_counts.get(src_key)
+        dest = dest_counts.get(dst_key)
+
+        if src is None:
+            action = "no_source"
+        elif dest is None:
+            action = "copy_missing"
+        elif dest != src:
+            action = "copy_changed"
+        else:
+            action = "skip"
+
+        rows.append({
+            "schema": src_key[0], "table": src_key[1],
+            "target": ("{}.{}".format(*dst_key)
+                       if dst_key != src_key else None),
+            "src": src, "dest": dest, "action": action,
+        })
+
+    return rows
+
+
+def fetch_table_counts(conn, tables, chunk=50):
+    """
+    Точные COUNT(*) таблиц (у секционированной — по всем партициям)
+    батчами через UNION ALL. tables: [(s, t)] -> {(s, t): rows}.
+    Таблицы, которые не посчитались, пропускаются.
+    """
+    counts = {}
+
+    for i in range(0, len(tables), chunk):
+        part = tables[i:i + chunk]
+        sql = " UNION ALL ".join(
+            "SELECT {} AS k, count(*) AS cnt FROM {}.{}".format(
+                i + n, quote_ident(s), quote_ident(t))
+            for n, (s, t) in enumerate(part)
+        )
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                for k, cnt in cur.fetchall():
+                    counts[tables[int(k)]] = int(cnt)
+        except Exception:
+            conn.rollback()
+            # таблица пропала посреди — считаем поштучно
+            for s, t in part:
+                try:
+                    counts[(s, t)] = _count_rows(conn, s, t)
+                except Exception:
+                    conn.rollback()
+
+    return counts
+
+
+def _stats_totals(stats):
+    """{root: {leaf: {rows}}} -> {root: сумма reltuples по партициям}."""
+    return {root: sum(max(int(l["rows"]), 0) for l in leaves.values())
+            for root, leaves in stats.items()}
+
+
+def diff_tables_counts(source_cfg, dest_cfg, tables, exact=False,
+                       targets=None):
+    """
+    Сравнение таблиц источника и приёмника по числу строк: по
+    статистике каталога (reltuples, сумма по партициям — у корня GP7
+    своих строк нет) или точным COUNT(*). Только чтение с обеих сторон.
+    tables: [(s, t)]; targets — карта «источник -> цель».
+    """
+    try:
+        from modules.sync_targets import target_of
+    except ImportError:
+        from sync_targets import target_of
+
+    pairs = [((s, t), tuple(target_of(targets, s, t)) if targets else (s, t))
+             for s, t in tables]
+
+    source_conn = open_psycopg2_connection_by_cfg(source_cfg)
+    dest_conn = open_psycopg2_connection_by_cfg(dest_cfg)
+
+    try:
+        src_counts = _stats_totals(fetch_leaf_stats(
+            source_conn, [p[0] for p in pairs]))
+        dest_counts = _stats_totals(fetch_leaf_stats(
+            dest_conn, list(dict.fromkeys(p[1] for p in pairs))))
+
+        if exact:
+            # не посчиталась — остаётся оценка по статистике, а не «нет»
+            src_counts.update(fetch_table_counts(
+                source_conn, [k for k in (p[0] for p in pairs)
+                              if k in src_counts]))
+            dest_counts.update(fetch_table_counts(
+                dest_conn, [k for k in dict.fromkeys(p[1] for p in pairs)
+                            if k in dest_counts]))
+
+        return classify_table_counts(pairs, src_counts, dest_counts)
+    finally:
+        source_conn.close()
+        dest_conn.close()
+
+
 def normalize_partition_config(config):
     """
     Конфиг задачи «синхронизация партиций». Если стоит recompute, список
