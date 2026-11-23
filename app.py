@@ -2081,6 +2081,11 @@ def api_gpcopy_start():
         if targets:
             config["targets"] = targets
 
+        # «Только общие колонки»: таблицы с другими колонками в приёмнике —
+        # через промежуточные таблицы (ключ — только когда включено)
+        if bool(data.get("common_columns")):
+            config["common_columns"] = True
+
         # выбор транспорта по типам СУБД: gpcopy для GP→GP,
         # copy_pipe (COPY-стрим) для PG↔PG / PG↔GP
         from modules.connections import get_connection_by_id as _conn_cfg

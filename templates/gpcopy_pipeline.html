@@ -685,6 +685,16 @@ details.gpp-tgt > summary { padding: 7px 11px; font-size: 13px; }
             </div>
             <div class="gpp-hint">Замена идемпотентна по построению: приёмник приводится
                 к содержимому источника, чем бы он ни был заполнен до запуска.</div>
+            {% if (toolkit or 'gp') != 'pg' %}
+            <label class="gpp-hint" style="margin: 8px 0 0; cursor: pointer; display: block;">
+                <input type="checkbox" id="gppFullCommonCols" style="accent-color: var(--a1);">
+                Только общие колонки
+            </label>
+            <div class="gpp-hint">Колонки, которых нет в приёмнике, пропускаются; лишние
+                колонки приёмника получают DEFAULT/NULL. Таблицы с разными колонками идут
+                через промежуточную таблицу — на приёмнике данные пишутся дважды, поэтому
+                медленнее. Не для «Пересоздать» и «Не трогать».</div>
+            {% endif %}
         </div>
 
         <div class="gpp-params" id="gppP-inc">
@@ -769,7 +779,16 @@ details.gpp-tgt > summary { padding: 7px 11px; font-size: 13px; }
                            style="accent-color: var(--a1);">
                     ANALYZE после копирования (медленно)
                 </label>
+                <label class="gpp-hint" style="margin: 0; cursor: pointer;">
+                    <input type="checkbox" id="gppPartCommonCols"
+                           style="accent-color: var(--a1);">
+                    Только общие колонки
+                </label>
             </div>
+            <div class="gpp-hint">Только общие колонки: колонки, которых нет в приёмнике,
+                пропускаются; лишние колонки приёмника получают DEFAULT/NULL. Таблицы с
+                разными колонками идут через промежуточную таблицу — на приёмнике данные
+                пишутся дважды, поэтому медленнее.</div>
             <div class="gpp-key-list" id="gppPartPreview" style="margin-top: 8px;"></div>
         </div>
 
@@ -927,7 +946,7 @@ details.gpp-tgt > summary { padding: 7px 11px; font-size: 13px; }
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/cron_picker.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=26"></script>
+<script src="{{ url_for('static', filename='js/gpcopy_pipeline.js') }}?v=27"></script>
 {% if (toolkit or 'gp') == 'pg' %}
 <script src="{{ url_for('static', filename='js/pg_compare.js') }}?v=8"></script>
 {% endif %}

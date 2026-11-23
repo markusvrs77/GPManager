@@ -66,6 +66,12 @@ def plan_stages(entries, roots, job_id, full_name):
                            "truncate": bool(meta.get("truncate")),
                            "stages": [],
                            "entries": []}
+
+            # «Только общие колонки»: в цель переливаются колонки, которые
+            # есть и в промежуточной таблице, и в цели
+            if meta.get("common_columns"):
+                merges[key]["common_columns"] = True
+
             order.append(key)
 
         staged = dict(entry, dest=full_name(STAGE_SCHEMA, name))
@@ -363,6 +369,20 @@ def apply_merges(dst_conn, merges):
                             raise ValueError(
                                 "промежуточной таблицы {}.{} нет".format(
                                     stage_schema, stage_table))
+
+                        if merge.get("common_columns"):
+                            # только общие колонки, в порядке промежуточной;
+                            # остальные колонки цели получат DEFAULT/NULL
+                            in_target = set(_stage_columns(cur, dst_schema,
+                                                           dst_table))
+                            columns = [c for c in columns if c in in_target]
+
+                            if not columns:
+                                raise ValueError(
+                                    "у {}.{} и промежуточной таблицы {}.{} "
+                                    "нет общих колонок".format(
+                                        dst_schema, dst_table, stage_schema,
+                                        stage_table))
 
                         cols = ", ".join(quote_ident(c) for c in columns)
 

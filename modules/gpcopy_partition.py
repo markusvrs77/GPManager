@@ -44,6 +44,8 @@ try:
         make_include_table_file, safe_mark_job_failed, get_item_value,
         DEFAULT_GPCOPY_PATH, _job_log_path, _watch_gpcopy_log,
         finalize_gpcopy_job, find_owner_item, to_bool,
+        gpcopy_full_name, create_job_stages, drop_stages_quietly,
+        safe_mark_item_failed,
     )
 except ImportError:
     from gpcopy import (
@@ -54,6 +56,8 @@ except ImportError:
         make_include_table_file, safe_mark_job_failed, get_item_value,
         DEFAULT_GPCOPY_PATH, _job_log_path, _watch_gpcopy_log,
         finalize_gpcopy_job, find_owner_item, to_bool,
+        gpcopy_full_name, create_job_stages, drop_stages_quietly,
+        safe_mark_item_failed,
     )
 
 
@@ -354,8 +358,209 @@ def _dedupe_copy_items(copy_items):
     return out
 
 
+# ------------------------------------------------------------
+# «Только общие колонки»: партиции таблиц, у которых колонки источника и
+# приёмника различаются, идут через промежуточные таблицы
+# (modules/gpcopy_stage) и переливаются в одноимённую партицию приёмника
+# общими колонками.
+# ------------------------------------------------------------
+
+def partition_column_diffs(source_cfg, dest_cfg, roots):
+    """
+    Колонки корней источника и одноимённых корней приёмника (у всех
+    партиций GP колонки корня — сравниваем корень один раз).
+    -> ({root: diff} только отличающихся, {leaf: root}). Источник —
+    только чтение.
+    """
+    try:
+        from modules.gpcopy_columns import differing_tables
+    except ImportError:
+        from gpcopy_columns import differing_tables
+
+    roots = list(dict.fromkeys(tuple(r) for r in roots))
+
+    if not roots:
+        return {}, {}
+
+    src_conn = open_psycopg2_connection_by_cfg(source_cfg)
+
+    try:
+        try:
+            src_conn.set_session(readonly=True, autocommit=True)
+        except Exception:
+            pass
+
+        dst_conn = open_psycopg2_connection_by_cfg(dest_cfg)
+
+        try:
+            stats = fetch_leaf_stats(src_conn, roots)
+            diffs = differing_tables(src_conn, dst_conn,
+                                     [r + r for r in roots])
+        finally:
+            try:
+                dst_conn.rollback()
+            except Exception:
+                pass
+            dst_conn.close()
+    finally:
+        src_conn.close()
+
+    leaf_root = {
+        (info["schema"], info["table"]): root
+        for root, leaves in stats.items()
+        for info in leaves.values()
+    }
+
+    return {tuple(d["source"]): d for d in diffs}, leaf_root
+
+
+def split_refused_leaves(copy_items, leaf_root, diffs):
+    """
+    Партиции корней, которые нельзя грузить только общими колонками
+    (NOT NULL без DEFAULT только в цели, нет общих колонок), — вон из
+    копирования. Чистая функция. -> (оставшиеся copy_items, {root: текст})
+    """
+    try:
+        from modules.gpcopy_columns import refuse_reason
+    except ImportError:
+        from gpcopy_columns import refuse_reason
+
+    errors = {}
+
+    for root, diff in diffs.items():
+        reason = refuse_reason(diff)
+
+        if reason:
+            errors[tuple(root)] = reason
+
+    kept = []
+
+    for ci in copy_items:
+        leaf = (ci["schema_name"], ci["table_name"])
+
+        if leaf_root.get(leaf, leaf) not in errors:
+            kept.append(ci)
+
+    return kept, errors
+
+
+def plan_common_columns_stages(copy_items, leaf_root, diffs, job_id,
+                               source_db, dest_db):
+    """
+    Чистая функция. Записи include-table-json для всех партиций
+    (в одноимённые партиции приёмника); партиции отличающихся корней —
+    каждая в свою промежуточную таблицу, перелив в одноимённую партицию
+    приёмника (TRUNCATE + INSERT общих колонок).
+    -> (entries, merges); merges пуст — промежуточные не нужны.
+    """
+    try:
+        from modules import gpcopy_stage
+    except ImportError:
+        import gpcopy_stage
+
+    entries = []
+    roots = {}
+
+    for ci in copy_items:
+        leaf = (ci["schema_name"], ci["table_name"])
+        dest = gpcopy_full_name(dest_db, *leaf)
+        entries.append({"source": gpcopy_full_name(source_db, *leaf),
+                        "dest": dest})
+        root = leaf_root.get(leaf, leaf)
+
+        if root in diffs:
+            roots[dest] = {"item": list(root), "target": list(leaf),
+                           "truncate": True, "common_columns": True}
+
+    if not roots:
+        return entries, []
+
+    return gpcopy_stage.plan_stages(
+        entries, roots, job_id,
+        lambda schema, table: gpcopy_full_name(dest_db, schema, table))
+
+
+def _write_include_json(entries):
+    import tempfile
+
+    fd, path = tempfile.mkstemp(prefix="gpcopy_include_part_",
+                                suffix=".json", text=True)
+
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(entries, f, ensure_ascii=False, indent=2)
+    except Exception:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        raise
+
+    return path
+
+
+def _stage_common_columns(job_id, config, items, copy_items, source_cfg,
+                          dest_cfg):
+    """
+    Раннер партиций, «Только общие колонки». Строки задачи с корнем,
+    который так грузить нельзя, падают сразу. Промежуточные таблицы
+    создаются, план перелива — в config["stage_merges"] (и в задаче).
+    -> (copy_items, entries include JSON или None, {root: ошибка})
+    """
+    try:
+        from modules.gpcopy_columns import describe
+    except ImportError:
+        from gpcopy_columns import describe
+
+    roots = [
+        (get_item_value(i, "schema_name"), get_item_value(i, "table_name"))
+        for i in items if get_item_value(i, "status") != "skipped"
+    ]
+    diffs, leaf_root = partition_column_diffs(source_cfg, dest_cfg, roots)
+
+    for diff in diffs.values():
+        print("[gpcopy] колонки различаются, через промежуточные таблицы: "
+              + describe(diff))
+
+    copy_items, errors = split_refused_leaves(copy_items, leaf_root, diffs)
+
+    for item in items:
+        pair = (get_item_value(item, "schema_name"),
+                get_item_value(item, "table_name"))
+
+        if pair in errors:
+            safe_mark_item_failed(get_item_value(item, "id"),
+                                  error_message=errors[pair][:2000])
+
+    if not copy_items:
+        return copy_items, None, errors
+
+    entries, merges = plan_common_columns_stages(
+        copy_items, leaf_root, diffs, job_id,
+        get_conn_dbname(source_cfg), get_conn_dbname(dest_cfg))
+
+    if not merges:
+        return copy_items, None, errors
+
+    create_job_stages(job_id, merges, source_cfg, dest_cfg)
+    config["stage_merges"] = merges
+
+    # план перелива — в задачу: переподхват после рестарта доведёт его.
+    # finalize перепишет конфиг целиком — план «Продолжить» не теряем
+    saved = json.loads(get_item_value(get_job(job_id), "config_json") or "{}")
+    saved["stage_merges"] = merges
+    update_job_config(job_id, saved)
+
+    if saved.get("planned_leaves") is not None:
+        config["planned_leaves"] = saved["planned_leaves"]
+
+    return copy_items, entries, errors
+
+
 def run_gpcopy_partition_diff_job(job_id):
     include_file = None
+    include_json_file = None
+    config = None
     started = time.time()
 
     try:
@@ -460,6 +665,28 @@ def run_gpcopy_partition_diff_job(job_id):
             mark_job_done(job_id)
             return
 
+        # «Только общие колонки»: партиции таблиц с другими колонками в
+        # приёмнике — через промежуточные таблицы
+        stage_entries = None
+
+        if to_bool(config.get("common_columns"), False):
+            copy_items, stage_entries, refused = _stage_common_columns(
+                job_id, config, items, copy_items, source_cfg, dest_cfg)
+
+            if refused:
+                items = [i for i in items
+                         if (get_item_value(i, "schema_name"),
+                             get_item_value(i, "table_name")) not in refused]
+                item_keys = owner_item_keys(items)
+
+            if not copy_items:
+                refresh_job_progress(job_id)
+                safe_mark_job_failed(
+                    job_id, "Ни одну таблицу нельзя загрузить только общими "
+                            "колонками:\n{}".format(
+                                "\n".join(refused.values()))[:4000])
+                return
+
         # сколько партиций льём в каждую таблицу — для live-баров
         parts_by_item = {}
 
@@ -475,7 +702,12 @@ def run_gpcopy_partition_diff_job(job_id):
             set_item_parts(item_id, parts_total=total)
 
         source_db = get_conn_dbname(source_cfg)
-        include_file = make_include_table_file(copy_items, source_db)
+
+        if stage_entries:
+            # имя приёмника (промежуточная таблица) задаёт только JSON
+            include_json_file = _write_include_json(stage_entries)
+        else:
+            include_file = make_include_table_file(copy_items, source_db)
 
         gpcopy_path = (
             config.get("gpcopy_path")
@@ -491,6 +723,7 @@ def run_gpcopy_partition_diff_job(job_id):
             dest_port=get_conn_port(dest_cfg),
             dest_user=get_conn_user(dest_cfg),
             include_tables_file=include_file,
+            include_json_file=include_json_file,
             jobs=int(config.get("jobs") or 4),
             truncate=True,
             # ANALYZE каждой перелитой партиции — долго, поэтому только по
@@ -531,6 +764,7 @@ def run_gpcopy_partition_diff_job(job_id):
                                      process=process)
 
         if is_stop_requested(job_id):
+            drop_stages_quietly(config)
             mark_job_cancelled(job_id)
             refresh_job_progress(job_id)
             return
@@ -542,13 +776,18 @@ def run_gpcopy_partition_diff_job(job_id):
 
     except Exception as e:
         err = "{}\n{}".format(e, traceback.format_exc())
+
+        # промежуточные таблицы «Только общих колонок» — удалить
+        drop_stages_quietly(config)
+
         try:
             safe_mark_job_failed(job_id, err[:4000])
         except Exception:
             pass
     finally:
-        if include_file and os.path.exists(include_file):
-            try:
-                os.remove(include_file)
-            except Exception:
-                pass
+        for path in (include_file, include_json_file):
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass

@@ -720,7 +720,9 @@ def build_stage_resume_config(config, kept):
     if not kept:
         raise ValueError("Сохранённых промежуточных таблиц нет")
 
-    items = [tuple(m["item"]) for m in kept]
+    # у синхронизации партиций («Только общие колонки») на одну строку
+    # задачи приходится по промежуточной на партицию — строка одна
+    items = list(dict.fromkeys(tuple(m["item"]) for m in kept))
     keys = {"{}.{}".format(*pair) for pair in items}
 
     resume = {
@@ -1536,11 +1538,15 @@ def _job_is_active(job_id):
 
 def stage_partitioned_targets(job_id, include_json_file, leaf_map, targets,
                               dest_db, truncate, source_connection,
-                              dest_connection, create=True):
+                              dest_connection, create=True,
+                              common_columns=False):
     """
     Переписывает include JSON: записи, идущие в корень цели секционированной
     таблицы, получают по своей промежуточной таблице (modules/gpcopy_stage).
-    create — сразу создать их в приёмнике. -> merges для finalize.
+    Ключи leaf_map — таблицы источника; так же через промежуточную идёт и
+    обычная таблица, если она есть среди ключей («Только общие колонки»).
+    create — сразу создать их в приёмнике. common_columns — в цель
+    переливаются только общие колонки. -> merges для finalize.
     """
     try:
         from modules import gpcopy_stage
@@ -1555,6 +1561,9 @@ def stage_partitioned_targets(job_id, include_json_file, leaf_map, targets,
             "item": list(pair), "target": list(target), "truncate": truncate,
         }
 
+        if common_columns:
+            roots[gpcopy_full_name(dest_db, *target)]["common_columns"] = True
+
     with open(include_json_file, encoding="utf-8") as f:
         entries = json.load(f)
 
@@ -1566,37 +1575,223 @@ def stage_partitioned_targets(job_id, include_json_file, leaf_map, targets,
         json.dump(entries, f, ensure_ascii=False, indent=2)
 
     if create and merges:
-        src_conn = open_psycopg2_connection_by_cfg(source_connection)
+        create_job_stages(job_id, merges, source_connection, dest_connection)
+
+    return merges
+
+
+def create_job_stages(job_id, merges, source_connection, dest_connection):
+    """
+    Создать в приёмнике промежуточные таблицы задачи (и убрать остатки
+    завершённых задач). Ошибка — созданное удаляется, исключение дальше.
+    """
+    try:
+        from modules import gpcopy_stage
+    except ImportError:
+        import gpcopy_stage
+
+    src_conn = open_psycopg2_connection_by_cfg(source_connection)
+    dst_conn = open_psycopg2_connection_by_cfg(dest_connection)
+
+    try:
+        try:
+            src_conn.set_session(readonly=True, autocommit=True)
+        except Exception:
+            pass
+
+        dst_conn.autocommit = True
+
+        # остатки задач, чей процесс убили между копированием и
+        # уборкой: идущие задачи (и эту) не трогаем
+        try:
+            gpcopy_stage.sweep_stale_stages(
+                dst_conn, _job_is_active, current_job_id=int(job_id))
+        except Exception as e:
+            print("[gpcopy_stage] уборка остатков не удалась: {}".format(e))
+
+        gpcopy_stage.create_stages(src_conn, dst_conn, merges)
+    except Exception:
+        try:
+            gpcopy_stage.drop_stages(dst_conn, merges)
+        except Exception:
+            pass
+        raise
+    finally:
+        src_conn.close()
+        dst_conn.close()
+
+
+def common_columns_diff(source_connection, dest_connection, pairs):
+    """
+    «Только общие колонки»: какие пары (src_schema, src_table, dst_schema,
+    dst_table) различаются набором колонок (modules/gpcopy_columns).
+    Источник открывается только на чтение.
+    """
+    try:
+        from modules.gpcopy_columns import differing_tables
+    except ImportError:
+        from gpcopy_columns import differing_tables
+
+    if not pairs:
+        return []
+
+    src_conn = open_psycopg2_connection_by_cfg(source_connection)
+
+    try:
+        try:
+            src_conn.set_session(readonly=True, autocommit=True)
+        except Exception:
+            pass
+
         dst_conn = open_psycopg2_connection_by_cfg(dest_connection)
 
         try:
-            try:
-                src_conn.set_session(readonly=True, autocommit=True)
-            except Exception:
-                pass
-
-            dst_conn.autocommit = True
-
-            # остатки задач, чей процесс убили между копированием и
-            # уборкой: идущие задачи (и эту) не трогаем
-            try:
-                gpcopy_stage.sweep_stale_stages(
-                    dst_conn, _job_is_active, current_job_id=int(job_id))
-            except Exception as e:
-                print("[gpcopy_stage] уборка остатков не удалась: {}".format(e))
-
-            gpcopy_stage.create_stages(src_conn, dst_conn, merges)
-        except Exception:
-            try:
-                gpcopy_stage.drop_stages(dst_conn, merges)
-            except Exception:
-                pass
-            raise
+            return differing_tables(src_conn, dst_conn, pairs)
         finally:
-            src_conn.close()
+            try:
+                dst_conn.rollback()
+            except Exception:
+                pass
             dst_conn.close()
+    finally:
+        src_conn.close()
 
-    return merges
+
+def _route_common_columns_items(job_id, items, targets, leaf_map,
+                                common_plain, source_connection,
+                                dest_connection):
+    """
+    Полное копирование, «Только общие колонки»: сравнить колонки каждой
+    таблицы с её целью. Отличающиеся секционированные — в leaf_map,
+    обычные — в common_plain (оба меняются на месте). Таблица, которую
+    так грузить нельзя (NOT NULL без DEFAULT только в цели, нет общих
+    колонок), падает сразу без копирования. -> оставшиеся items.
+    """
+    try:
+        from modules.gpcopy_columns import describe
+        from modules.gpcopy_partition import list_leaf_partitions
+    except ImportError:
+        from gpcopy_columns import describe
+        from gpcopy_partition import list_leaf_partitions
+
+    pairs = [(get_item_value(i, "schema_name"), get_item_value(i, "table_name"))
+             for i in items]
+    diffs = common_columns_diff(
+        source_connection, dest_connection,
+        [pair + tuple(target_of(targets, *pair)) for pair in pairs])
+
+    for diff in diffs:
+        print("[gpcopy] колонки различаются, через промежуточную таблицу: "
+              + describe(diff))
+
+    conn_box = {}
+
+    def leaves_of(schema, table):
+        if (schema, table) in leaf_map:
+            return leaf_map[(schema, table)]
+
+        if "conn" not in conn_box:
+            conn_box["conn"] = open_psycopg2_connection_by_cfg(
+                source_connection)
+
+            try:
+                conn_box["conn"].set_session(readonly=True, autocommit=True)
+            except Exception:
+                pass
+
+        return list_leaf_partitions(conn_box["conn"], schema, table)
+
+    try:
+        leaves, plain, errors = route_common_columns(diffs, leaves_of)
+    finally:
+        if conn_box.get("conn") is not None:
+            try:
+                conn_box["conn"].close()
+            except Exception:
+                pass
+
+    leaf_map.update(leaves)
+    common_plain.extend(p for p in plain if p not in common_plain)
+
+    if not errors:
+        return items
+
+    kept = []
+
+    for item in items:
+        pair = (get_item_value(item, "schema_name"),
+                get_item_value(item, "table_name"))
+
+        if pair in errors:
+            leaf_map.pop(pair, None)
+            safe_mark_item_failed(get_item_value(item, "id"),
+                                  error_message=errors[pair][:2000])
+        else:
+            kept.append(item)
+
+    refresh_job_progress(job_id)
+
+    if not kept:
+        raise Exception("Ни одну таблицу нельзя загрузить только общими "
+                        "колонками:\n{}".format("\n".join(errors.values())))
+
+    return kept
+
+
+def common_columns_enabled(config, mode, drop, skip_existing, dry_run):
+    """
+    Включена ли «Только общие колонки» для полного копирования. drop
+    пересоздаёт цель по источнику, skip-existing её не трогает — им
+    промежуточные таблицы не нужны. Чистая функция.
+    """
+    if not to_bool(config.get("common_columns"), False):
+        return False
+
+    if mode not in ("", "full") or config.get("stage_resume") or dry_run:
+        return False
+
+    extra = str(config.get("extra_args") or "")
+
+    return not (drop or skip_existing or "--drop" in extra
+                or "--skip-existing" in extra)
+
+
+def route_common_columns(diffs, leaves_of):
+    """
+    Полное копирование, «Только общие колонки»: как пойдёт каждая таблица
+    с отличающимися колонками. Чистая функция.
+
+    diffs — из common_columns_diff; leaves_of(schema, table) -> партиции
+    источника (или [сама таблица]).
+    -> ({(s, t): [партиции]} секционированные — каждая партиция в свою
+        промежуточную, перелив в корень цели;
+        [(s, t)] обычные (и партиции, переданные строкой задачи) — одна
+        промежуточная, перелив в цель;
+        {(s, t): текст} — таблицы, которые копировать нельзя)
+    """
+    try:
+        from modules.gpcopy_columns import refuse_reason
+    except ImportError:
+        from gpcopy_columns import refuse_reason
+
+    leaves, plain, errors = {}, [], {}
+
+    for diff in diffs or []:
+        pair = tuple(diff["source"])
+        reason = refuse_reason(diff)
+
+        if reason:
+            errors[pair] = reason
+            continue
+
+        found = [tuple(p) for p in (leaves_of(*pair) or [])]
+
+        if found and found != [pair]:
+            leaves[pair] = found
+        else:
+            plain.append(pair)
+
+    return leaves, plain, errors
 
 
 def drop_stages_quietly(config):
@@ -3704,6 +3899,13 @@ def run_gpcopy_job(job_id):
         # партиции секционированных таблиц с картой (полная замена)
         leaf_map = {}
 
+        # «Только общие колонки» (полное копирование): обычные таблицы,
+        # которые идут через промежуточную таблицу; секционированные — в
+        # leaf_map
+        common_on = common_columns_enabled(config, mode, drop, skip_existing,
+                                           dry_run)
+        common_plain = []
+
         if mode == "date_filter" and covered:
             table_configs = [
                 tc for tc in table_configs
@@ -3793,10 +3995,12 @@ def run_gpcopy_job(job_id):
             if not selected_tables and not items:
                 raise Exception("selected_tables is empty")
 
-            if any(is_mapped(targets,
-                             get_item_value(i, "schema_name"),
-                             get_item_value(i, "table_name"))
-                   for i in items):
+            has_mapped = any(is_mapped(targets,
+                                       get_item_value(i, "schema_name"),
+                                       get_item_value(i, "table_name"))
+                             for i in items)
+
+            if has_mapped:
                 leaf_map = mapped_source_leaves(
                     source_connection, targets,
                     [(get_item_value(i, "schema_name"),
@@ -3836,6 +4040,14 @@ def run_gpcopy_job(job_id):
                             "Не удалось подготовить цели в приёмнике:\n{}".format(
                                 "\n".join(leaf_errors.values())))
 
+            # «Только общие колонки»: таблицы, у которых колонки цели и
+            # источника различаются, идут через промежуточные таблицы
+            if common_on:
+                items = _route_common_columns_items(
+                    job_id, items, targets, leaf_map, common_plain,
+                    source_connection, dest_connection)
+
+            if has_mapped or common_plain or leaf_map:
                 # include-table-file не умеет имя приёмника — для задачи,
                 # где хоть одна таблица идёт в другую, весь список уходит
                 # include-table-json с dest
@@ -3847,19 +4059,26 @@ def run_gpcopy_job(job_id):
         # секционированные таблицы с картой: gpcopy не пишет несколько
         # таблиц источника в одну цель — каждая партиция идёт в свою
         # промежуточную таблицу, в цель их переливает finalize_gpcopy_job
-        if targets and include_json_file:
+        # «Только общие колонки» — так же: в цель переливаются общие колонки
+        if (targets or common_plain or leaf_map) and include_json_file:
             if mode == "date_filter":
                 leaf_map = mapped_source_leaves(
                     source_connection, targets,
                     [_config_table_pair(tc) for tc in table_configs])
 
-            if leaf_map:
+            stage_map = dict(leaf_map)
+
+            for pair in common_plain:
+                stage_map[pair] = None
+
+            if stage_map:
                 stage_merges = stage_partitioned_targets(
-                    job_id, include_json_file, leaf_map, targets, dest_db,
+                    job_id, include_json_file, stage_map, targets, dest_db,
                     truncate=truncate and mode != "date_filter",
                     source_connection=source_connection,
                     dest_connection=dest_connection,
                     create=not dry_run,
+                    common_columns=common_on,
                 )
 
                 if not dry_run:
@@ -4016,6 +4235,12 @@ def run_gpcopy_job(job_id):
             skip = lock_guard_skip_reason(
                 mode, targets, dry_run, config.get("stage_resume"),
                 truncate, drop)
+
+            # догрузка отложенного шла бы мимо промежуточных таблиц прямо
+            # в цель — а колонки у неё другие
+            if not skip and common_on and config.get("stage_merges"):
+                skip = ("часть таблиц идёт через промежуточные таблицы "
+                        "(только общие колонки)")
 
             if skip:
                 config["lock_state"] = {

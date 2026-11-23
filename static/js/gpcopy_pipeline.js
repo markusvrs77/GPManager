@@ -2503,6 +2503,10 @@
                 extra_args: ex.extra_args,
             };
             body[$("gppFullExisting").value] = true;
+            // «Только общие колонки» (в PG-наборе галочки нет)
+            if ($("gppFullCommonCols") && $("gppFullCommonCols").checked) {
+                body.common_columns = true;
+            }
             return api("/api/gpcopy/start", "POST", tgtAttach(body, tables));
         }
 
@@ -2592,6 +2596,7 @@
             count_mode: $("gppPartExact").checked ? "exact" : "stats",
             recompute: partAutoOn(),
             analyze: $("gppPartAnalyze").checked,
+            common_columns: $("gppPartCommonCols").checked,
         };
         if (!partAutoOn() && state.partDiff) {
             var checkedParts = partCheckedList();
@@ -2620,6 +2625,9 @@
             base.tables = tables;
             base.selected_tables = tables;
             base[$("gppFullExisting").value] = true;
+            if ($("gppFullCommonCols") && $("gppFullCommonCols").checked) {
+                base.common_columns = true;
+            }
             return Promise.resolve(tgtAttach(base, tables));
         }
 
@@ -2666,6 +2674,7 @@
         base.count_mode = $("gppPartExact").checked ? "exact" : "stats";
         base.recompute = true;
         base.analyze = $("gppPartAnalyze").checked;
+        base.common_columns = $("gppPartCommonCols").checked;
         return Promise.resolve(base);
     }
 
