@@ -286,11 +286,13 @@ def build_create_table_sql(schema, table, columns, options=None,
 
 
 def build_create_partition_sql(schema, table, parent_schema, parent_table,
-                               bound, options=None, access_method=None):
+                               bound, options=None, access_method=None,
+                               partition_by=None):
     """CREATE TABLE ... PARTITION OF ... FOR VALUES ... Чистая функция.
 
     Способ хранения указывается у каждой партиции свой: Greenplum
     допускает, что старые партиции лежат в ao_column, а свежие — в heap.
+    partition_by — у промежуточного уровня многоуровневой секции.
     """
     if not bound:
         raise ValueError("Нет границ партиции {}.{}".format(schema, table))
@@ -299,6 +301,9 @@ def build_create_partition_sql(schema, table, parent_schema, parent_table,
         quote_ident(schema), quote_ident(table),
         quote_ident(parent_schema), quote_ident(parent_table), bound,
     )
+
+    if partition_by:
+        sql += "\n" + partition_by
 
     if _access_method(access_method):
         sql += "\nUSING {}".format(quote_ident(_access_method(access_method)))
@@ -877,6 +882,161 @@ def create_missing_objects(source_connection_id, dest_connection_id, tables,
 
 
 # ------------------------------------------------------------------
+# партиции, которых нет в приёмнике (корень есть с обеих сторон)
+# ------------------------------------------------------------------
+
+_PART_TREE_SQL = """
+    WITH RECURSIVE tree AS (
+        SELECT c.oid, n.nspname AS root_schema, c.relname AS root_table,
+               0 AS depth
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE (n.nspname, c.relname) IN %s
+        UNION ALL
+        SELECT child.oid, tree.root_schema, tree.root_table, tree.depth + 1
+        FROM tree
+        JOIN pg_inherits i ON i.inhparent = tree.oid
+        JOIN pg_class child ON child.oid = i.inhrelid
+    )
+    SELECT t.root_schema, t.root_table, n.nspname, c.relname, t.depth
+    FROM tree t
+    JOIN pg_class c ON c.oid = t.oid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+"""
+
+
+def fetch_partition_trees(conn, roots):
+    """
+    Корень (depth 0) и все его потомки, один запрос на все корни.
+    roots: [(schema, table)] -> {root: [(schema, table, depth)]}
+    """
+    if not roots:
+        return {}
+
+    with conn.cursor() as cur:
+        cur.execute(_PART_TREE_SQL, (tuple(roots),))
+        rows = cur.fetchall()
+
+    out = {}
+
+    for r in rows:
+        out.setdefault((r[0], r[1]), []).append((r[2], r[3], int(r[4])))
+
+    return out
+
+
+def missing_partitions(src_trees, dst_trees):
+    """
+    Чистая функция: партиции источника, которых нет в приёмнике.
+
+    Корень, которого нет в приёмнике, пропускается: его вместе со всеми
+    партициями создаёт «Создать недостающие объекты». Порядок — по
+    глубине: промежуточный уровень создаётся раньше своих листьев.
+    -> {root: [{"schema", "table", "depth"}]}
+    """
+    out = {}
+
+    for root, nodes in src_trees.items():
+        dst_nodes = dst_trees.get(root)
+
+        if not dst_nodes:
+            continue
+
+        have = set((s, t) for s, t, _d in dst_nodes)
+        miss = [
+            {"schema": s, "table": t, "depth": d}
+            for s, t, d in sorted(nodes, key=lambda n: (n[2], n[0], n[1]))
+            if d > 0 and (s, t) not in have
+        ]
+
+        if miss:
+            out[root] = miss
+
+    return out
+
+
+def _partition_ddl(cur, schema, table):
+    """CREATE TABLE ... PARTITION OF по каталогу источника."""
+    meta = _table_meta(cur, schema, table)
+
+    if not meta:
+        raise ValueError("нет в источнике")
+
+    parent = _partition_parent(cur, meta["oid"])
+
+    # отдельной таблицей с именем партиции её создавать нельзя
+    if not parent:
+        raise ValueError("не декларативная партиция — создай вручную")
+
+    return build_create_partition_sql(
+        schema, table, parent["schema"], parent["table"], parent["bound"],
+        options=meta["options"], access_method=meta["access_method"],
+        partition_by=meta["partition_by"] if meta["relkind"] == "p" else None,
+    )
+
+
+def create_missing_partitions(source_connection_id, dest_connection_id,
+                              tables):
+    """
+    Досоздать в приёмнике партиции, которые есть в источнике. tables —
+    корни [{schema, table}]; чего не хватает, считается здесь заново.
+    Источник только читается. -> [{schema, table, root, ok, error}]
+    """
+    src_cfg = get_connection_by_id(int(source_connection_id))
+    dst_cfg = get_connection_by_id(int(dest_connection_id))
+
+    if not src_cfg or not dst_cfg:
+        raise ValueError("Подключение не найдено")
+
+    roots = []
+
+    for t in tables:
+        key = (t.get("schema"), t.get("table"))
+
+        if key[0] and key[1] and key not in roots:
+            roots.append(key)
+
+    src_conn = open_psycopg2_connection_by_cfg(src_cfg)
+    dst_conn = open_psycopg2_connection_by_cfg(dst_cfg)
+    dst_conn.autocommit = True
+    out = []
+
+    try:
+        missing = missing_partitions(fetch_partition_trees(src_conn, roots),
+                                     fetch_partition_trees(dst_conn, roots))
+
+        for root in roots:
+            for p in missing.get(root, []):
+                row = {"schema": p["schema"], "table": p["table"],
+                       "root": "{}.{}".format(*root), "ok": True, "error": ""}
+
+                try:
+                    with src_conn.cursor() as cur:
+                        sql_text = _partition_ddl(cur, p["schema"], p["table"])
+
+                    with dst_conn.cursor() as cur:
+                        cur.execute(sql_text)
+                except Exception as e:
+                    row["ok"] = False
+                    row["error"] = str(e)[:500]
+
+                    try:
+                        src_conn.rollback()
+                    except Exception:
+                        pass
+
+                out.append(row)
+    finally:
+        for c in (src_conn, dst_conn):
+            try:
+                c.close()
+            except Exception:
+                pass
+
+    return out
+
+
+# ------------------------------------------------------------------
 # зависимости: функции в DEFAULT'ах и sequences
 # ------------------------------------------------------------------
 
@@ -1274,6 +1434,16 @@ def precheck_tables(source_connection_id, dest_connection_id, tables,
             deps = analyze_dependencies(src_conn, dst_conn, tables)
         except Exception:
             deps = []
+
+        # недостающие партиции: корень есть, а части листьев нет —
+        # gpcopy падает на каждом «relation ... does not exist»
+        try:
+            roots = [(t["schema"], t["table"]) for t in tables
+                     if not is_mapped(targets, t["schema"], t["table"])]
+            parts = missing_partitions(fetch_partition_trees(src_conn, roots),
+                                       fetch_partition_trees(dst_conn, roots))
+        except Exception:
+            parts = {}
     finally:
         for c in (src_conn, dst_conn):
             try:
@@ -1285,6 +1455,10 @@ def precheck_tables(source_connection_id, dest_connection_id, tables,
 
     for row in results:
         row["target"] = _target_label(targets, row["schema"], row["table"])
+        row["missing_parts"] = [
+            {"schema": p["schema"], "table": p["table"]}
+            for p in parts.get((row["schema"], row["table"]), [])
+        ]
 
     return {
         "results": results,
@@ -1297,6 +1471,7 @@ def precheck_tables(source_connection_id, dest_connection_id, tables,
             "diff": sum(1 for r in results if r["status"] == "diff"),
             "no_dest": sum(1 for r in results if r["status"] == "no_dest"),
             "no_source": sum(1 for r in results if r["status"] == "no_source"),
+            "missing_parts": sum(len(r["missing_parts"]) for r in results),
         },
     }
 

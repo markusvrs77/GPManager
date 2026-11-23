@@ -2748,20 +2748,44 @@
                 return ghosts.indexOf(t.schema + "." + t.table) === -1;
             });
 
-            if (!missing.length) { return true; }
+            var parts = ddlMissingParts();
 
-            setMsg("Создаю в приёмнике недостающие объекты (" +
-                   fmtN(missing.length) + ")…");
+            if (!missing.length && !parts.length) { return true; }
 
-            return createMissing(missing).then(function (r) {
-                if (r.ok) {
-                    toast("Создано в приёмнике: " + fmtN(r.created) +
-                          (r.failed ? ", не удалось: " + fmtN(r.failed) : ""),
-                          r.failed ? "warning" : "success");
-                }
+            var step = Promise.resolve();
 
-                return true;
-            }).catch(function () { return true; });
+            if (missing.length) {
+                step = step.then(function () {
+                    setMsg("Создаю в приёмнике недостающие объекты (" +
+                           fmtN(missing.length) + ")…");
+
+                    return createMissing(missing).then(function (r) {
+                        if (r.ok) {
+                            toast("Создано в приёмнике: " + fmtN(r.created) +
+                                  (r.failed ? ", не удалось: " + fmtN(r.failed) : ""),
+                                  r.failed ? "warning" : "success");
+                        }
+                    }).catch(function () {});
+                });
+            }
+
+            // без них gpcopy падает на каждой партиции, которой нет в приёмнике
+            if (parts.length) {
+                step = step.then(function () {
+                    setMsg("Создаю в приёмнике недостающие партиции (" +
+                           fmtN((ddlLast.summary || {}).missing_parts || 0) + ")…");
+
+                    return createMissingParts(parts).then(function (r) {
+                        if (r.ok) {
+                            toast("Создано партиций: " + fmtN(r.created) +
+                                  (r.failed ? ", не удалось: " + fmtN(r.failed) : ""),
+                                  r.failed ? "warning" : "success");
+                        }
+                    }).catch(function () {});
+                });
+            }
+
+            return step.then(function () { return true; });
         }).catch(function () { return true; });
     }
 
@@ -3619,6 +3643,27 @@
         });
     }
 
+    // корни, у которых в приёмнике не хватает партиций
+    function ddlMissingParts() {
+        return (ddlLast ? ddlLast.results : []).filter(function (r) {
+            return (r.missing_parts || []).length;
+        }).map(function (r) {
+            return { schema: r.schema, table: r.table,
+                     n: r.missing_parts.length };
+        });
+    }
+
+    // недостающие партиции по корням; список сервер считает сам
+    function createMissingParts(roots) {
+        return api("/api/gpcopy/create-partitions", "POST", {
+            source_connection_id: srcId(),
+            dest_connection_id: dstId(),
+            tables: roots.map(function (r) {
+                return { schema: r.schema, table: r.table };
+            }),
+        });
+    }
+
     function ddlFixables() {
         return (ddlLast ? ddlLast.results : []).filter(function (r) {
             return r.missing_in_dest && r.missing_in_dest.length;
@@ -3632,7 +3677,7 @@
 
         var s = ddlLast.summary || {};
         var bad = (ddlLast.results || []).filter(function (r) {
-            return r.status !== "ok";
+            return r.status !== "ok" || (r.missing_parts || []).length;
         });
 
         var html = '<div class="gpp-hint" style="margin-top: 0;">' +
@@ -3641,6 +3686,10 @@
             ">" + fmtN(s.diff || 0) + "</b>" +
             " · нет в приёмнике <b>" + fmtN(s.no_dest || 0) + "</b>" +
             (s.no_source ? " · нет в источнике <b>" + fmtN(s.no_source) + "</b>" : "") +
+            (s.missing_parts
+                ? ' · нет партиций <b style="color: var(--crit);">' +
+                  fmtN(s.missing_parts) + "</b>"
+                : "") +
             "</div>";
 
         var missing = ddlMissing();
@@ -3648,6 +3697,11 @@
         if (missing.length) {
             html += '<button class="gpp-btn sm" id="gppDdlCreate">🏗 Создать ' +
                 "недостающие объекты (" + fmtN(missing.length) + ")</button> ";
+        }
+
+        if (s.missing_parts) {
+            html += '<button class="gpp-btn sm" id="gppDdlParts">🧱 Создать ' +
+                "недостающие партиции (" + fmtN(s.missing_parts) + ")</button> ";
         }
 
         var renames = ddlRenames();
@@ -3722,6 +3776,14 @@
                     });
                     if ((r.extra_in_dest || []).length) {
                         det.push("лишние в приёмнике: " + r.extra_in_dest.join(", "));
+                    }
+                    if ((r.missing_parts || []).length) {
+                        det.push("нет партиций в приёмнике: " +
+                            fmtN(r.missing_parts.length) + " (" +
+                            r.missing_parts.slice(0, 3).map(function (p) {
+                                return p.table;
+                            }).join(", ") +
+                            (r.missing_parts.length > 3 ? "…" : "") + ")");
                     }
 
                     return '<div class="gpp-key-row"><span>' +
@@ -3864,6 +3926,40 @@
                 }).catch(function (e) {
                     createBtn.disabled = false;
                     createBtn.textContent = "🏗 Создать недостающие объекты";
+                    toast(String(e), "error");
+                });
+            };
+        }
+
+        var partsBtn = $("gppDdlParts");
+
+        if (partsBtn) {
+            partsBtn.onclick = function () {
+                partsBtn.disabled = true;
+                partsBtn.textContent = "Создаю партиции…";
+
+                createMissingParts(ddlMissingParts()).then(function (d) {
+                    partsBtn.disabled = false;
+
+                    if (!d.ok) {
+                        partsBtn.textContent = "🧱 Создать недостающие партиции";
+                        toast(d.message || "Не удалось создать партиции", "error");
+                        return;
+                    }
+
+                    toast("Создано партиций: " + fmtN(d.created) +
+                        (d.failed ? ", ошибок: " + fmtN(d.failed) : ""),
+                        d.failed ? "warning" : "success");
+
+                    var report = { results: d.results, failed: d.failed,
+                                   created: d.created };
+
+                    ddlRun().then(function () {
+                        ddlReport("Создано партиций", report, "created");
+                    });
+                }).catch(function (e) {
+                    partsBtn.disabled = false;
+                    partsBtn.textContent = "🧱 Создать недостающие партиции";
                     toast(String(e), "error");
                 });
             };

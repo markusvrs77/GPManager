@@ -136,6 +136,7 @@ POLICY = {
     # правка структуры приёмника: CREATE, ALTER, DROP
     "api_gpcopy_add_columns": "sync.run",
     "api_gpcopy_create_tables": "sync.run",
+    "api_gpcopy_create_partitions": "sync.run",
     "api_gpcopy_rename_columns": "sync.run",
     "api_gpcopy_recreate_tables": "sync.run",
     "api_gpcopy_fix_deps": "sync.run",

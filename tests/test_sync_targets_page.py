@@ -22,7 +22,7 @@ def test_gp_page_has_target_block_with_partitions_note(client):
     # список прокручивается в своём контейнере, шапка закреплена
     css = re.search(r"\.gpp-tgt-list\s*\{([^}]*)\}", html).group(1)
     assert "max-height" in css and "overflow-y" in css
-    assert "js/gpcopy_pipeline.js?v=27" in html
+    assert "js/gpcopy_pipeline.js?v=28" in html
 
 
 def test_pg_page_has_target_block_in_both_modes(client):
