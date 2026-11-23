@@ -185,3 +185,56 @@ def test_create_partitions_route_needs_tables(client):
     })
 
     assert r.status_code == 400
+
+
+# ------------------------------------------------- другая нарезка партиций
+
+from modules.ddl_check import (  # noqa: E402
+    bounds_overlap, parse_bound, partition_scheme_conflicts,
+)
+
+DAY = "FOR VALUES FROM ('2023-01-02') TO ('2023-01-03')"
+WEEK = "FOR VALUES FROM ('2023-01-01') TO ('2023-01-08')"
+
+
+def test_parse_range_and_list_bounds():
+    assert parse_bound(DAY) == ("range", ("s", "2023-01-02"),
+                                ("s", "2023-01-03"))
+    assert parse_bound("FOR VALUES FROM ('2023-01-01'::date) TO (MAXVALUE)")[2] \
+        == ("max",)
+    assert parse_bound("FOR VALUES IN ('a', 'b')") == (
+        "list", {("s", "a"), ("s", "b")})
+    assert parse_bound("FOR VALUES FROM (1) TO (10)")[1] == ("n", 1.0)
+    assert parse_bound("DEFAULT") is None
+    assert parse_bound("FOR VALUES FROM ('a', 1) TO ('b', 2)") is None
+
+
+def test_day_inside_week_overlaps_but_neighbours_do_not():
+    assert bounds_overlap(parse_bound(DAY), parse_bound(WEEK))
+    nxt = parse_bound("FOR VALUES FROM ('2023-01-08') TO ('2023-01-15')")
+    assert not bounds_overlap(parse_bound(WEEK), nxt)   # TO не включается
+    assert bounds_overlap(parse_bound("FOR VALUES IN ('a')"),
+                          parse_bound("FOR VALUES IN ('b', 'a')"))
+
+
+def test_daily_source_against_weekly_dest_is_a_conflict():
+    src = {ROOT: {"prt_20230102": DAY,
+                  "prt_20230103": "FOR VALUES FROM ('2023-01-03') TO ('2023-01-04')"}}
+    dst = {ROOT: {"prt_20230101": WEEK}}
+    missing = {ROOT: [{"schema": "dwh_dm", "table": "prt_20230102"},
+                      {"schema": "dwh_dm", "table": "prt_20230103"}]}
+
+    conf = partition_scheme_conflicts(src, dst, missing)
+
+    assert conf[ROOT]["count"] == 2
+    assert conf[ROOT]["src"] == "prt_20230102"
+    assert conf[ROOT]["dst"] == "prt_20230101"
+
+
+def test_new_partitions_after_dest_range_are_not_a_conflict():
+    """Приёмник просто отстал: новых дней нет — их можно досоздать."""
+    src = {ROOT: {"prt_20230109": "FOR VALUES FROM ('2023-01-09') TO ('2023-01-10')"}}
+    dst = {ROOT: {"prt_20230101": WEEK}}
+    missing = {ROOT: [{"schema": "dwh_dm", "table": "prt_20230109"}]}
+
+    assert partition_scheme_conflicts(src, dst, missing) == {}

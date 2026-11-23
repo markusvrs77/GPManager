@@ -955,6 +955,157 @@ def missing_partitions(src_trees, dst_trees):
     return out
 
 
+def fetch_partition_bounds(conn, roots):
+    """
+    Границы партиций первого уровня: {root: {partition: bound_text}}.
+    relpartbound есть только в Greenplum 7 / Postgres 10+ — на GP6
+    запрос падает, вызывающий это ловит.
+    """
+    if not roots:
+        return {}
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT pn.nspname, pc.relname, c.relname,
+                   pg_get_expr(c.relpartbound, c.oid)
+            FROM pg_inherits i
+            JOIN pg_class pc ON pc.oid = i.inhparent
+            JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+            JOIN pg_class c ON c.oid = i.inhrelid
+            WHERE (pn.nspname, pc.relname) IN %s
+            """,
+            (tuple(roots),),
+        )
+        rows = cur.fetchall()
+
+    out = {}
+
+    for r in rows:
+        if r[3]:
+            out.setdefault((r[0], r[1]), {})[r[2]] = r[3]
+
+    return out
+
+
+_LIT_RE = re.compile(
+    r"\s*(?:'((?:[^']|'')*)'(?:::[\w .\[\]\"]+)?|(-?\d+(?:\.\d+)?)"
+    r"|(MINVALUE|MAXVALUE))\s*(?:,|$)", re.I)
+
+_RANGE_RE = re.compile(r"^FOR VALUES FROM \((.*)\) TO \((.*)\)$", re.I | re.S)
+_LIST_RE = re.compile(r"^FOR VALUES IN \((.*)\)$", re.I | re.S)
+
+
+def _literals(text):
+    """«'a', 'b'» / «1, 2» -> [значения]; None, если не разобрать."""
+    vals = []
+    pos = 0
+    text = text.strip()
+
+    while pos < len(text):
+        m = _LIT_RE.match(text, pos)
+
+        if not m or m.end() == pos:
+            return None
+
+        if m.group(1) is not None:
+            vals.append(("s", m.group(1).replace("''", "'")))
+        elif m.group(2) is not None:
+            vals.append(("n", float(m.group(2))))
+        else:
+            vals.append(("min",) if m.group(3).upper() == "MINVALUE"
+                        else ("max",))
+
+        pos = m.end()
+
+    return vals
+
+
+def parse_bound(text):
+    """
+    Чистая функция. Граница партиции -> ("range", lo, hi) | ("list", set)
+    | None (DEFAULT, хэш, составной ключ — не сравниваем).
+    """
+    text = (text or "").strip()
+    m = _RANGE_RE.match(text)
+
+    if m:
+        lo, hi = _literals(m.group(1)), _literals(m.group(2))
+
+        if not lo or not hi or len(lo) != 1 or len(hi) != 1:
+            return None
+
+        return ("range", lo[0], hi[0])
+
+    m = _LIST_RE.match(text)
+
+    if m:
+        vals = _literals(m.group(1))
+        return ("list", set(vals)) if vals else None
+
+    return None
+
+
+def _lt(a, b):
+    """a < b для литералов границ; None — несравнимы."""
+    if a[0] == "min" or b[0] == "max":
+        return a != b
+    if a[0] == "max" or b[0] == "min":
+        return False
+    if a[0] != b[0]:
+        return None
+    return a[1] < b[1]
+
+
+def bounds_overlap(a, b):
+    """Чистая функция: пересекаются ли две разобранные границы."""
+    if not a or not b or a[0] != b[0]:
+        return False
+
+    if a[0] == "list":
+        return bool(a[1] & b[1])
+
+    first, second = _lt(a[1], b[2]), _lt(b[1], a[2])
+    return bool(first) and bool(second)
+
+
+def partition_scheme_conflicts(src_bounds, dst_bounds, missing):
+    """
+    Чистая функция. Недостающие партиции, которые пересекаются с
+    партицией приёмника под другим именем: нарезка разная (в источнике
+    по дням, в приёмнике по неделям) — досоздать их нельзя.
+    -> {root: {"count", "src", "src_bound", "dst", "dst_bound"}}
+    """
+    out = {}
+
+    for root, parts in missing.items():
+        src = src_bounds.get(root) or {}
+        dst = dict((name, (text, parse_bound(text)))
+                   for name, text in (dst_bounds.get(root) or {}).items())
+        count = 0
+        example = None
+
+        for p in parts:
+            text = src.get(p["table"])
+            bound = parse_bound(text)
+
+            if not bound:
+                continue
+
+            for name, (dtext, dbound) in dst.items():
+                if name != p["table"] and bounds_overlap(bound, dbound):
+                    count += 1
+                    if example is None:
+                        example = {"src": p["table"], "src_bound": text,
+                                   "dst": name, "dst_bound": dtext}
+                    break
+
+        if count:
+            out[root] = dict(example, count=count)
+
+    return out
+
+
 def _partition_ddl(cur, schema, table):
     """CREATE TABLE ... PARTITION OF по каталогу источника."""
     meta = _table_meta(cur, schema, table)
@@ -1456,6 +1607,17 @@ def precheck_tables(source_connection_id, dest_connection_id, tables,
                                        fetch_partition_trees(dst_conn, roots))
         except Exception:
             parts = {}
+
+        # нарезка в приёмнике другая — досоздавать партиции бесполезно
+        conflicts = {}
+
+        if parts:
+            try:
+                conflicts = partition_scheme_conflicts(
+                    fetch_partition_bounds(src_conn, list(parts)),
+                    fetch_partition_bounds(dst_conn, list(parts)), parts)
+            except Exception:
+                conflicts = {}
     finally:
         for c in (src_conn, dst_conn):
             try:
@@ -1471,6 +1633,7 @@ def precheck_tables(source_connection_id, dest_connection_id, tables,
             {"schema": p["schema"], "table": p["table"]}
             for p in parts.get((row["schema"], row["table"]), [])
         ]
+        row["parts_conflict"] = conflicts.get((row["schema"], row["table"]))
 
     return {
         "results": results,
@@ -1484,6 +1647,7 @@ def precheck_tables(source_connection_id, dest_connection_id, tables,
             "no_dest": sum(1 for r in results if r["status"] == "no_dest"),
             "no_source": sum(1 for r in results if r["status"] == "no_source"),
             "missing_parts": sum(len(r["missing_parts"]) for r in results),
+            "parts_conflict": sum(1 for r in results if r["parts_conflict"]),
         },
     }
 

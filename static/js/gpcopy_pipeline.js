@@ -2772,7 +2772,7 @@
             // без них gpcopy падает на каждой партиции, которой нет в приёмнике
             if (parts.length) {
                 step = step.then(function () {
-                    var total = (ddlLast.summary || {}).missing_parts || 0;
+                    var total = ddlMissingPartsCount();
 
                     setMsg("Создаю в приёмнике недостающие партиции (" +
                            fmtN(total) + ")…");
@@ -3655,14 +3655,19 @@
         });
     }
 
-    // корни, у которых в приёмнике не хватает партиций
+    // корни, у которых в приёмнике не хватает партиций; с другой
+    // нарезкой (parts_conflict) не досоздаём — Greenplum откажет
     function ddlMissingParts() {
         return (ddlLast ? ddlLast.results : []).filter(function (r) {
-            return (r.missing_parts || []).length;
+            return (r.missing_parts || []).length && !r.parts_conflict;
         }).map(function (r) {
             return { schema: r.schema, table: r.table,
                      n: r.missing_parts.length };
         });
+    }
+
+    function ddlMissingPartsCount() {
+        return ddlMissingParts().reduce(function (a, r) { return a + r.n; }, 0);
     }
 
     // недостающие партиции по корням; список сервер считает сам.
@@ -3743,6 +3748,10 @@
                 ? ' · нет партиций <b style="color: var(--crit);">' +
                   fmtN(s.missing_parts) + "</b>"
                 : "") +
+            (s.parts_conflict
+                ? ' · другая нарезка партиций <b style="color: var(--crit);">' +
+                  fmtN(s.parts_conflict) + "</b> табл."
+                : "") +
             "</div>";
 
         var missing = ddlMissing();
@@ -3752,9 +3761,11 @@
                 "недостающие объекты (" + fmtN(missing.length) + ")</button> ";
         }
 
-        if (s.missing_parts) {
+        var nParts = ddlMissingPartsCount();
+
+        if (nParts) {
             html += '<button class="gpp-btn sm" id="gppDdlParts">🧱 Создать ' +
-                "недостающие партиции (" + fmtN(s.missing_parts) + ")</button> ";
+                "недостающие партиции (" + fmtN(nParts) + ")</button> ";
         }
 
         var renames = ddlRenames();
@@ -3830,7 +3841,16 @@
                     if ((r.extra_in_dest || []).length) {
                         det.push("лишние в приёмнике: " + r.extra_in_dest.join(", "));
                     }
-                    if ((r.missing_parts || []).length) {
+                    if (r.parts_conflict) {
+                        var pc = r.parts_conflict;
+                        det.push("нарезка партиций не совпадает с источником: " +
+                            pc.src + " (" + pc.src_bound + ") пересекается с " +
+                            pc.dst + " (" + pc.dst_bound + ") в приёмнике" +
+                            (pc.count > 1 ? ", и так ещё у " +
+                                fmtN(pc.count - 1) + " партиций" : "") +
+                            " — досоздать нельзя, нужен полный перенос " +
+                            "со стратегией «Пересоздать»");
+                    } else if ((r.missing_parts || []).length) {
                         det.push("нет партиций в приёмнике: " +
                             fmtN(r.missing_parts.length) + " (" +
                             r.missing_parts.slice(0, 3).map(function (p) {
@@ -3988,7 +4008,7 @@
 
         if (partsBtn) {
             partsBtn.onclick = function () {
-                var total = (ddlLast.summary || {}).missing_parts || 0;
+                var total = ddlMissingPartsCount();
 
                 partsBtn.disabled = true;
                 partsBtn.textContent = "Создаю партиции… 0 из " + fmtN(total);
