@@ -17,13 +17,15 @@ import subprocess
 
 try:
     from job_manager import (
-        get_job, get_job_items, mark_job_running, mark_item_running,
+        get_job, get_job_items, mark_job_running,
         refresh_job_progress, is_stop_requested, clear_stop_flag,
+        mark_job_cancelled, set_job_runtime,
     )
 except ImportError:
     from modules.job_manager import (
-        get_job, get_job_items, mark_job_running, mark_item_running,
+        get_job, get_job_items, mark_job_running,
         refresh_job_progress, is_stop_requested, clear_stop_flag,
+        mark_job_cancelled, set_job_runtime,
     )
 
 try:
@@ -36,18 +38,20 @@ try:
         quote_ident, sql_literal, build_gpcopy_command, write_dest_mapping_file, pick_rpc_port,
         open_psycopg2_connection_by_cfg, get_conn_dbname, get_conn_host,
         get_conn_port, get_conn_user, safe_mark_job_failed,
-        safe_mark_job_cancelled, safe_mark_item_failed, safe_mark_item_done,
+        safe_mark_job_cancelled, safe_mark_item_failed,
         get_item_value, DEFAULT_GPCOPY_PATH, job_targets, gpcopy_full_name,
-        prepare_mapped_targets,
+        prepare_mapped_targets, _job_log_path, _watch_gpcopy_log,
+        finalize_gpcopy_job, owner_item_keys,
     )
 except ImportError:
     from gpcopy import (
         quote_ident, sql_literal, build_gpcopy_command, write_dest_mapping_file, pick_rpc_port,
         open_psycopg2_connection_by_cfg, get_conn_dbname, get_conn_host,
         get_conn_port, get_conn_user, safe_mark_job_failed,
-        safe_mark_job_cancelled, safe_mark_item_failed, safe_mark_item_done,
+        safe_mark_job_cancelled, safe_mark_item_failed,
         get_item_value, DEFAULT_GPCOPY_PATH, job_targets, gpcopy_full_name,
-        prepare_mapped_targets,
+        prepare_mapped_targets, _job_log_path, _watch_gpcopy_log,
+        finalize_gpcopy_job, owner_item_keys,
     )
 
 try:
@@ -264,37 +268,50 @@ def run_gpcopy_increment_job(job_id):
             rpc_port=pick_rpc_port(),
         )
 
-        for item in items:
-            mark_item_running(get_item_value(item, "id"))
-        refresh_job_progress(job_id)
-
         if is_stop_requested(job_id):
             safe_mark_job_cancelled(job_id, "Stop requested before increment start")
             return
 
-        process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            universal_newlines=True,
-        )
-        stdout_data, stderr_data = process.communicate()
-        rc = process.returncode
-        duration = time.time() - started
+        # общий каркас gpcopy (как у полного копирования и партиций):
+        # лог в файл, live-статусы, стоп по кнопке, переподхват после
+        # рестарта. Итог — по каждой таблице: упавшая одна таблица больше
+        # не красит ошибкой все остальные
+        log_path = _job_log_path(job_id)
+        log_handle = open(log_path, "w", encoding="utf-8", errors="replace")
 
-        if rc == 0:
-            for item in items:
-                safe_mark_item_done(get_item_value(item, "id"), duration_seconds=duration)
-            refresh_job_progress(job_id)
-            from job_manager import mark_job_done
-            mark_job_done(job_id)
+        popen_kwargs = {
+            "stdout": log_handle,
+            "stderr": subprocess.STDOUT,
+            "universal_newlines": True,
+        }
+
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
         else:
-            error_text = stderr_data or stdout_data or "gpcopy rc={}".format(rc)
-            for item in items:
-                safe_mark_item_failed(
-                    get_item_value(item, "id"),
-                    error_message=error_text[:1000], duration_seconds=duration,
-                )
+            popen_kwargs["creationflags"] = 0x00000200
+
+        process = subprocess.Popen(cmd, **popen_kwargs)
+
+        try:
+            log_handle.close()
+        except Exception:
+            pass
+
+        set_job_runtime(job_id, pid=process.pid, log_file=log_path)
+
+        log_text = _watch_gpcopy_log(
+            job_id, log_path, owner_item_keys(items, targets),
+            process=process)
+
+        if is_stop_requested(job_id):
+            mark_job_cancelled(job_id)
             refresh_job_progress(job_id)
-            safe_mark_job_failed(job_id, error_text[:4000])
+            return
+
+        finalize_gpcopy_job(
+            job_id, items, process.returncode, log_text, "",
+            " ".join(cmd), time.time() - started, config,
+        )
 
     except Exception as e:
         err = "{}\n{}".format(e, traceback.format_exc())

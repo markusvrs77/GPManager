@@ -3339,8 +3339,11 @@ def resume_unfinished_gpcopy_jobs():
         return handled
 
     for job in unfinished:
-        # partition_diff пишет тот же лог gpcopy - переподхват общий
-        if job.get("job_type") not in ("gpcopy", "gpcopy_partition_diff"):
+        # partition_diff и increment пишут тот же лог gpcopy - переподхват
+        # общий (increment нельзя перезапускать поверх живого gpcopy:
+        # два append задвоят строки)
+        if job.get("job_type") not in ("gpcopy", "gpcopy_partition_diff",
+                                       "gpcopy_increment"):
             continue
 
         log_path = job.get("log_file")
